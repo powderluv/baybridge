@@ -126,6 +126,25 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
         "    section = alloc.allocate(64, byte_alignment=128)\n"
         "    cute.recast_ptr(section, dtype='f32')\n",
     )
+    _write_text(
+        upstream_root / "examples/python/CuTeDSL/ampere/sgemm.py",
+        "import torch\nimport baybridge as cute\n"
+        "def fn(x, y, layout: cute.ComposedLayout, atom: cute.CopyAtom, tiled: cute.TiledCopy, tiled_mma: cute.TiledMma):\n"
+        "    cute.ceil_div((128, 128, 1), (64, 64, 1))\n"
+        "    cute.size_in_bytes('f32', cute.make_layout((8, 64), stride=(64, 1)))\n"
+        "    cute.tile_to_shape(cute.make_composed_layout(cute.make_swizzle(2, 3, 3), 0, cute.make_layout((8, 64), stride=(64, 1))), (64, 64, 2), (0, 1, 2))\n"
+        "    cute.domain_offset((0, 1), x)\n"
+        "    cute.local_tile(x, tiler=(2, 4, 2), coord=(1, 0, None), proj=(1, None, 1))\n"
+        "    cute.make_tiled_mma(obj)\n"
+        "    cute.make_tiled_copy_A(atom, tiled_mma)\n"
+        "    cute.make_tiled_copy_B(atom, tiled_mma)\n"
+        "    cute.make_tiled_copy_C(atom, tiled_mma)\n"
+        "    cute.gemm(x, y, x)\n"
+        "    cute.group_modes(x, 0, 1)\n"
+        "    cute.basic_copy(x, y)\n"
+        "    cute.autovec_copy(x, y)\n"
+        "    cute.nvgpu.CopyUniversalOp()\n",
+    )
     _write_ipynb(
         upstream_root / "examples/python/CuTeDSL/notebooks/print.ipynb",
         "import torch\nimport baybridge as cute\n"
@@ -162,6 +181,13 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
         "isinstance(v, cute.TensorSSA)\n"
         "cute.math.sqrt(v)\n"
         "v.reduce(cute.ReductionOp.ADD, 0.0, reduction_profile=0)\n",
+    )
+    _write_ipynb(
+        upstream_root / "examples/python/CuTeDSL/notebooks/data_types.ipynb",
+        "import baybridge as cute\n"
+        "@cute.jit\n"
+        "def demo():\n"
+        "    cute.printf('{}', 1)\n",
     )
 
     subprocess.run(
@@ -239,6 +265,27 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     assert "unknown:struct" not in smem_allocator["blockers"]
     assert "unknown:recast_ptr" not in smem_allocator["blockers"]
 
+    sgemm = _entry(entries, "examples/python/CuTeDSL/ampere/sgemm.py")
+    assert sgemm["status"] == "blocked_nvidia_specific"
+    assert "unknown:ComposedLayout" not in sgemm["blockers"]
+    assert "unknown:CopyAtom" not in sgemm["blockers"]
+    assert "unknown:TiledCopy" not in sgemm["blockers"]
+    assert "unknown:ceil_div" not in sgemm["blockers"]
+    assert "unknown:domain_offset" not in sgemm["blockers"]
+    assert "unknown:local_tile" not in sgemm["blockers"]
+    assert "unknown:TiledMma" not in sgemm["blockers"]
+    assert "unknown:make_tiled_mma" not in sgemm["blockers"]
+    assert "unknown:make_tiled_copy_A" not in sgemm["blockers"]
+    assert "unknown:make_tiled_copy_B" not in sgemm["blockers"]
+    assert "unknown:make_tiled_copy_C" not in sgemm["blockers"]
+    assert "unknown:gemm" not in sgemm["blockers"]
+    assert "unknown:group_modes" not in sgemm["blockers"]
+    assert "unknown:size_in_bytes" not in sgemm["blockers"]
+    assert "unknown:tile_to_shape" not in sgemm["blockers"]
+    assert "unknown:make_swizzle" not in sgemm["blockers"]
+    assert "unknown:basic_copy" not in sgemm["blockers"]
+    assert "unknown:autovec_copy" not in sgemm["blockers"]
+
     print_notebook = _entry(entries, "examples/python/CuTeDSL/notebooks/print.ipynb")
     assert print_notebook["status"] == "blocked_external_dependency"
     assert "unknown:slice_" not in print_notebook["blockers"]
@@ -266,3 +313,6 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     assert "unknown:TensorSSA" not in tensorssa["blockers"]
     assert "unknown:ReductionOp" not in tensorssa["blockers"]
     assert "unknown:math" not in tensorssa["blockers"]
+
+    data_types = _entry(entries, "examples/python/CuTeDSL/notebooks/data_types.ipynb")
+    assert data_types["status"] == "covered_by_baybridge_tests"

@@ -6,10 +6,10 @@ from dataclasses import dataclass, replace
 from math import prod
 from typing import Iterator
 
-from .dtypes import element_type
+from .dtypes import element_type, is_float_dtype, normalize_dtype_name, promote_scalar_dtype
 from .diagnostics import CompilationError
 from .ir import AddressSpace, KernelArgument, Operation, PortableKernelIR, ScalarSpec, TensorSpec
-from .runtime import LaunchConfig, ReductionOp, _normalize_reduction_op, _normalize_reduction_profile
+from .runtime import LaunchConfig, ReductionOp, RuntimeScalar, _normalize_reduction_op, _normalize_reduction_profile
 
 _current_builder: ContextVar["IRBuilder | None"] = ContextVar("baybridge_builder", default=None)
 
@@ -24,7 +24,7 @@ class ScalarValue:
             "dynamic Python control flow on traced baybridge scalars is not supported; use predication or runtime execution"
         )
 
-    def _binary(self, op: str, other: "ScalarValue | int", *, reverse: bool = False) -> "ScalarValue":
+    def _binary(self, op: str, other: "ScalarValue | RuntimeScalar | bool | int | float", *, reverse: bool = False) -> "ScalarValue":
         builder = require_builder()
         rhs = _coerce_scalar(other)
         lhs = rhs if reverse else self
@@ -38,28 +38,52 @@ class ScalarValue:
             name_hint=op,
         )
 
-    def __add__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __add__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("add", other)
 
-    def __radd__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __radd__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("add", other, reverse=True)
 
-    def __sub__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __sub__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("sub", other)
 
-    def __rsub__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __rsub__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("sub", other, reverse=True)
 
-    def __mul__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __mul__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("mul", other)
 
-    def __rmul__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __rmul__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._binary("mul", other, reverse=True)
 
-    def __floordiv__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __truediv__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         builder = require_builder()
         rhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
-        if self.spec.dtype.startswith("f") or rhs.spec.dtype.startswith("f"):
+        result_dtype = _binary_dtype(self.spec.dtype, rhs.spec.dtype)
+        return builder.emit_scalar(
+            "div",
+            self,
+            rhs,
+            spec=ScalarSpec(dtype=result_dtype),
+            name_hint="div",
+        )
+
+    def __rtruediv__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        builder = require_builder()
+        lhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
+        result_dtype = _binary_dtype(lhs.spec.dtype, self.spec.dtype)
+        return builder.emit_scalar(
+            "div",
+            lhs,
+            self,
+            spec=ScalarSpec(dtype=result_dtype),
+            name_hint="div",
+        )
+
+    def __floordiv__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        builder = require_builder()
+        rhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
+        if is_float_dtype(self.spec.dtype) or is_float_dtype(rhs.spec.dtype):
             raise TypeError("floordiv is only supported for integer/index scalars")
         return builder.emit_scalar(
             "floordiv",
@@ -69,10 +93,10 @@ class ScalarValue:
             name_hint="floordiv",
         )
 
-    def __rfloordiv__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __rfloordiv__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         builder = require_builder()
         lhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
-        if self.spec.dtype.startswith("f") or lhs.spec.dtype.startswith("f"):
+        if is_float_dtype(self.spec.dtype) or is_float_dtype(lhs.spec.dtype):
             raise TypeError("floordiv is only supported for integer/index scalars")
         return builder.emit_scalar(
             "floordiv",
@@ -82,10 +106,10 @@ class ScalarValue:
             name_hint="floordiv",
         )
 
-    def __mod__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __mod__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         builder = require_builder()
         rhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
-        if self.spec.dtype.startswith("f") or rhs.spec.dtype.startswith("f"):
+        if is_float_dtype(self.spec.dtype) or is_float_dtype(rhs.spec.dtype):
             raise TypeError("mod is only supported for integer/index scalars")
         return builder.emit_scalar(
             "mod",
@@ -95,10 +119,10 @@ class ScalarValue:
             name_hint="mod",
         )
 
-    def __rmod__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __rmod__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         builder = require_builder()
         lhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
-        if self.spec.dtype.startswith("f") or lhs.spec.dtype.startswith("f"):
+        if is_float_dtype(self.spec.dtype) or is_float_dtype(lhs.spec.dtype):
             raise TypeError("mod is only supported for integer/index scalars")
         return builder.emit_scalar(
             "mod",
@@ -108,7 +132,13 @@ class ScalarValue:
             name_hint="mod",
         )
 
-    def _compare(self, op: str, other: "ScalarValue | int", *, reverse: bool = False) -> "ScalarValue":
+    def _compare(
+        self,
+        op: str,
+        other: "ScalarValue | RuntimeScalar | bool | int | float",
+        *,
+        reverse: bool = False,
+    ) -> "ScalarValue":
         builder = require_builder()
         rhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
         lhs = rhs if reverse else self
@@ -121,44 +151,84 @@ class ScalarValue:
             name_hint=op,
         )
 
-    def __lt__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __lt__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._compare("cmp_lt", other)
 
-    def __le__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __le__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._compare("cmp_le", other)
 
-    def __gt__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __gt__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._compare("cmp_gt", other)
 
-    def __ge__(self, other: "ScalarValue | int") -> "ScalarValue":
+    def __ge__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._compare("cmp_ge", other)
 
     def __eq__(self, other: object) -> "ScalarValue":  # type: ignore[override]
-        if not isinstance(other, (ScalarValue, int)):
-            raise TypeError("comparisons are only supported against ScalarValue or int")
+        if not isinstance(other, (ScalarValue, RuntimeScalar, bool, int, float)):
+            raise TypeError("comparisons are only supported against baybridge scalar values")
         return self._compare("cmp_eq", other)
 
     def __ne__(self, other: object) -> "ScalarValue":  # type: ignore[override]
-        if not isinstance(other, (ScalarValue, int)):
-            raise TypeError("comparisons are only supported against ScalarValue or int")
+        if not isinstance(other, (ScalarValue, RuntimeScalar, bool, int, float)):
+            raise TypeError("comparisons are only supported against baybridge scalar values")
         return self._compare("cmp_ne", other)
 
-    def _logical(self, op: str, other: "ScalarValue") -> "ScalarValue":
-        if self.spec.dtype != "i1" or other.spec.dtype != "i1":
-            raise TypeError(f"{op} requires predicate operands with dtype i1")
+    def _bitwise(self, op: str, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        rhs = _coerce_scalar(other, preferred_dtype=self.spec.dtype)
+        if self.spec.dtype == "i1" and rhs.spec.dtype == "i1":
+            return require_builder().emit_scalar(
+                op,
+                self,
+                rhs,
+                spec=ScalarSpec(dtype="i1"),
+                name_hint=op,
+            )
+        if is_float_dtype(self.spec.dtype) or is_float_dtype(rhs.spec.dtype):
+            raise TypeError(f"{op} requires integer baybridge scalars")
+        result_dtype = _binary_dtype(self.spec.dtype, rhs.spec.dtype)
         return require_builder().emit_scalar(
-            op,
+            "bitand" if op == "and" else "bitor",
             self,
-            other,
-            spec=ScalarSpec(dtype="i1"),
-            name_hint=op,
+            rhs,
+            spec=ScalarSpec(dtype=result_dtype),
+            name_hint="bit" + op,
         )
 
-    def __and__(self, other: "ScalarValue") -> "ScalarValue":
-        return self._logical("and", other)
+    def __and__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        return self._bitwise("and", other)
 
-    def __or__(self, other: "ScalarValue") -> "ScalarValue":
-        return self._logical("or", other)
+    def __or__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        return self._bitwise("or", other)
+
+    def __neg__(self) -> "ScalarValue":
+        return require_builder().emit_scalar(
+            "neg",
+            self,
+            spec=ScalarSpec(dtype=self.spec.dtype),
+            name_hint="neg",
+        )
+
+    def __invert__(self) -> "ScalarValue":
+        if is_float_dtype(self.spec.dtype):
+            raise TypeError("bitwise invert is only supported for integer baybridge scalars")
+        return require_builder().emit_scalar(
+            "bitnot",
+            self,
+            spec=ScalarSpec(dtype=self.spec.dtype),
+            name_hint="bitnot",
+        )
+
+    def to(self, target: object) -> "ScalarValue":
+        target_dtype = _resolve_scalar_target_dtype(target)
+        if self.spec.dtype == target_dtype:
+            return self
+        return require_builder().emit_scalar(
+            "cast",
+            self,
+            spec=ScalarSpec(dtype=target_dtype),
+            attrs={"source_dtype": self.spec.dtype, "target_dtype": target_dtype},
+            name_hint="cast",
+        )
 
 
 @dataclass(frozen=True)
@@ -407,11 +477,15 @@ class IRBuilder:
         )
         return ScalarValue(name=name, spec=spec)
 
-    def constant(self, value: int | float, *, dtype: str | None = None) -> ScalarValue:
+    def constant(self, value: RuntimeScalar | bool | int | float, *, dtype: str | None = None) -> ScalarValue:
+        if isinstance(value, RuntimeScalar):
+            if dtype is None:
+                dtype = value.dtype
+            value = value.value
         if dtype is None:
             if isinstance(value, bool):
-                raise TypeError("boolean literals are not supported yet")
-            if isinstance(value, int):
+                dtype = "i1"
+            elif isinstance(value, int):
                 dtype = "index"
             elif isinstance(value, float):
                 dtype = "f32"
@@ -495,15 +569,27 @@ def require_builder() -> IRBuilder:
     return builder
 
 
-def _coerce_scalar(value: ScalarValue | int | float, preferred_dtype: str | None = None) -> ScalarValue:
+def _coerce_scalar(
+    value: ScalarValue | RuntimeScalar | bool | int | float,
+    preferred_dtype: str | None = None,
+) -> ScalarValue:
     if isinstance(value, ScalarValue):
         return value
+    if isinstance(value, RuntimeScalar):
+        return require_builder().constant(value.value, dtype=preferred_dtype or value.dtype)
     return require_builder().constant(value, dtype=preferred_dtype)
 
 
 def _binary_dtype(lhs: str, rhs: str) -> str:
-    if lhs == rhs:
-        return lhs
-    if "f" in lhs or "f" in rhs:
-        return "f32"
-    return "index"
+    return promote_scalar_dtype(lhs, rhs)
+
+
+def _resolve_scalar_target_dtype(target: object) -> str:
+    if isinstance(target, RuntimeScalar):
+        return target.dtype
+    if isinstance(target, str):
+        return normalize_dtype_name(target)
+    dtype = getattr(target, "__baybridge_dtype__", None)
+    if isinstance(dtype, str):
+        return normalize_dtype_name(dtype)
+    raise TypeError("scalar conversion target must be a baybridge scalar constructor or dtype string")

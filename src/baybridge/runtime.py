@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterator, Sequence
 
-from .dtypes import element_type
+from .dtypes import (
+    cast_scalar_value,
+    dtype_constructor_name,
+    element_type,
+    is_float_dtype,
+    normalize_dtype_name,
+    promote_scalar_dtype,
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,134 @@ class Pointer:
 
     def data_ptr(self) -> "Pointer":
         return self
+
+
+@dataclass(frozen=True)
+class RuntimeScalar:
+    value: bool | int | float
+    dtype: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", normalize_dtype_name(self.dtype))
+        object.__setattr__(self, "value", cast_scalar_value(self.value, self.dtype))
+
+    @property
+    def element_type(self):
+        return element_type(self.dtype)
+
+    def to(self, target: Any) -> "RuntimeScalar | Any":
+        return make_scalar(_unwrap_scalar_host_value(self), dtype=_resolve_scalar_target_dtype(target))
+
+    def _binary(self, other: Any, op, *, reverse: bool = False, result_dtype: str | None = None) -> "RuntimeScalar":
+        rhs = _coerce_runtime_scalar(other, preferred_dtype=self.dtype)
+        lhs = rhs if reverse else self
+        rhs = self if reverse else rhs
+        dtype = normalize_dtype_name(result_dtype or promote_scalar_dtype(lhs.dtype, rhs.dtype))
+        lhs_value = cast_scalar_value(lhs.value, dtype)
+        rhs_value = cast_scalar_value(rhs.value, dtype)
+        return RuntimeScalar(op(lhs_value, rhs_value), dtype)
+
+    def _compare(self, other: Any, op, *, reverse: bool = False) -> "RuntimeScalar":
+        rhs = _coerce_runtime_scalar(other, preferred_dtype=self.dtype)
+        lhs = rhs if reverse else self
+        rhs = self if reverse else rhs
+        dtype = promote_scalar_dtype(lhs.dtype, rhs.dtype)
+        lhs_value = cast_scalar_value(lhs.value, dtype)
+        rhs_value = cast_scalar_value(rhs.value, dtype)
+        return RuntimeScalar(op(lhs_value, rhs_value), "i1")
+
+    def __add__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs + rhs)
+
+    def __radd__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs + rhs, reverse=True)
+
+    def __sub__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs - rhs)
+
+    def __rsub__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs - rhs, reverse=True)
+
+    def __mul__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs * rhs)
+
+    def __rmul__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs * rhs, reverse=True)
+
+    def __truediv__(self, other: Any) -> "RuntimeScalar":
+        rhs = _coerce_runtime_scalar(other, preferred_dtype=self.dtype)
+        dtype = promote_scalar_dtype(self.dtype, rhs.dtype)
+        lhs_value = cast_scalar_value(self.value, dtype)
+        rhs_value = cast_scalar_value(rhs.value, dtype)
+        if is_float_dtype(dtype):
+            return RuntimeScalar(lhs_value / rhs_value, dtype)
+        return RuntimeScalar(int(lhs_value / rhs_value), dtype)
+
+    def __rtruediv__(self, other: Any) -> "RuntimeScalar":
+        lhs = _coerce_runtime_scalar(other, preferred_dtype=self.dtype)
+        dtype = promote_scalar_dtype(lhs.dtype, self.dtype)
+        lhs_value = cast_scalar_value(lhs.value, dtype)
+        rhs_value = cast_scalar_value(self.value, dtype)
+        if is_float_dtype(dtype):
+            return RuntimeScalar(lhs_value / rhs_value, dtype)
+        return RuntimeScalar(int(lhs_value / rhs_value), dtype)
+
+    def __and__(self, other: Any) -> "RuntimeScalar":
+        if is_float_dtype(self.dtype):
+            raise TypeError("bitwise and is only supported for integer baybridge scalars")
+        return self._binary(other, lambda lhs, rhs: lhs & rhs)
+
+    def __rand__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs & rhs, reverse=True)
+
+    def __or__(self, other: Any) -> "RuntimeScalar":
+        if is_float_dtype(self.dtype):
+            raise TypeError("bitwise or is only supported for integer baybridge scalars")
+        return self._binary(other, lambda lhs, rhs: lhs | rhs)
+
+    def __ror__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs | rhs, reverse=True)
+
+    def __neg__(self) -> "RuntimeScalar":
+        return RuntimeScalar(-_unwrap_scalar_host_value(self), self.dtype)
+
+    def __invert__(self) -> "RuntimeScalar":
+        if is_float_dtype(self.dtype):
+            raise TypeError("bitwise invert is only supported for integer baybridge scalars")
+        return RuntimeScalar(~int(_unwrap_scalar_host_value(self)), self.dtype)
+
+    def __lt__(self, other: Any) -> "RuntimeScalar":
+        return self._compare(other, lambda lhs, rhs: lhs < rhs)
+
+    def __le__(self, other: Any) -> "RuntimeScalar":
+        return self._compare(other, lambda lhs, rhs: lhs <= rhs)
+
+    def __gt__(self, other: Any) -> "RuntimeScalar":
+        return self._compare(other, lambda lhs, rhs: lhs > rhs)
+
+    def __ge__(self, other: Any) -> "RuntimeScalar":
+        return self._compare(other, lambda lhs, rhs: lhs >= rhs)
+
+    def __eq__(self, other: object) -> "RuntimeScalar":  # type: ignore[override]
+        return self._compare(other, lambda lhs, rhs: lhs == rhs)
+
+    def __ne__(self, other: object) -> "RuntimeScalar":  # type: ignore[override]
+        return self._compare(other, lambda lhs, rhs: lhs != rhs)
+
+    def __bool__(self) -> bool:
+        return bool(self.value)
+
+    def __int__(self) -> int:
+        return int(self.value)
+
+    def __float__(self) -> float:
+        return float(self.value)
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    def __repr__(self) -> str:
+        return f"{dtype_constructor_name(self.dtype)}({self.value!r})"
 
 
 class ReductionOp(str, Enum):
@@ -183,7 +318,7 @@ class RuntimeTensor:
     def __setitem__(self, index: Any, value: Any) -> None:
         normalized = _normalize_runtime_index(index, self.ndim)
         linear = self.offset + sum(item * step for item, step in zip(normalized, self.stride))
-        self._storage[linear] = value
+        self._storage[linear] = _unwrap_scalar_host_value(value)
 
     def load(self) -> "RuntimeTensor":
         return RuntimeTensor(
@@ -237,11 +372,13 @@ class RuntimeTensor:
                 flat.append(op(rhs, lhs) if reverse else op(lhs, rhs))
             result_dtype = dtype or _binary_dtype(self.dtype, other.dtype)
             return RuntimeTensor(flat, self.shape, dtype=result_dtype)
+        other_value = _unwrap_scalar_host_value(other)
+        other_dtype = other.dtype if isinstance(other, RuntimeScalar) else type(other).__name__
         flat = []
         for index in _iter_indices(self.shape):
             lhs = self[index]
-            flat.append(op(other, lhs) if reverse else op(lhs, other))
-        result_dtype = dtype or _binary_dtype(self.dtype, type(other).__name__)
+            flat.append(op(other_value, lhs) if reverse else op(lhs, other_value))
+        result_dtype = dtype or _binary_dtype(self.dtype, other_dtype)
         return RuntimeTensor(flat, self.shape, dtype=result_dtype)
 
     def _compare_op(self, other: Any, op, *, reverse: bool = False) -> "RuntimeTensor":
@@ -320,7 +457,7 @@ def full(shape: tuple[int, ...], fill_value: Any, *, dtype: str = "f32") -> Runt
     size = 1
     for dim in shape:
         size *= dim
-    return RuntimeTensor([fill_value for _ in range(size)], shape, dtype=dtype)
+    return RuntimeTensor([_unwrap_scalar_host_value(fill_value) for _ in range(size)], shape, dtype=dtype)
 
 
 def from_dlpack(value: Any) -> TensorHandle:
@@ -365,6 +502,8 @@ def make_ptr(
 
 
 def infer_runtime_spec(value: Any) -> tuple[str, tuple[int, ...] | None]:
+    if isinstance(value, RuntimeScalar):
+        return value.dtype, None
     if isinstance(value, RuntimeTensor):
         return value.dtype, value.shape
     if isinstance(value, Pointer) and isinstance(value.tensor, RuntimeTensor):
@@ -382,6 +521,8 @@ def infer_runtime_spec(value: Any) -> tuple[str, tuple[int, ...] | None]:
 
 
 def normalize_runtime_argument(value: Any) -> Any:
+    if isinstance(value, RuntimeScalar):
+        return value
     if isinstance(value, RuntimeTensor):
         return value
     if isinstance(value, Pointer):
@@ -434,7 +575,7 @@ def _looks_like_nested_tensor(value: Any) -> bool:
         return False
     if isinstance(head, list):
         return all(_looks_like_nested_tensor(item) for item in value)
-    return all(isinstance(item, (bool, int, float)) for item in value)
+    return all(isinstance(item, (bool, int, float, RuntimeScalar)) for item in value)
 
 
 def _infer_shape(data: Any) -> tuple[int, ...]:
@@ -454,12 +595,18 @@ def _flatten_nested(data: Any, flat: list[Any]) -> None:
         for item in data:
             _flatten_nested(item, flat)
         return
-    flat.append(data)
+    flat.append(_unwrap_scalar_host_value(data))
 
 
 def _infer_tensor_dtype(flat: Sequence[Any]) -> str:
     if not flat:
         return "unknown"
+    if any(isinstance(item, RuntimeScalar) and item.dtype.startswith("f") for item in flat):
+        return "f32"
+    if any(isinstance(item, RuntimeScalar) and item.dtype == "i1" for item in flat):
+        return "i1"
+    if any(isinstance(item, RuntimeScalar) for item in flat):
+        return next(item.dtype for item in flat if isinstance(item, RuntimeScalar))
     if any(isinstance(item, float) for item in flat):
         return "f32"
     if any(isinstance(item, bool) for item in flat):
@@ -478,6 +625,8 @@ def _normalize_runtime_index(index: Any, rank: int) -> tuple[int, ...]:
         raise ValueError(f"expected {rank} indices, got {len(normalized)}")
     result: list[int] = []
     for item in normalized:
+        if isinstance(item, RuntimeScalar):
+            item = int(item)
         if not isinstance(item, int):
             raise TypeError("runtime tensor indices must be integers")
         result.append(item)
@@ -533,11 +682,82 @@ def _iter_indices(shape: tuple[int, ...]):
 
 
 def _binary_dtype(lhs: str, rhs: str) -> str:
-    if lhs == "i1" and rhs == "i1":
+    if lhs == "python_object":
+        return normalize_dtype_name(rhs)
+    if rhs == "python_object":
+        return normalize_dtype_name(lhs)
+    return promote_scalar_dtype(lhs, rhs)
+
+
+def _coerce_runtime_scalar(value: Any, *, preferred_dtype: str | None = None) -> RuntimeScalar:
+    if isinstance(value, RuntimeScalar):
+        return value
+    dtype = normalize_dtype_name(preferred_dtype or _infer_scalar_dtype(value))
+    return RuntimeScalar(value, dtype)
+
+
+def _unwrap_scalar_host_value(value: Any) -> Any:
+    if isinstance(value, RuntimeScalar):
+        return value.value
+    return value
+
+
+def _resolve_scalar_target_dtype(target: Any) -> str:
+    if isinstance(target, RuntimeScalar):
+        return target.dtype
+    if isinstance(target, str):
+        return normalize_dtype_name(target)
+    dtype = getattr(target, "__baybridge_dtype__", None)
+    if isinstance(dtype, str):
+        return normalize_dtype_name(dtype)
+    raise TypeError("scalar conversion target must be a baybridge scalar constructor or dtype string")
+
+
+def _infer_scalar_dtype(value: Any) -> str:
+    if isinstance(value, RuntimeScalar):
+        return value.dtype
+    if isinstance(value, bool):
         return "i1"
-    if lhs.startswith("f") or rhs.startswith("f") or rhs in {"float", "f32", "f16", "bf16"}:
+    if isinstance(value, int):
+        return "index"
+    if isinstance(value, float):
         return "f32"
-    return lhs if lhs != "python_object" else "index"
+    raise TypeError(f"unsupported baybridge scalar value type: {type(value).__name__}")
+
+
+def make_scalar(value: Any, *, dtype: str) -> RuntimeScalar | Any:
+    dtype = normalize_dtype_name(dtype)
+    from .diagnostics import CompilationError
+    from .tracing import ScalarValue, require_builder
+
+    try:
+        builder = require_builder()
+    except CompilationError:
+        return RuntimeScalar(_unwrap_scalar_host_value(value), dtype)
+    if isinstance(value, ScalarValue):
+        return value.to(dtype)
+    if isinstance(value, RuntimeScalar):
+        return builder.constant(value.value, dtype=dtype)
+    return builder.constant(cast_scalar_value(value, dtype), dtype=dtype)
+
+
+def _scalar_constructor(name: str, dtype: str):
+    def constructor(value: Any = 0) -> RuntimeScalar | Any:
+        return make_scalar(value, dtype=dtype)
+
+    constructor.__name__ = name
+    constructor.__baybridge_dtype__ = dtype
+    return constructor
+
+
+Boolean = _scalar_constructor("Boolean", "i1")
+Int8 = _scalar_constructor("Int8", "i8")
+Int32 = _scalar_constructor("Int32", "i32")
+Int64 = _scalar_constructor("Int64", "i64")
+Int = _scalar_constructor("Int", "index")
+Float16 = _scalar_constructor("Float16", "f16")
+BFloat16 = _scalar_constructor("BFloat16", "bf16")
+Float32 = _scalar_constructor("Float32", "f32")
 
 
 def _unflatten_nested(storage: list[Any], shape: tuple[int, ...], stride: tuple[int, ...], offset: int) -> Any:

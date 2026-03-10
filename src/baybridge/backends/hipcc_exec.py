@@ -278,6 +278,29 @@ class HipccExecBackend:
             return [
                 f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = &{source_name}[{offset}];"
             ]
+        if operation.op == "domain_offset":
+            source_name, *index_names = operation.inputs
+            spec = tensor_specs[operation.outputs[0]]
+            source_spec = tensor_specs[source_name]
+            offset = self._offset_expr(source_spec, index_names) if index_names else "0"
+            return [
+                f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = &{source_name}[{offset}];"
+            ]
+        if operation.op == "local_tile":
+            source_name, *index_names = operation.inputs
+            spec = tensor_specs[operation.outputs[0]]
+            source_spec = tensor_specs[source_name]
+            fixed_axes = operation.attrs.get("fixed_axes", [])
+            if len(fixed_axes) != len(index_names):
+                raise BackendNotImplementedError(
+                    f"hipcc_exec local_tile expected {len(fixed_axes)} fixed indices, got {len(index_names)}"
+                )
+            layout = source_spec.resolved_layout()
+            terms = [f"({index}) * {layout.stride[axis]}" for axis, index in zip(fixed_axes, index_names)]
+            offset = " + ".join(terms) if terms else "0"
+            return [
+                f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = &{source_name}[{offset}];"
+            ]
         if operation.op == "pointer_tensor":
             source_name = operation.inputs[0]
             spec = tensor_specs[operation.outputs[0]]
@@ -384,19 +407,38 @@ class HipccExecBackend:
         if operation.op == "constant":
             dtype = value_types[output].dtype
             return [f"const {self._cpp_scalar_type(dtype)} {output} = {self._literal(operation.attrs['value'], dtype)};"]
-        if operation.op in {"add", "sub", "mul", "floordiv", "mod", "and", "or"}:
+        if operation.op in {"add", "sub", "mul", "div", "floordiv", "mod", "and", "or", "bitand", "bitor"}:
             lhs, rhs = operation.inputs
             dtype = value_types[output].dtype
             op = {
                 "add": "+",
                 "sub": "-",
                 "mul": "*",
+                "div": "/",
                 "floordiv": "/",
                 "mod": "%",
                 "and": "&&",
                 "or": "||",
+                "bitand": "&",
+                "bitor": "|",
             }[operation.op]
             return [f"const {self._cpp_scalar_type(dtype)} {output} = {lhs} {op} {rhs};"]
+        if operation.op == "neg":
+            dtype = value_types[output].dtype
+            source_name = operation.inputs[0]
+            return [f"const {self._cpp_scalar_type(dtype)} {output} = -{source_name};"]
+        if operation.op == "bitnot":
+            dtype = value_types[output].dtype
+            source_name = operation.inputs[0]
+            return [f"const {self._cpp_scalar_type(dtype)} {output} = ~{source_name};"]
+        if operation.op == "cast":
+            source_name = operation.inputs[0]
+            source_dtype = value_types[source_name].dtype
+            target_dtype = value_types[output].dtype
+            return [
+                f"const {self._cpp_scalar_type(target_dtype)} {output} = "
+                f"{self._cast_expr(source_name, source_dtype, target_dtype)};"
+            ]
         if operation.op.startswith("cmp_"):
             lhs, rhs = operation.inputs
             op = {
@@ -760,6 +802,20 @@ class HipccExecBackend:
         except KeyError as exc:
             raise BackendNotImplementedError(f"hipcc_exec does not support scalar dtype '{dtype}' yet") from exc
 
+    def _cpp_unsigned_scalar_type(self, dtype: str) -> str:
+        table = {
+            "i8": "std::uint8_t",
+            "i32": "std::uint32_t",
+            "i64": "std::uint64_t",
+            "index": "std::uint64_t",
+        }
+        try:
+            return table[dtype]
+        except KeyError as exc:
+            raise BackendNotImplementedError(
+                f"hipcc_exec does not support unsigned scalar casts for dtype '{dtype}' yet"
+            ) from exc
+
     def _cpp_tensor_base(self, dtype: str) -> str:
         table = {
             "f32": "float",
@@ -785,3 +841,21 @@ class HipccExecBackend:
         if dtype == "i1":
             return "true" if value else "false"
         return str(int(value))
+
+    def _cast_expr(self, source_name: str, source_dtype: str, target_dtype: str) -> str:
+        if source_dtype == target_dtype:
+            return source_name
+        if target_dtype == "f16":
+            if source_dtype == "bf16":
+                return f"__float2half(static_cast<float>({source_name}))"
+            return f"__float2half(static_cast<float>({source_name}))"
+        if target_dtype == "bf16":
+            return f"hip_bfloat16(static_cast<float>({source_name}))"
+        if source_dtype in {"f16", "bf16"} and target_dtype in {"i1", "i8", "i32", "i64", "index", "f32"}:
+            return f"static_cast<{self._cpp_scalar_type(target_dtype)}>(static_cast<float>({source_name}))"
+        if target_dtype in {"i8", "i32", "i64", "index"} and source_dtype in {"i1", "i8", "i32", "i64", "index"}:
+            return (
+                f"static_cast<{self._cpp_scalar_type(target_dtype)}>"
+                f"(static_cast<{self._cpp_unsigned_scalar_type(target_dtype)}>({source_name}))"
+            )
+        return f"static_cast<{self._cpp_scalar_type(target_dtype)}>({source_name})"

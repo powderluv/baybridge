@@ -141,6 +141,100 @@ class IdentityTileTensorValue:
 
 
 @dataclass(frozen=True)
+class LocalCoordinateTensor:
+    shape: tuple[int, ...]
+    base_offsets: tuple[int, ...]
+    tile_sizes: tuple[int, ...]
+    tile_axes: tuple[int, ...]
+    rest_axes: tuple[int | None, ...]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    @property
+    def element_type(self) -> str:
+        return element_type("coord")
+
+    @property
+    def type(self) -> str:
+        return f"LocalCoordinateTensor(shape={self.shape})"
+
+    def _base_coords(self, index: tuple[int, ...]) -> tuple[int, ...]:
+        coords: list[int] = []
+        for axis, base_offset in enumerate(self.base_offsets):
+            coord = base_offset + index[self.tile_axes[axis]]
+            rest_axis = self.rest_axes[axis]
+            if rest_axis is not None:
+                coord += index[rest_axis] * self.tile_sizes[axis]
+            coords.append(coord)
+        return tuple(coords)
+
+    def __getitem__(self, index: Any) -> Any:
+        normalized = _normalize_runtime_index(index, self.ndim)
+        coords = self._base_coords(normalized)
+        if len(coords) == 1:
+            return coords[0]
+        return coords
+
+
+@dataclass(frozen=True)
+class LocalCoordinateTensorValue:
+    shape: tuple[int, ...]
+    base_offsets: tuple[ScalarValue | int, ...]
+    tile_sizes: tuple[int, ...]
+    tile_axes: tuple[int, ...]
+    rest_axes: tuple[int | None, ...]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    @property
+    def element_type(self) -> str:
+        return element_type("coord")
+
+    @property
+    def type(self) -> str:
+        return f"LocalCoordinateTensor(shape={self.shape})"
+
+    def _base_coords(self, index: tuple[int, ...]) -> tuple[ScalarValue | int, ...]:
+        coords: list[ScalarValue | int] = []
+        for axis, base_offset in enumerate(self.base_offsets):
+            coord: ScalarValue | int = base_offset + index[self.tile_axes[axis]]
+            rest_axis = self.rest_axes[axis]
+            if rest_axis is not None:
+                coord = coord + index[rest_axis] * self.tile_sizes[axis]
+            coords.append(coord)
+        return tuple(coords)
+
+    def compose_thread_value_coord(
+        self,
+        thread_index: ScalarValue,
+        value_index: int,
+        tv_layout: "ThreadValueLayout",
+    ) -> tuple[ScalarValue | int, ...]:
+        thread_coords = _layout_coords(tv_layout.thread_layout, thread_index)
+        value_coords = _invert_layout_index(tv_layout.value_layout, value_index)
+        local_coords = tuple(
+            thread_coord * value_extent + value_coord
+            for thread_coord, value_extent, value_coord in zip(
+                thread_coords,
+                tv_layout.value_layout.shape,
+                value_coords,
+            )
+        )
+        return self._base_coords(local_coords)
+
+    def __getitem__(self, index: Any) -> Any:
+        normalized = _normalize_runtime_index(index, self.ndim)
+        coords = self._base_coords(normalized)
+        if len(coords) == 1:
+            return coords[0]
+        return coords
+
+
+@dataclass(frozen=True)
 class TiledTensorView:
     base: TensorValue | RuntimeTensor | IdentityTensor
     tile: tuple[int, ...]
@@ -279,7 +373,7 @@ class ThreadValueLayout:
 
 @dataclass(frozen=True)
 class ThreadFragmentView:
-    base: RuntimeTensor | IdentityTileTensor
+    base: RuntimeTensor | IdentityTileTensor | LocalCoordinateTensor
     tv_layout: ThreadValueLayout
     thread_index: int
 
@@ -344,7 +438,7 @@ class ThreadFragmentView:
 
 @dataclass(frozen=True)
 class ThreadValueComposedView:
-    base: RuntimeTensor | IdentityTileTensor
+    base: RuntimeTensor | IdentityTileTensor | LocalCoordinateTensor
     tv_layout: ThreadValueLayout
 
     @property
@@ -375,7 +469,7 @@ class ThreadValueComposedView:
 
 @dataclass(frozen=True)
 class ThreadCoordinateFragmentValue:
-    base: IdentityTileTensorValue
+    base: IdentityTileTensorValue | LocalCoordinateTensorValue
     tv_layout: ThreadValueLayout
     thread_index: ScalarValue
 
@@ -398,6 +492,11 @@ class ThreadCoordinateFragmentValue:
     def __getitem__(self, index: Any) -> Any:
         normalized = _normalize_runtime_index(index, 1)
         value_index = normalized[0]
+        if isinstance(self.base, LocalCoordinateTensorValue):
+            coords = self.base.compose_thread_value_coord(self.thread_index, value_index, self.tv_layout)
+            if len(coords) == 1:
+                return coords[0]
+            return coords
         thread_coords = _layout_coords(self.tv_layout.thread_layout, self.thread_index)
         value_coords = _invert_layout_index(self.tv_layout.value_layout, value_index)
         coords = tuple(
@@ -416,7 +515,7 @@ class ThreadCoordinateFragmentValue:
 
 @dataclass(frozen=True)
 class ThreadValueComposedCoordinateView:
-    base: IdentityTileTensorValue
+    base: IdentityTileTensorValue | LocalCoordinateTensorValue
     tv_layout: ThreadValueLayout
 
     @property

@@ -5,13 +5,15 @@ from math import prod
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .dtypes import element_type
 from .diagnostics import CompilationError, UnsupportedOperationError
 from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec, normalize_address_space
-from .mfma import resolve_mfma_descriptor
+from .mfma import MFMADescriptor, resolve_mfma_descriptor
 from .runtime import (
     ExecutionState,
     LaunchConfig,
     Pointer,
+    RuntimeScalar,
     RuntimeTensor,
     current_execution,
     execution_context,
@@ -23,6 +25,9 @@ from .structs import MemRangeProxy, StructInstance, get_struct_spec, is_struct_t
 from .tracing import ScalarValue, TensorValue, require_builder
 from .views import (
     IdentityTensor,
+    LocalCoordinateTensor,
+    LocalCoordinateTensorValue,
+    IdentityTileTensor,
     IdentityTileTensorValue,
     ThreadFragmentTensorValue,
     ThreadFragmentView,
@@ -82,6 +87,61 @@ class ThreadCopySlice:
         return self._partition(tensor)
 
 
+TiledCopy = TiledCopyTV
+
+
+@dataclass(frozen=True)
+class TiledMma:
+    descriptor: MFMADescriptor
+    axes: tuple[str, str] = ("x", "y")
+
+    @property
+    def tile(self) -> tuple[int, int, int]:
+        return self.descriptor.tile
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.descriptor.tile
+
+    def get_slice(self, thread_index: ScalarValue | int) -> "TiledMmaSlice":
+        return TiledMmaSlice(self, thread_index)
+
+
+@dataclass(frozen=True)
+class TiledMmaSlice:
+    tiled_mma: TiledMma
+    thread_index: ScalarValue | int
+
+    def partition_A(self, tensor: TensorValue) -> TensorValue:
+        del self.thread_index
+        return make_fragment_a(
+            tensor,
+            tile=self.tiled_mma.tile,
+            axes=self.tiled_mma.axes,
+            wave_size=self.tiled_mma.descriptor.wave_size,
+            accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
+        )
+
+    def partition_B(self, tensor: TensorValue) -> TensorValue:
+        del self.thread_index
+        return make_fragment_b(
+            tensor,
+            tile=self.tiled_mma.tile,
+            axes=self.tiled_mma.axes,
+            wave_size=self.tiled_mma.descriptor.wave_size,
+            accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
+        )
+
+    def partition_C(self, tensor: TensorValue) -> TensorValue:
+        del self.thread_index
+        return partition_wave(
+            tensor,
+            self.tiled_mma.descriptor.operand_shape("acc"),
+            axes=self.tiled_mma.axes,
+            wave_size=self.tiled_mma.descriptor.wave_size,
+        )
+
+
 @dataclass(frozen=True)
 class ComposedLayout:
     inner: Any
@@ -133,6 +193,28 @@ class IdentityLayout:
 
     def __repr__(self) -> str:
         return f"IdentityLayout(shape={self.shape})"
+
+
+@dataclass(frozen=True)
+class Swizzle:
+    bits: int
+    base: int
+    shift: int
+
+    def __post_init__(self) -> None:
+        if self.bits < 0 or self.base < 0 or self.shift < 0:
+            raise ValueError("swizzle parameters must be >= 0")
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return ()
+
+    def __call__(self, coord: int | tuple[int, ...]) -> int | tuple[int, ...]:
+        # Baybridge currently treats swizzles as layout metadata for the AMD path.
+        return coord
+
+    def __repr__(self) -> str:
+        return f"Swizzle(bits={self.bits}, base={self.base}, shift={self.shift})"
 
 
 @dataclass(frozen=True)
@@ -308,6 +390,25 @@ def make_composed_layout(inner: Any, offset: int | tuple[int, ...], outer: Any) 
     return ComposedLayout(inner=inner, offset=offset, outer=outer)
 
 
+def make_swizzle(bits: int, base: int, shift: int) -> Swizzle:
+    return Swizzle(int(bits), int(base), int(shift))
+
+
+def tile_to_shape(
+    layout_atom: Layout | ComposedLayout,
+    shape: tuple[int, ...] | list[int],
+    order: tuple[int, ...] | list[int],
+) -> Layout | ComposedLayout:
+    target_shape = tuple(int(dim) for dim in shape)
+    target_order = tuple(int(axis) for axis in order)
+    outer = Layout.ordered(target_shape, target_order)
+    if isinstance(layout_atom, ComposedLayout):
+        return ComposedLayout(inner=layout_atom.inner, offset=layout_atom.offset, outer=outer)
+    if isinstance(layout_atom, Layout):
+        return Layout.ordered(target_shape, target_order, swizzle=layout_atom.swizzle)
+    raise TypeError("tile_to_shape expects a baybridge.Layout or baybridge.ComposedLayout")
+
+
 def _layout_size(layout: Layout) -> int:
     return prod(layout.shape) if layout.shape else 1
 
@@ -316,6 +417,19 @@ def _layout_cosize(layout: Layout) -> int:
     if not layout.shape:
         return 1
     return 1 + sum((dim - 1) * stride for dim, stride in zip(layout.shape, layout.stride))
+
+
+def _group_shape_stride(
+    shape: tuple[int, ...],
+    stride: tuple[int, ...],
+    start: int,
+    end: int,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if start < 0 or end < 0 or start >= end or end > len(shape):
+        raise ValueError(f"group_modes expects 0 <= start < end <= rank, got start={start}, end={end}, rank={len(shape)}")
+    grouped_shape = shape[:start] + (prod(shape[start:end]),) + shape[end:]
+    grouped_stride = stride[:start] + (min(stride[start:end]),) + stride[end:]
+    return grouped_shape, grouped_stride
 
 
 def _compact_flat_coord(linear_index: int, shape: tuple[int, ...]) -> tuple[int, ...]:
@@ -405,6 +519,224 @@ def depth(value: Any) -> int:
             return 1
         return 1 + max(depth(item) for item in value)
     raise TypeError("depth expects a baybridge.Layout or a shape-like tuple/list")
+
+
+def ceil_div(lhs: Any, rhs: Any) -> Any:
+    if isinstance(lhs, (tuple, list)) or isinstance(rhs, (tuple, list)):
+        if not isinstance(lhs, (tuple, list)) or not isinstance(rhs, (tuple, list)):
+            raise TypeError("ceil_div expects both operands to be scalars or both to be tuples/lists")
+        if len(lhs) != len(rhs):
+            raise ValueError("ceil_div tuple operands must have the same length")
+        return tuple(ceil_div(lhs_item, rhs_item) for lhs_item, rhs_item in zip(lhs, rhs))
+    if isinstance(lhs, ScalarValue) or isinstance(rhs, ScalarValue):
+        lhs_value = lhs if isinstance(lhs, ScalarValue) else require_builder().constant(lhs)
+        rhs_value = rhs if isinstance(rhs, ScalarValue) else require_builder().constant(rhs, dtype=lhs_value.spec.dtype)
+        return (lhs_value + rhs_value - 1) // rhs_value
+    return (int(lhs) + int(rhs) - 1) // int(rhs)
+
+
+def cosize(value: Any) -> int:
+    if isinstance(value, Layout):
+        return _layout_cosize(value)
+    if isinstance(value, HierarchicalLayout):
+        flat_shape = _flatten_dims(value.shape)
+        flat_stride = _flatten_dims(value.stride)
+        if not flat_shape:
+            return 1
+        return 1 + sum((dim - 1) * stride for dim, stride in zip(flat_shape, flat_stride))
+    if isinstance(value, ComposedLayout):
+        if isinstance(value.outer, Layout):
+            return _layout_cosize(value.outer)
+        if hasattr(value.outer, "shape"):
+            return prod(_flatten_dims(value.outer.shape))
+    if hasattr(value, "layout") and isinstance(getattr(value, "layout"), Layout):
+        return _layout_cosize(getattr(value, "layout"))
+    if hasattr(value, "shape"):
+        return prod(_flatten_dims(getattr(value, "shape")))
+    raise TypeError("cosize expects a baybridge layout or shape-carrying value")
+
+
+def size_in_bytes(dtype: Any, value: Any) -> int:
+    if hasattr(dtype, "width"):
+        width_bits = int(dtype.width)
+    else:
+        resolved_dtype = getattr(dtype, "__baybridge_dtype__", dtype)
+        width_bits = element_type(str(resolved_dtype)).width
+    byte_width = (width_bits + 7) // 8
+    if isinstance(value, Layout):
+        element_count = cosize(value)
+    elif hasattr(value, "layout") and isinstance(getattr(value, "layout"), Layout):
+        element_count = cosize(getattr(value, "layout"))
+    elif hasattr(value, "shape"):
+        element_count = prod(_flatten_dims(getattr(value, "shape")))
+    elif isinstance(value, (tuple, list)):
+        element_count = prod(_flatten_dims(value))
+    else:
+        raise TypeError("size_in_bytes expects a layout, tensor-like value, or shape tuple/list")
+    return byte_width * element_count
+
+
+def group_modes(value: Any, start: int, end: int) -> Any:
+    if isinstance(value, Layout):
+        grouped_shape, grouped_stride = _group_shape_stride(value.shape, value.stride, start, end)
+        return Layout(shape=grouped_shape, stride=grouped_stride, swizzle=value.swizzle)
+    if isinstance(value, RuntimeTensor):
+        grouped_shape, grouped_stride = _group_shape_stride(value.shape, value.stride, start, end)
+        return RuntimeTensor(
+            value._storage,
+            grouped_shape,
+            dtype=value.dtype,
+            stride=grouped_stride,
+            offset=value.offset,
+        )
+    if isinstance(value, TensorValue):
+        source_layout = value.spec.resolved_layout()
+        grouped_shape, grouped_stride = _group_shape_stride(source_layout.shape, source_layout.stride, start, end)
+        grouped_spec = TensorSpec(
+            shape=grouped_shape,
+            dtype=value.spec.dtype,
+            layout=Layout(shape=grouped_shape, stride=grouped_stride, swizzle=source_layout.swizzle),
+            address_space=value.spec.address_space,
+        )
+        return require_builder().emit_tensor(
+            "group_modes",
+            value,
+            spec=grouped_spec,
+            attrs={"start": start, "end": end},
+            name_hint=f"{value.name}_group",
+        )
+    if hasattr(value, "shape") and hasattr(value, "layout"):
+        return group_modes(value.layout, start, end)
+    raise TypeError("group_modes expects a baybridge tensor or layout")
+
+
+def _local_tile_shape_stride(
+    shape: tuple[int, ...],
+    stride: tuple[int, ...],
+    tiler: tuple[int, ...],
+    coord: tuple[ScalarValue | int | None, ...],
+    proj: tuple[int | None, ...],
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[ScalarValue | int, ...], tuple[int, ...], tuple[int | None, ...], tuple[int, ...]]:
+    if len(tiler) != len(coord) or len(coord) != len(proj):
+        raise ValueError("local_tile expects tiler, coord, and proj to have the same rank")
+    selected_axes = tuple(axis for axis, item in enumerate(proj) if item is not None)
+    if len(shape) != len(selected_axes):
+        raise ValueError(
+            f"local_tile expects tensor rank {len(shape)} to match the number of projected tiler axes {len(selected_axes)}"
+        )
+    out_shape: list[int] = []
+    out_stride: list[int] = []
+    base_offsets: list[ScalarValue | int] = []
+    tile_axes: list[int] = []
+    rest_axes: list[int | None] = []
+    tile_sizes: list[int] = []
+    for tensor_axis, tiler_axis in enumerate(selected_axes):
+        tile_size = int(tiler[tiler_axis])
+        if tile_size <= 0:
+            raise ValueError("local_tile tiler dimensions must be > 0")
+        axis_coord = coord[tiler_axis]
+        tile_axes.append(len(out_shape))
+        out_shape.append(tile_size)
+        out_stride.append(stride[tensor_axis])
+        tile_sizes.append(tile_size)
+        if axis_coord is None:
+            rest_axes.append(len(out_shape))
+            out_shape.append(ceil_div(shape[tensor_axis], tile_size))
+            out_stride.append(tile_size * stride[tensor_axis])
+            base_offsets.append(0)
+            continue
+        base_offsets.append(axis_coord * tile_size)
+        rest_axes.append(None)
+    return (
+        tuple(out_shape),
+        tuple(out_stride),
+        tuple(base_offsets),
+        tuple(tile_axes),
+        tuple(rest_axes),
+        tuple(tile_sizes),
+    )
+
+
+def local_tile(
+    tensor: TensorValue | RuntimeTensor | IdentityTensor,
+    tiler: tuple[int, ...],
+    coord: tuple[ScalarValue | int | None, ...],
+    *,
+    proj: tuple[int | None, ...],
+) -> Any:
+    if isinstance(tensor, IdentityTensor):
+        canonical_stride = []
+        running = 1
+        for axis in range(len(tensor.shape) - 1, -1, -1):
+            canonical_stride.insert(0, running)
+            running *= tensor.shape[axis]
+        out_shape, _, base_offsets, tile_axes, rest_axes, tile_sizes = _local_tile_shape_stride(
+            tensor.shape,
+            tuple(canonical_stride),
+            tiler,
+            coord,
+            proj,
+        )
+        if any(isinstance(offset, ScalarValue) for offset in base_offsets):
+            return LocalCoordinateTensorValue(out_shape, base_offsets, tile_sizes, tile_axes, rest_axes)
+        return LocalCoordinateTensor(out_shape, tuple(int(offset) for offset in base_offsets), tile_sizes, tile_axes, rest_axes)
+    if isinstance(tensor, RuntimeTensor):
+        out_shape, out_stride, base_offsets, _, _, _ = _local_tile_shape_stride(
+            tensor.shape,
+            tensor.stride,
+            tiler,
+            coord,
+            proj,
+        )
+        if any(isinstance(offset, ScalarValue) for offset in base_offsets):
+            raise TypeError("runtime local_tile currently requires integer coordinates or None")
+        linear_offset = tensor.offset + sum(int(offset) * step for offset, step in zip(base_offsets, tensor.stride))
+        return RuntimeTensor(
+            tensor._storage,
+            out_shape,
+            dtype=tensor.dtype,
+            stride=out_stride,
+            offset=linear_offset,
+        )
+    source_layout = tensor.spec.resolved_layout()
+    out_shape, out_stride, base_offsets, _, _, tile_sizes = _local_tile_shape_stride(
+        tensor.spec.shape,
+        source_layout.stride,
+        tiler,
+        coord,
+        proj,
+    )
+    builder = require_builder()
+    fixed_coords = []
+    fixed_axes = []
+    selected_axes = [axis for axis, item in enumerate(proj) if item is not None]
+    for tensor_axis, (tiler_axis, offset) in enumerate(zip(selected_axes, base_offsets)):
+        if coord[tiler_axis] is None:
+            continue
+        fixed_axes.append(tensor_axis)
+        if isinstance(offset, ScalarValue):
+            fixed_coords.append(offset)
+        else:
+            fixed_coords.append(builder.constant(offset))
+    local_spec = TensorSpec(
+        shape=out_shape,
+        dtype=tensor.spec.dtype,
+        layout=Layout(shape=out_shape, stride=out_stride, swizzle=source_layout.swizzle),
+        address_space=tensor.spec.address_space,
+    )
+    return builder.emit_tensor(
+        "local_tile",
+        tensor,
+        *fixed_coords,
+        spec=local_spec,
+        attrs={
+            "tiler": list(tiler),
+            "proj": [item for item in proj],
+            "fixed_axes": fixed_axes,
+            "tile_sizes": list(tile_sizes),
+        },
+        name_hint=f"{tensor.name}_tile",
+    )
 
 
 def coalesce(layout: Layout, *, target_profile: tuple[int, ...] | None = None) -> Layout:
@@ -977,6 +1309,8 @@ def _copy_runtime_tensor(src: RuntimeTensor, dst: RuntimeTensor) -> None:
 def _runtime_printf_value(value: Any) -> Any:
     if isinstance(value, RuntimeTensor):
         return value.tolist()
+    if isinstance(value, RuntimeScalar):
+        return value.value
     return value
 
 
@@ -1104,11 +1438,21 @@ def lane_id() -> ScalarValue | int:
         return _runtime_state().thread_idx[0] % 64
 
 
+def warp_idx(*, wave_size: int = 64) -> ScalarValue | int:
+    if wave_size <= 0:
+        raise ValueError("wave_size must be > 0")
+    return thread_idx("x") // wave_size
+
+
 def wave_id(*, axis: str = "x", wave_size: int = 64) -> ScalarValue:
     normalized_axis = _normalize_axis(axis)
     if wave_size <= 0:
         raise ValueError("wave_size must be > 0")
     return thread_idx(normalized_axis) // wave_size
+
+
+def make_warp_uniform(value: Any) -> Any:
+    return value
 
 
 def lane_coords(shape: tuple[int, ...]) -> tuple[ScalarValue, ...]:
@@ -1225,14 +1569,14 @@ def _permute_axes(source_shape: tuple[int, ...], target_shape: tuple[int, ...]) 
 def composition(value: Any, mapping: Any) -> Any:
     if isinstance(value, RuntimeTensor) and isinstance(mapping, ThreadValueLayout):
         return ThreadValueComposedView(value, mapping)
-    if isinstance(value, IdentityTileTensorValue) and isinstance(mapping, ThreadValueLayout):
+    if isinstance(value, (IdentityTileTensorValue, LocalCoordinateTensorValue)) and isinstance(mapping, ThreadValueLayout):
         return ThreadValueComposedCoordinateView(value, mapping)
     if isinstance(value, TensorValue) and isinstance(mapping, ThreadValueLayout):
         return ThreadValueComposedTensorView(value, mapping)
     if mapping is not None and isinstance(mapping, ThreadValueLayout):
         from .views import IdentityTileTensor
 
-        if isinstance(value, (RuntimeTensor, IdentityTileTensor)):
+        if isinstance(value, (RuntimeTensor, IdentityTileTensor, LocalCoordinateTensor)):
             return ThreadValueComposedView(value, mapping)
     if isinstance(value, TiledTensorView) and isinstance(mapping, tuple) and len(mapping) == 2:
         tile_mapping, rest_mapping = mapping
@@ -1623,6 +1967,57 @@ def make_tiled_copy_tv(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -
     return TiledCopyTV(atom=atom, thread_layout=thr_layout, value_layout=val_layout)
 
 
+def _resolve_tiled_mma_descriptor(op: Any) -> MFMADescriptor:
+    if isinstance(op, MFMADescriptor):
+        return op
+    if hasattr(op, "variant_name") and hasattr(op, "tile") and hasattr(op, "operand_dtype") and hasattr(op, "accumulator_dtype"):
+        wave_size = getattr(op, "wave_size", 64)
+        return resolve_mfma_descriptor(tuple(op.tile), str(op.operand_dtype), str(op.accumulator_dtype), wave_size=wave_size)
+    if hasattr(op, "tile") and hasattr(op, "dtype"):
+        operand_dtype = str(op.dtype)
+        accumulator_dtype = str(getattr(op, "accumulator_dtype", operand_dtype))
+        wave_size = int(getattr(op, "wave_size", 64))
+        return resolve_mfma_descriptor(tuple(op.tile), operand_dtype, accumulator_dtype, wave_size=wave_size)
+    raise TypeError("make_tiled_mma expects an MFMA descriptor or a descriptor-like object with tile/dtype metadata")
+
+
+def make_tiled_mma(op: Any, *, axes: tuple[str, str] = ("x", "y")) -> TiledMma:
+    descriptor = _resolve_tiled_mma_descriptor(op)
+    return TiledMma(descriptor=descriptor, axes=axes)
+
+
+def _make_tiled_copy_from_mma(atom: CopyAtom, tiled_mma: TiledMma, role: str) -> TiledCopyTV:
+    operand_shape = tiled_mma.descriptor.operand_shape(role)
+    lane_shape = tiled_mma.descriptor.lane_shape
+    if len(operand_shape) != 2 or len(lane_shape) != 2:
+        raise ValueError("tiled copy helpers expect two-dimensional MFMA operand shapes")
+    thread_shape = (
+        min(lane_shape[0], operand_shape[0]),
+        min(lane_shape[1], operand_shape[1]),
+    )
+    thread_layout = Layout.ordered(thread_shape, order=(1, 0))
+    value_layout = Layout.ordered(
+        (
+            ceil_div(operand_shape[0], thread_shape[0]),
+            ceil_div(operand_shape[1], thread_shape[1]),
+        ),
+        order=(1, 0),
+    )
+    return make_tiled_copy_tv(atom, thread_layout, value_layout)
+
+
+def make_tiled_copy_A(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
+    return _make_tiled_copy_from_mma(atom, tiled_mma, "a")
+
+
+def make_tiled_copy_B(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
+    return _make_tiled_copy_from_mma(atom, tiled_mma, "b")
+
+
+def make_tiled_copy_C(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
+    return _make_tiled_copy_from_mma(atom, tiled_mma, "acc")
+
+
 def _normalize_predicate_fragment(
     predicate: TensorValue | RuntimeTensor | None,
     *,
@@ -1683,6 +2078,14 @@ def copy(*args: Any, vector_bytes: int | None = None, pred: TensorValue | Runtim
         _copy_runtime_tensor(_runtime_tensor(src), _runtime_tensor(dst))
 
 
+def basic_copy(src: Any, dst: Any) -> None:
+    copy(src, dst)
+
+
+def autovec_copy(src: Any, dst: Any, *, vector_bytes: int | None = None) -> None:
+    copy(src, dst, vector_bytes=vector_bytes)
+
+
 def copy_async(
     src: TensorValue | RuntimeTensor,
     dst: TensorValue | RuntimeTensor,
@@ -1738,6 +2141,56 @@ def barrier(*, kind: str = "block") -> None:
                 "baybridge grid-wide barriers require a compiled cooperative launch"
             ) from None
         del kind
+
+
+def domain_offset(
+    offset: tuple[ScalarValue | int, ...],
+    tensor: TensorValue | RuntimeTensor | IdentityTileTensor | IdentityTileTensorValue,
+) -> TensorValue | RuntimeTensor | IdentityTileTensor | IdentityTileTensorValue:
+    if isinstance(tensor, RuntimeTensor):
+        if len(offset) != tensor.ndim:
+            raise ValueError(f"domain_offset expects {tensor.ndim} offsets for tensor rank {tensor.ndim}")
+        linear_offset = tensor.offset
+        for axis, item in enumerate(offset):
+            if not isinstance(item, int):
+                raise TypeError("runtime domain_offset currently requires integer offsets")
+            linear_offset += item * tensor.stride[axis]
+        return RuntimeTensor(
+            tensor._storage,
+            tensor.shape,
+            dtype=tensor.dtype,
+            stride=tensor.stride,
+            offset=linear_offset,
+        )
+    if isinstance(tensor, IdentityTileTensor):
+        if len(offset) != tensor.ndim:
+            raise ValueError(f"domain_offset expects {tensor.ndim} offsets for tensor rank {tensor.ndim}")
+        if any(not isinstance(item, int) for item in offset):
+            raise TypeError("runtime coordinate domain_offset currently requires integer offsets")
+        return IdentityTileTensor(tensor.shape, tuple(base + delta for base, delta in zip(tensor.offset, offset)))
+    if isinstance(tensor, IdentityTileTensorValue):
+        if len(offset) != tensor.ndim:
+            raise ValueError(f"domain_offset expects {tensor.ndim} offsets for tensor rank {tensor.ndim}")
+        return IdentityTileTensorValue(tensor.shape, tuple(base + delta for base, delta in zip(tensor.offset, offset)))
+    if len(offset) != len(tensor.spec.shape):
+        raise ValueError(f"domain_offset expects {len(tensor.spec.shape)} offsets for tensor rank {len(tensor.spec.shape)}")
+    builder = require_builder()
+    normalized = []
+    for item in offset:
+        if isinstance(item, ScalarValue):
+            normalized.append(item)
+        elif isinstance(item, int):
+            normalized.append(builder.constant(item))
+        else:
+            raise TypeError("traced domain_offset expects baybridge scalars or integers")
+    return builder.emit_tensor(
+        "domain_offset",
+        tensor,
+        *normalized,
+        spec=tensor.spec,
+        attrs={"offset_rank": len(normalized)},
+        name_hint=f"{tensor.name}_offset",
+    )
 
 
 def partition(
@@ -1832,6 +2285,32 @@ def partition_wave(
     resolved_axes = _resolve_axes(len(tile), axes)
     offsets = tuple(wave_id(axis=axis, wave_size=wave_size) * step for axis, step in zip(resolved_axes, tile))
     return partition(tensor, tile, offset=offsets, policy=policy)
+
+
+def gemm(a: TensorValue | RuntimeTensor, b: TensorValue | RuntimeTensor, c: TensorValue | RuntimeTensor) -> Any:
+    if isinstance(a, RuntimeTensor) and isinstance(b, RuntimeTensor) and isinstance(c, RuntimeTensor):
+        if len(a.shape) != 2 or len(b.shape) != 2 or len(c.shape) != 2:
+            raise ValueError("runtime baybridge.gemm currently requires rank-2 tensors")
+        m, k = a.shape
+        kb, n = b.shape
+        if kb != k or c.shape != (m, n):
+            raise ValueError(f"gemm shape mismatch: {a.shape} x {b.shape} -> {c.shape}")
+        for row in range(m):
+            for col in range(n):
+                acc = 0.0 if c.dtype.startswith("f") else 0
+                for kk in range(k):
+                    acc += a[row, kk] * b[kk, col]
+                c[row, col] = acc
+        return c
+    if not isinstance(a, TensorValue) or not isinstance(b, TensorValue) or not isinstance(c, TensorValue):
+        raise TypeError("baybridge.gemm expects all arguments to be runtime tensors or all to be traced tensors")
+    if len(a.spec.shape) != 2 or len(b.spec.shape) != 2 or len(c.spec.shape) != 2:
+        raise ValueError("traced baybridge.gemm currently requires rank-2 tensors")
+    m, k = a.spec.shape
+    kb, n = b.spec.shape
+    if kb != k or c.spec.shape != (m, n):
+        raise ValueError(f"gemm shape mismatch: {a.spec.shape} x {b.spec.shape} -> {c.spec.shape}")
+    return mma(a, b, c, tile=(m, n, k), accumulator_dtype=c.spec.dtype)
 
 
 def _default_accumulator_dtype(a_dtype: str, b_dtype: str) -> str:
@@ -2007,6 +2486,14 @@ class _ArchNamespace:
         return lane_id()
 
     @staticmethod
+    def warp_idx(*, wave_size: int = 64) -> ScalarValue | int:
+        return warp_idx(wave_size=wave_size)
+
+    @staticmethod
+    def make_warp_uniform(value: Any) -> Any:
+        return make_warp_uniform(value)
+
+    @staticmethod
     def sync_threads(*, loc: Any | None = None, ip: Any | None = None) -> None:
         del loc
         del ip
@@ -2023,28 +2510,43 @@ nvgpu = _NvgpuNamespace()
 arch = _ArchNamespace()
 
 __all__ = [
+    "ComposedLayout",
+    "CopyAtom",
+    "HierarchicalLayout",
+    "IdentityLayout",
     "KernelDefinition",
     "LaunchConfig",
     "ScalarSpec",
     "SmemAllocator",
+    "Swizzle",
+    "TiledCopy",
+    "TiledMma",
     "TensorSpec",
     "AddressSpace",
     "arch",
+    "autovec_copy",
     "barrier",
+    "basic_copy",
     "block_dim",
     "block_idx",
+    "ceil_div",
     "composition",
     "commit_group",
+    "cosize",
     "copy",
     "copy_async",
     "dim",
+    "domain_offset",
     "elem_less",
     "full_like",
+    "gemm",
     "grid_dim",
+    "group_modes",
     "jit",
     "kernel",
     "lane_id",
     "lane_coords",
+    "local_tile",
     "load",
     "logical_divide",
     "logical_product",
@@ -2056,7 +2558,13 @@ __all__ = [
     "make_ordered_layout",
     "make_fragment_a",
     "make_fragment_b",
+    "make_swizzle",
+    "make_tiled_copy_A",
+    "make_tiled_copy_B",
+    "make_tiled_copy_C",
+    "make_tiled_mma",
     "make_rmem_tensor",
+    "make_warp_uniform",
     "print_tensor",
     "recast_ptr",
     "recast_layout",
@@ -2073,11 +2581,14 @@ __all__ = [
     "program_id",
     "select",
     "size",
+    "size_in_bytes",
     "store",
     "tiled_divide",
     "tiled_product",
+    "tile_to_shape",
     "thread_idx",
     "wait_group",
+    "warp_idx",
     "wave_id",
     "where",
     "flat_product",
