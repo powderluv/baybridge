@@ -24,6 +24,9 @@ def scalar_ctype(dtype: str):
     table = {
         "f32": ctypes.c_float,
         "i1": ctypes.c_bool,
+        "i8": ctypes.c_int8,
+        "i32": ctypes.c_int32,
+        "i64": ctypes.c_int64,
         "index": ctypes.c_longlong,
     }
     try:
@@ -37,6 +40,9 @@ def tensor_ctype(dtype: str):
         "f32": ctypes.c_float,
         "f16": ctypes.c_uint16,
         "bf16": ctypes.c_uint16,
+        "i8": ctypes.c_int8,
+        "i32": ctypes.c_int32,
+        "i64": ctypes.c_int64,
     }
     try:
         return table[dtype]
@@ -141,6 +147,12 @@ def _canonical_stride(shape: tuple[int, ...]) -> tuple[int, ...]:
 def pack_tensor_value(value: Any, dtype: str) -> Any:
     if dtype == "f32":
         return float(value)
+    if dtype == "i8":
+        return int(value)
+    if dtype == "i32":
+        return int(value)
+    if dtype == "i64":
+        return int(value)
     if dtype == "f16":
         return struct.unpack("<H", struct.pack("<e", float(value)))[0]
     if dtype == "bf16":
@@ -153,6 +165,12 @@ def pack_tensor_value(value: Any, dtype: str) -> Any:
 def unpack_tensor_value(value: Any, dtype: str) -> Any:
     if dtype == "f32":
         return float(value)
+    if dtype == "i8":
+        return int(value)
+    if dtype == "i32":
+        return int(value)
+    if dtype == "i64":
+        return int(value)
     if dtype == "f16":
         return float(struct.unpack("<e", struct.pack("<H", int(value)))[0])
     if dtype == "bf16":

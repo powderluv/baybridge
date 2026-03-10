@@ -48,6 +48,50 @@ def test_blocked_and_raked_product_return_expected_shapes() -> None:
     assert raked.stride == (60, 1, 12, 3)
 
 
+def test_logical_and_tiled_divide_build_hierarchical_layouts() -> None:
+    layout = bb.make_layout((9, 4, 8), stride=(59, 13, 1))
+    tiler = (
+        bb.make_layout(3, stride=3),
+        bb.make_layout((2, 4), stride=(1, 8)),
+    )
+
+    logical = bb.logical_divide(layout, tiler=tiler)
+    zipped = bb.zipped_divide(layout, tiler=tiler)
+    tiled = bb.tiled_divide(layout, tiler=tiler)
+    flat = bb.flat_divide(layout, tiler=tiler)
+
+    assert logical.shape == ((3, 3), (2, 2), (4, 2))
+    assert logical.stride == ((59, 177), (13, 26), (1, 4))
+    assert zipped.shape == ((3, 2, 4), (3, 2, 2))
+    assert zipped.stride == ((59, 13, 1), (177, 26, 4))
+    assert tiled.shape == ((3, 2, 4), 3, 2, 2)
+    assert tiled.stride == ((59, 13, 1), 177, 26, 4)
+    assert flat.shape == (3, 2, 4, 3, 2, 2)
+    assert flat.stride == (59, 13, 1, 177, 26, 4)
+    assert bb.depth(logical) == 2
+    assert bb.size(zipped) == bb.size(layout)
+
+
+def test_logical_zipped_tiled_and_flat_product_build_expected_shapes() -> None:
+    layout = bb.make_layout((2, 5), stride=(5, 1))
+    tiler = bb.make_layout((3, 4), stride=(1, 3))
+
+    logical = bb.logical_product(layout, tiler=tiler)
+    zipped = bb.zipped_product(layout, tiler=tiler)
+    tiled = bb.tiled_product(layout, tiler=tiler)
+    flat = bb.flat_product(layout, tiler=tiler)
+
+    assert logical.shape == ((2, 5), (3, 4))
+    assert logical.stride == ((5, 1), (10, 30))
+    assert zipped.shape == ((2, 5), (3, 4))
+    assert zipped.stride == ((5, 1), (10, 30))
+    assert tiled.shape == ((2, 5), 3, 4)
+    assert tiled.stride == ((5, 1), 10, 30)
+    assert flat.shape == (2, 5, 3, 4)
+    assert flat.stride == (5, 1, 10, 30)
+    assert bb.size(flat) == bb.size(layout) * bb.size(tiler)
+
+
 def test_make_identity_layout_matches_row_major() -> None:
     layout = bb.make_identity_layout((3, 4))
 

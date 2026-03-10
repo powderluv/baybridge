@@ -2,6 +2,7 @@ from .backend import LoweredModule
 from .compiler import CompiledKernel, GenerateLineInfo, compile
 from .diagnostics import BackendNotImplementedError, CompilationError, BaybridgeError, UnsupportedOperationError
 from .dtypes import ElementType
+from .math import math
 from .frontend import (
     SmemAllocator,
     arch,
@@ -19,6 +20,7 @@ from .frontend import (
     depth,
     dim,
     elem_less,
+    flat_product,
     flat_divide,
     full_like,
     grid_dim,
@@ -27,6 +29,8 @@ from .frontend import (
     lane_id,
     lane_coords,
     load,
+    logical_divide,
+    logical_product,
     make_fragment,
     make_fragment_like,
     make_copy_atom,
@@ -42,6 +46,7 @@ from .frontend import (
     make_tiled_copy_tv,
     print_tensor,
     raked_product,
+    recast_ptr,
     recast_layout,
     repeat_like,
     make_tensor,
@@ -58,16 +63,23 @@ from .frontend import (
     size,
     slice_,
     store,
+    tiled_divide,
+    tiled_product,
     thread_idx,
     wait_group,
     wave_id,
     where,
+    zipped_product,
     zipped_divide,
 )
 from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec
-from . import runtime, testing
-from .runtime import LaunchConfig, Pointer, Shape, Tensor, TensorHandle, clone, from_dlpack, make_ptr, tensor, zeros
+from .structs import struct
+from . import runtime, testing, typing
+from .runtime import LaunchConfig, Pointer, ReductionOp, Shape, Tensor, TensorHandle, clone, from_dlpack, make_ptr, tensor, zeros
 from .target import AMDTarget
+from .tracing import TensorValue
+
+TensorSSA = (Tensor, TensorValue)
 
 __all__ = [
     "AMDTarget",
@@ -82,10 +94,12 @@ __all__ = [
     "LoweredModule",
     "LaunchConfig",
     "Pointer",
+    "ReductionOp",
     "ScalarSpec",
     "SmemAllocator",
     "TensorHandle",
     "TensorSpec",
+    "TensorSSA",
     "Tensor",
     "Shape",
     "UnsupportedOperationError",
@@ -106,6 +120,7 @@ __all__ = [
     "depth",
     "dim",
     "elem_less",
+    "flat_product",
     "flat_divide",
     "full_like",
     "from_dlpack",
@@ -116,6 +131,9 @@ __all__ = [
     "lane_id",
     "lane_coords",
     "load",
+    "math",
+    "logical_divide",
+    "logical_product",
     "make_copy_atom",
     "make_fragment",
     "make_fragment_like",
@@ -131,6 +149,7 @@ __all__ = [
     "make_tiled_copy_tv",
     "print_tensor",
     "raked_product",
+    "recast_ptr",
     "recast_layout",
     "repeat_like",
     "make_tensor",
@@ -147,13 +166,18 @@ __all__ = [
     "size",
     "slice_",
     "store",
+    "tiled_divide",
+    "tiled_product",
     "tensor",
     "testing",
     "thread_idx",
+    "typing",
     "wait_group",
     "wave_id",
     "where",
     "zeros",
+    "zipped_product",
     "zipped_divide",
+    "struct",
     "runtime",
 ]

@@ -9,7 +9,7 @@ from typing import Iterator
 from .dtypes import element_type
 from .diagnostics import CompilationError
 from .ir import AddressSpace, KernelArgument, Operation, PortableKernelIR, ScalarSpec, TensorSpec
-from .runtime import LaunchConfig
+from .runtime import LaunchConfig, ReductionOp, _normalize_reduction_op, _normalize_reduction_profile
 
 _current_builder: ContextVar["IRBuilder | None"] = ContextVar("baybridge_builder", default=None)
 
@@ -218,6 +218,10 @@ class TensorValue:
         )
 
     def __getitem__(self, index: ScalarValue | int | tuple[ScalarValue | int, ...]) -> ScalarValue:
+        if isinstance(index, tuple) and any(item is None for item in index):
+            from .frontend import slice_
+
+            return slice_(self, index)
         from .frontend import load
 
         return load(self, index)
@@ -250,6 +254,46 @@ class TensorValue:
         if fill_value.spec.dtype != self.spec.dtype:
             raise ValueError(f"fill expects dtype {self.spec.dtype}, got {fill_value.spec.dtype}")
         builder.emit_void("fill", self, fill_value)
+
+    def reduce(
+        self,
+        op: ReductionOp | str,
+        init_value: "ScalarValue | int | float",
+        *,
+        reduction_profile: object = 0,
+    ) -> "TensorValue | ScalarValue":
+        reduction = _normalize_reduction_op(op)
+        reduce_axes, keep_axes = _normalize_reduction_profile(reduction_profile, self.ndim)
+        del reduce_axes
+        builder = require_builder()
+        if isinstance(init_value, ScalarValue):
+            init_scalar = init_value
+        else:
+            init_scalar = builder.constant(init_value, dtype=self.spec.dtype)
+        if init_scalar.spec.dtype != self.spec.dtype:
+            raise ValueError(f"reduce expects init value dtype {self.spec.dtype}, got {init_scalar.spec.dtype}")
+        op_name = f"reduce_{reduction.value}"
+        if not keep_axes:
+            return builder.emit_scalar(
+                op_name,
+                self,
+                init_scalar,
+                spec=ScalarSpec(dtype=self.spec.dtype),
+                attrs={"reduction_profile": list(reduction_profile) if isinstance(reduction_profile, (tuple, list)) else reduction_profile},
+                name_hint=op_name,
+            )
+        return builder.emit_tensor(
+            op_name,
+            self,
+            init_scalar,
+            spec=TensorSpec(
+                shape=tuple(self.spec.shape[axis] for axis in keep_axes),
+                dtype=self.spec.dtype,
+                address_space=AddressSpace.REGISTER,
+            ),
+            attrs={"reduction_profile": list(reduction_profile) if isinstance(reduction_profile, (tuple, list)) else reduction_profile},
+            name_hint=op_name,
+        )
 
     def __add__(self, other: "TensorValue") -> "TensorValue":
         return self._tensor_binary("tensor_add", other)
@@ -289,6 +333,7 @@ class IRBuilder:
         *,
         dynamic_shared: bool = False,
         byte_alignment: int | None = None,
+        byte_offset: int | None = None,
     ) -> TensorValue:
         attrs = {
             "shape": list(spec.shape),
@@ -300,9 +345,12 @@ class IRBuilder:
             if spec.address_space is not AddressSpace.SHARED:
                 raise ValueError("dynamic shared tensors must use baybridge.AddressSpace.SHARED")
             alignment = max(1, int(byte_alignment or self._dtype_size(spec.dtype)))
-            offset = self._align_up(self._dynamic_shared_mem_bytes, alignment)
             size_bytes = prod(spec.shape) * self._dtype_size(spec.dtype)
-            self._dynamic_shared_mem_bytes = offset + size_bytes
+            offset = self.reserve_dynamic_shared(
+                size_bytes,
+                byte_alignment=alignment,
+                byte_offset=byte_offset,
+            )
             attrs["dynamic_shared"] = True
             attrs["byte_offset"] = offset
             attrs["byte_alignment"] = alignment
@@ -314,6 +362,27 @@ class IRBuilder:
             )
         )
         return TensorValue(name=name, spec=spec)
+
+    def reserve_dynamic_shared(
+        self,
+        size_bytes: int,
+        *,
+        byte_alignment: int | None = None,
+        byte_offset: int | None = None,
+    ) -> int:
+        if size_bytes < 0:
+            raise ValueError("dynamic shared reservation size must be >= 0")
+        alignment = max(1, int(byte_alignment or 1))
+        if byte_offset is None:
+            offset = self._align_up(self._dynamic_shared_mem_bytes, alignment)
+        else:
+            offset = int(byte_offset)
+            if offset < 0:
+                raise ValueError("dynamic shared reservation offset must be >= 0")
+            if offset % alignment != 0:
+                raise ValueError("dynamic shared reservation offset must respect the requested alignment")
+        self._dynamic_shared_mem_bytes = max(self._dynamic_shared_mem_bytes, offset + size_bytes)
+        return offset
 
     def emit_scalar(
         self,

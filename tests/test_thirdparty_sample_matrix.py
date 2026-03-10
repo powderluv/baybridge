@@ -101,6 +101,31 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
         upstream_root / "examples/python/CuTeDSL/ampere/cooperative_launch.py",
         "import baybridge as cute\n@cute.jit\ndef run():\n    cute.arch.sync_grid()\n",
     )
+    _write_text(
+        upstream_root / "examples/python/CuTeDSL/ampere/inline_ptx.py",
+        "import torch\nimport baybridge as cute\n"
+        "from baybridge.typing import Boolean, Int32, Int, Constexpr\n"
+        "def fn(x: Boolean, y: Constexpr[bool]):\n    return Int32(int(x)) + Int(y is Constexpr)\n",
+    )
+    _write_text(
+        upstream_root / "examples/python/CuTeDSL/ampere/dynamic_smem_size.py",
+        "import baybridge as cute\n"
+        "@cute.struct\nclass SharedData:\n"
+        "    values: cute.struct.MemRange['f32', 64]\n"
+        "def run():\n"
+        "    alloc = cute.SmemAllocator()\n"
+        "    alloc.allocate(SharedData)\n",
+    )
+    _write_text(
+        upstream_root / "examples/python/CuTeDSL/ampere/smem_allocator.py",
+        "import torch\nimport baybridge as cute\n"
+        "@cute.struct\nclass SharedStorage:\n"
+        "    values: cute.struct.MemRange['f32', 32]\n"
+        "def run(ptr):\n"
+        "    alloc = cute.SmemAllocator()\n"
+        "    section = alloc.allocate(64, byte_alignment=128)\n"
+        "    cute.recast_ptr(section, dtype='f32')\n",
+    )
     _write_ipynb(
         upstream_root / "examples/python/CuTeDSL/notebooks/print.ipynb",
         "import torch\nimport baybridge as cute\n"
@@ -116,6 +141,27 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
         "import torch\nimport baybridge as cute\n"
         "cute.make_composed_layout(inner, 0, outer)\n"
         "cute.make_identity_layout((4, 4))\n",
+    )
+    _write_ipynb(
+        upstream_root / "examples/python/CuTeDSL/notebooks/cute_layout_algebra.ipynb",
+        "import baybridge as cute\n"
+        "layout = cute.make_layout((2, 5), stride=(5, 1))\n"
+        "tiler = cute.make_layout((3, 4), stride=(1, 3))\n"
+        "cute.logical_divide(layout, tiler=tiler)\n"
+        "cute.tiled_divide(layout, tiler=tiler)\n"
+        "cute.logical_product(layout, tiler=tiler)\n"
+        "cute.zipped_product(layout, tiler=tiler)\n"
+        "cute.tiled_product(layout, tiler=tiler)\n"
+        "cute.flat_product(layout, tiler=tiler)\n",
+    )
+    _write_ipynb(
+        upstream_root / "examples/python/CuTeDSL/notebooks/tensorssa.ipynb",
+        "import baybridge as cute\n"
+        "x = cute.tensor([[1.0, 2.0], [3.0, 4.0]])\n"
+        "v = x.load()\n"
+        "isinstance(v, cute.TensorSSA)\n"
+        "cute.math.sqrt(v)\n"
+        "v.reduce(cute.ReductionOp.ADD, 0.0, reduction_profile=0)\n",
     )
 
     subprocess.run(
@@ -180,6 +226,19 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     cooperative_launch = _entry(entries, "examples/python/CuTeDSL/ampere/cooperative_launch.py")
     assert cooperative_launch["status"] == "partially_covered_by_baybridge_tests"
 
+    inline_ptx = _entry(entries, "examples/python/CuTeDSL/ampere/inline_ptx.py")
+    assert inline_ptx["status"] == "blocked_external_dependency"
+    assert "unknown:typing" not in inline_ptx["blockers"]
+
+    dynamic_smem = _entry(entries, "examples/python/CuTeDSL/ampere/dynamic_smem_size.py")
+    assert dynamic_smem["status"] == "partially_covered_by_baybridge_tests"
+    assert "unknown:struct" not in dynamic_smem["blockers"]
+
+    smem_allocator = _entry(entries, "examples/python/CuTeDSL/ampere/smem_allocator.py")
+    assert smem_allocator["status"] == "partially_covered_by_baybridge_tests"
+    assert "unknown:struct" not in smem_allocator["blockers"]
+    assert "unknown:recast_ptr" not in smem_allocator["blockers"]
+
     print_notebook = _entry(entries, "examples/python/CuTeDSL/notebooks/print.ipynb")
     assert print_notebook["status"] == "blocked_external_dependency"
     assert "unknown:slice_" not in print_notebook["blockers"]
@@ -192,3 +251,18 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     assert composed_layout["status"] == "blocked_external_dependency"
     assert "unknown:make_composed_layout" not in composed_layout["blockers"]
     assert "unknown:make_identity_layout" not in composed_layout["blockers"]
+
+    layout_algebra = _entry(entries, "examples/python/CuTeDSL/notebooks/cute_layout_algebra.ipynb")
+    assert layout_algebra["status"] == "partially_covered_by_baybridge_tests"
+    assert "unknown:logical_divide" not in layout_algebra["blockers"]
+    assert "unknown:tiled_divide" not in layout_algebra["blockers"]
+    assert "unknown:logical_product" not in layout_algebra["blockers"]
+    assert "unknown:zipped_product" not in layout_algebra["blockers"]
+    assert "unknown:tiled_product" not in layout_algebra["blockers"]
+    assert "unknown:flat_product" not in layout_algebra["blockers"]
+
+    tensorssa = _entry(entries, "examples/python/CuTeDSL/notebooks/tensorssa.ipynb")
+    assert tensorssa["status"] == "partially_covered_by_baybridge_tests"
+    assert "unknown:TensorSSA" not in tensorssa["blockers"]
+    assert "unknown:ReductionOp" not in tensorssa["blockers"]
+    assert "unknown:math" not in tensorssa["blockers"]

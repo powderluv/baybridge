@@ -6,6 +6,9 @@ class ElementType(str):
     def width(self) -> int:
         table = {
             "i1": 1,
+            "i8": 8,
+            "i32": 32,
+            "i64": 64,
             "f16": 16,
             "bf16": 16,
             "f32": 32,

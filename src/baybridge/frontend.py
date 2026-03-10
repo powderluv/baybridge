@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .diagnostics import CompilationError, UnsupportedOperationError
-from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec
+from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec, normalize_address_space
 from .mfma import resolve_mfma_descriptor
 from .runtime import (
     ExecutionState,
@@ -19,6 +19,7 @@ from .runtime import (
     normalize_runtime_argument,
     zeros,
 )
+from .structs import MemRangeProxy, StructInstance, get_struct_spec, is_struct_type, struct
 from .tracing import ScalarValue, TensorValue, require_builder
 from .views import (
     IdentityTensor,
@@ -132,6 +133,27 @@ class IdentityLayout:
 
     def __repr__(self) -> str:
         return f"IdentityLayout(shape={self.shape})"
+
+
+@dataclass(frozen=True)
+class HierarchicalLayout:
+    shape: Any
+    stride: Any
+    swizzle: str | None = None
+
+    def __call__(self, coord: int | tuple[int, ...]) -> int:
+        flat_shape = _flatten_dims(self.shape)
+        if isinstance(coord, int):
+            indices = _compact_flat_coord(coord, flat_shape)
+        else:
+            indices = _flatten_dims(coord)
+        flat_stride = _flatten_dims(self.stride)
+        if len(indices) != len(flat_stride):
+            raise ValueError(f"layout expects {len(flat_stride)} coordinates, got {len(indices)}")
+        return sum(index * stride for index, stride in zip(indices, flat_stride))
+
+    def __repr__(self) -> str:
+        return f"{self.shape}:{self.stride}"
 
 
 @dataclass(frozen=True)
@@ -290,7 +312,88 @@ def _layout_size(layout: Layout) -> int:
     return prod(layout.shape) if layout.shape else 1
 
 
+def _layout_cosize(layout: Layout) -> int:
+    if not layout.shape:
+        return 1
+    return 1 + sum((dim - 1) * stride for dim, stride in zip(layout.shape, layout.stride))
+
+
+def _compact_flat_coord(linear_index: int, shape: tuple[int, ...]) -> tuple[int, ...]:
+    if not shape:
+        return ()
+    coords: list[int] = []
+    remaining = linear_index
+    for axis in range(len(shape) - 1):
+        stride = prod(shape[axis + 1 :])
+        coords.append(remaining // stride)
+        remaining %= stride
+    coords.append(remaining)
+    return tuple(coords)
+
+
+def _normalize_shape_tree(value: Any) -> Any:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (tuple, list)):
+        return tuple(_normalize_shape_tree(item) for item in value)
+    raise TypeError("layout trees must contain integers or nested tuples/lists of integers")
+
+
+def _as_layout(tiler: Any) -> Layout:
+    if isinstance(tiler, Layout):
+        return tiler
+    if isinstance(tiler, int):
+        return make_layout(tiler)
+    if isinstance(tiler, (tuple, list)):
+        shapes: list[int] = []
+        strides: list[int] = []
+        for item in tiler:
+            if item is None:
+                continue
+            if isinstance(item, Layout):
+                shapes.extend(item.shape)
+                strides.extend(item.stride)
+                continue
+            if isinstance(item, int):
+                shapes.append(item)
+                strides.append(1)
+                continue
+            raise TypeError("tiler entries must be baybridge.Layout, integers, or None")
+        return Layout(shape=tuple(shapes), stride=tuple(strides))
+    raise TypeError("tiler must be a baybridge.Layout, integer, or tuple/list of those values")
+
+
+def _expand_tiler_entries(tiler: Any, *, rank: int) -> tuple[int | None, ...]:
+    if isinstance(tiler, Layout):
+        dims = tiler.shape
+    elif isinstance(tiler, int):
+        dims = (tiler,)
+    elif isinstance(tiler, (tuple, list)):
+        dims_list: list[int | None] = []
+        for item in tiler:
+            if item is None:
+                dims_list.append(None)
+                continue
+            if isinstance(item, Layout):
+                dims_list.extend(item.shape)
+                continue
+            if isinstance(item, int):
+                dims_list.append(item)
+                continue
+            raise TypeError("tiler values must be baybridge.Layout, integers, or None")
+        dims = tuple(dims_list)
+    else:
+        raise TypeError("tiler must be a baybridge.Layout, integer, or tuple/list of those values")
+    if len(dims) != rank:
+        raise ValueError(f"tiler rank {len(dims)} must match layout rank {rank}")
+    if any(dim is not None and dim <= 0 for dim in dims):
+        raise ValueError("tiler dimensions must be > 0 when specified")
+    return tuple(dims)
+
+
 def depth(value: Any) -> int:
+    if hasattr(value, "shape") and not isinstance(value, Layout):
+        return depth(getattr(value, "shape"))
     if isinstance(value, Layout):
         return 1
     if isinstance(value, int):
@@ -363,13 +466,60 @@ def _normalize_tiler_dims(tiler: Any, *, rank: int) -> tuple[int, ...]:
 def flat_divide(layout: Layout, *, tiler: Any) -> Layout:
     if not isinstance(layout, Layout):
         raise TypeError("flat_divide expects a baybridge.Layout")
-    tile = _normalize_tiler_dims(tiler, rank=len(layout.shape))
+    tile_entries = _expand_tiler_entries(tiler, rank=len(layout.shape))
+    tile = tuple(1 if step is None else step for step in tile_entries)
     rest = tuple((dim + step - 1) // step for dim, step in zip(layout.shape, tile))
     return Layout(
         shape=tile + rest,
         stride=layout.stride + tuple(step * stride for step, stride in zip(tile, layout.stride)),
         swizzle=layout.swizzle,
     )
+
+
+def logical_divide(layout: Layout, *, tiler: Any) -> HierarchicalLayout:
+    if not isinstance(layout, Layout):
+        raise TypeError("logical_divide expects a baybridge.Layout")
+    tile_entries = _expand_tiler_entries(tiler, rank=len(layout.shape))
+    shape_parts: list[Any] = []
+    stride_parts: list[Any] = []
+    for dim, stride, tile in zip(layout.shape, layout.stride, tile_entries):
+        if tile is None:
+            shape_parts.append(dim)
+            stride_parts.append(stride)
+            continue
+        rest = (dim + tile - 1) // tile
+        shape_parts.append((tile, rest))
+        stride_parts.append((stride, tile * stride))
+    return HierarchicalLayout(
+        shape=_normalize_shape_tree(tuple(shape_parts)),
+        stride=_normalize_shape_tree(tuple(stride_parts)),
+        swizzle=layout.swizzle,
+    )
+
+
+def tiled_divide(layout: Layout, *, tiler: Any) -> HierarchicalLayout:
+    if not isinstance(layout, Layout):
+        raise TypeError("tiled_divide expects a baybridge.Layout")
+    tile_entries = _expand_tiler_entries(tiler, rank=len(layout.shape))
+    tile_shape = tuple(tile for tile in tile_entries if tile is not None)
+    tile_stride = tuple(stride for stride, tile in zip(layout.stride, tile_entries) if tile is not None)
+    rest_shape = tuple(
+        dim if tile is None else (dim + tile - 1) // tile
+        for dim, tile in zip(layout.shape, tile_entries)
+    )
+    rest_stride = tuple(
+        stride if tile is None else tile * stride
+        for stride, tile in zip(layout.stride, tile_entries)
+    )
+    shape_parts: tuple[Any, ...]
+    stride_parts: tuple[Any, ...]
+    if tile_shape:
+        shape_parts = (_normalize_shape_tree(tile_shape),) + tuple(rest_shape)
+        stride_parts = (_normalize_shape_tree(tile_stride),) + tuple(rest_stride)
+    else:
+        shape_parts = tuple(rest_shape)
+        stride_parts = tuple(rest_stride)
+    return HierarchicalLayout(shape=shape_parts, stride=stride_parts, swizzle=layout.swizzle)
 
 
 def blocked_product(layout: Layout, *, tiler: Layout | tuple[int, ...] | int) -> Layout:
@@ -405,6 +555,50 @@ def raked_product(layout: Layout, *, tiler: Layout | tuple[int, ...] | int) -> L
         interleaved_shape.extend([shape_dim, tile_dim])
         interleaved_stride.extend([stride_dim * tile_size, tile_stride])
     return Layout(shape=tuple(interleaved_shape), stride=tuple(interleaved_stride), swizzle=blocked.swizzle)
+
+
+def logical_product(layout: Layout, *, tiler: Any) -> HierarchicalLayout:
+    if not isinstance(layout, Layout):
+        raise TypeError("logical_product expects a baybridge.Layout")
+    tile_layout = _as_layout(tiler)
+    replication_stride = _layout_cosize(layout)
+    return HierarchicalLayout(
+        shape=(_normalize_shape_tree(layout.shape), _normalize_shape_tree(tile_layout.shape)),
+        stride=(
+            _normalize_shape_tree(layout.stride),
+            _normalize_shape_tree(tuple(stride * replication_stride for stride in tile_layout.stride)),
+        ),
+        swizzle=layout.swizzle or tile_layout.swizzle,
+    )
+
+
+def zipped_product(layout: Layout, *, tiler: Any) -> HierarchicalLayout:
+    return logical_product(layout, tiler=tiler)
+
+
+def tiled_product(layout: Layout, *, tiler: Any) -> HierarchicalLayout:
+    if not isinstance(layout, Layout):
+        raise TypeError("tiled_product expects a baybridge.Layout")
+    tile_layout = _as_layout(tiler)
+    replication_stride = _layout_cosize(layout)
+    return HierarchicalLayout(
+        shape=(_normalize_shape_tree(layout.shape),) + tuple(tile_layout.shape),
+        stride=(_normalize_shape_tree(layout.stride),)
+        + tuple(stride * replication_stride for stride in tile_layout.stride),
+        swizzle=layout.swizzle or tile_layout.swizzle,
+    )
+
+
+def flat_product(layout: Layout, *, tiler: Any) -> Layout:
+    if not isinstance(layout, Layout):
+        raise TypeError("flat_product expects a baybridge.Layout")
+    tile_layout = _as_layout(tiler)
+    replication_stride = _layout_cosize(layout)
+    return Layout(
+        shape=layout.shape + tile_layout.shape,
+        stride=layout.stride + tuple(stride * replication_stride for stride in tile_layout.stride),
+        swizzle=layout.swizzle or tile_layout.swizzle,
+    )
 
 
 def recast_layout(dst_bits: int, src_bits: int, layout: Layout) -> Layout:
@@ -446,12 +640,13 @@ def make_tensor(
             raise TypeError("make_tensor(ptr, ...) expects a baybridge.Layout as the second argument or layout=")
         if name.tensor is None:
             raise UnsupportedOperationError("baybridge pointer tensors currently require a tensor-backed Pointer")
+        target_space = normalize_address_space(name.address_space)
         if isinstance(name.tensor, TensorValue):
             spec = TensorSpec(
                 shape=target_layout.shape,
                 dtype=str(name.value_type),
                 layout=target_layout,
-                address_space=AddressSpace.GLOBAL,
+                address_space=target_space,
             )
             return require_builder().emit_tensor(
                 "pointer_tensor",
@@ -459,7 +654,7 @@ def make_tensor(
                 spec=spec,
                 attrs={
                     "assumed_align": name.assumed_align,
-                    "address_space": str(name.address_space),
+                    "address_space": target_space.value,
                 },
                 name_hint=f"{name.tensor.name}_ptr",
             )
@@ -498,9 +693,48 @@ def make_tensor(
         return zeros(shape, dtype=dtype)
 
 
+def recast_ptr(value: Pointer, *, dtype: str) -> Pointer:
+    if not isinstance(value, Pointer):
+        raise TypeError("recast_ptr expects a baybridge.Pointer")
+    return Pointer(
+        value_type=str(dtype),
+        tensor=value.tensor,
+        raw_address=value.raw_address,
+        address_space=value.address_space,
+        assumed_align=value.assumed_align,
+    )
+
+
 @dataclass
 class SmemAllocator:
     allocation_index: int = 0
+
+    def allocate(
+        self,
+        item: Any,
+        *,
+        byte_alignment: int = 1,
+    ) -> Pointer | StructInstance:
+        if byte_alignment <= 0:
+            raise ValueError("byte_alignment must be > 0")
+        if isinstance(item, int):
+            if item <= 0:
+                raise ValueError("raw shared-memory allocations must be > 0 bytes")
+            return self._allocate_pointer(
+                dtype="i8",
+                count=item,
+                alignment=byte_alignment,
+                name_hint="smem_bytes",
+            )
+        if is_struct_type(item):
+            return self._allocate_struct(item, byte_alignment=byte_alignment)
+        dtype = str(item)
+        return self._allocate_pointer(
+            dtype=dtype,
+            count=1,
+            alignment=max(byte_alignment, self._dtype_size(dtype)),
+            name_hint="smem_scalar",
+        )
 
     def allocate_tensor(
         self,
@@ -515,19 +749,12 @@ class SmemAllocator:
         if byte_alignment <= 0:
             raise ValueError("byte_alignment must be > 0")
         target_layout = layout if swizzle is None else Layout(shape=layout.shape, stride=layout.stride, swizzle=swizzle)
-        spec = TensorSpec(
-            shape=target_layout.shape,
+        return self._allocate_shared_tensor(
             dtype=str(element_type),
             layout=target_layout,
-            address_space=AddressSpace.SHARED,
+            alignment=byte_alignment,
+            name_hint="smem_alloc",
         )
-        self.allocation_index += 1
-        name = f"smem_alloc_{self.allocation_index}"
-        try:
-            builder = require_builder()
-            return builder.make_tensor(name, spec, dynamic_shared=True, byte_alignment=byte_alignment)
-        except CompilationError:
-            return zeros(target_layout.shape, dtype=str(element_type))
 
     def allocate_array(
         self,
@@ -543,6 +770,132 @@ class SmemAllocator:
             layout=Layout.row_major((num_elems,)),
             byte_alignment=byte_alignment,
         )
+
+    def _allocate_struct(
+        self,
+        struct_type: type,
+        *,
+        byte_alignment: int,
+        base_offset: int | None = None,
+        reserve_region: bool = True,
+        name_prefix: str | None = None,
+    ) -> StructInstance:
+        spec = get_struct_spec(struct_type)
+        builder = self._maybe_builder()
+        region_offset = base_offset
+        if builder is not None and reserve_region:
+            region_offset = builder.reserve_dynamic_shared(
+                spec.size_bytes,
+                byte_alignment=max(spec.alignment_bytes, byte_alignment),
+                byte_offset=base_offset,
+            )
+        prefix = name_prefix or self._next_name("smem_struct")
+        fields: dict[str, Any] = {}
+        for field in spec.fields:
+            field_offset = region_offset + field.offset_bytes if region_offset is not None else None
+            if field.kind == "struct":
+                assert field.struct_type is not None
+                fields[field.name] = self._allocate_struct(
+                    field.struct_type,
+                    byte_alignment=field.alignment_bytes,
+                    base_offset=field_offset,
+                    reserve_region=False,
+                    name_prefix=f"{prefix}_{field.name}",
+                )
+                continue
+            if field.kind == "memrange":
+                assert field.dtype is not None
+                assert field.count is not None
+                backing = self._allocate_shared_tensor(
+                    dtype=field.dtype,
+                    layout=Layout.row_major((field.count,)),
+                    alignment=field.alignment_bytes,
+                    byte_offset=field_offset,
+                    name_hint=f"{prefix}_{field.name}",
+                )
+                fields[field.name] = MemRangeProxy(
+                    pointer=Pointer(
+                        value_type=field.dtype,
+                        tensor=backing,
+                        address_space=AddressSpace.SHARED,
+                        assumed_align=field.alignment_bytes,
+                    ),
+                    count=field.count,
+                )
+                continue
+            assert field.dtype is not None
+            fields[field.name] = self._allocate_pointer(
+                dtype=field.dtype,
+                count=1,
+                alignment=field.alignment_bytes,
+                byte_offset=field_offset,
+                name_hint=f"{prefix}_{field.name}",
+            )
+        return StructInstance(spec.name, fields)
+
+    def _allocate_pointer(
+        self,
+        *,
+        dtype: str,
+        count: int,
+        alignment: int,
+        byte_offset: int | None = None,
+        name_hint: str,
+    ) -> Pointer:
+        backing = self._allocate_shared_tensor(
+            dtype=dtype,
+            layout=Layout.row_major((count,)),
+            alignment=alignment,
+            byte_offset=byte_offset,
+            name_hint=name_hint,
+        )
+        return Pointer(
+            value_type=dtype,
+            tensor=backing,
+            address_space=AddressSpace.SHARED,
+            assumed_align=alignment,
+        )
+
+    def _allocate_shared_tensor(
+        self,
+        *,
+        dtype: str,
+        layout: Layout,
+        alignment: int,
+        byte_offset: int | None = None,
+        name_hint: str,
+    ) -> TensorValue | RuntimeTensor:
+        spec = TensorSpec(
+            shape=layout.shape,
+            dtype=dtype,
+            layout=layout,
+            address_space=AddressSpace.SHARED,
+        )
+        builder = self._maybe_builder()
+        if builder is not None:
+            return builder.make_tensor(
+                self._next_name(name_hint),
+                spec,
+                dynamic_shared=True,
+                byte_alignment=alignment,
+                byte_offset=byte_offset,
+            )
+        return zeros(layout.shape, dtype=dtype)
+
+    def _maybe_builder(self):
+        try:
+            return require_builder()
+        except CompilationError:
+            return None
+
+    def _next_name(self, prefix: str) -> str:
+        self.allocation_index += 1
+        return f"{prefix}_{self.allocation_index}"
+
+    def _dtype_size(self, dtype: str) -> int:
+        from .dtypes import element_type
+
+        return (element_type(dtype).width + 7) // 8
 
 
 def _normalize_axis(axis: str) -> str:
@@ -822,9 +1175,32 @@ def make_identity_tensor(shape: tuple[int, ...]) -> IdentityTensor:
 
 
 def zipped_divide(
-    value: TensorValue | RuntimeTensor | IdentityTensor,
-    tiler: tuple[int, ...],
-) -> TiledTensorView:
+    value: TensorValue | RuntimeTensor | IdentityTensor | Layout,
+    tiler: Any,
+) -> TiledTensorView | HierarchicalLayout:
+    if isinstance(value, Layout):
+        tile_entries = _expand_tiler_entries(tiler, rank=len(value.shape))
+        tile_shape = tuple(tile for tile in tile_entries if tile is not None)
+        tile_stride = tuple(stride for stride, tile in zip(value.stride, tile_entries) if tile is not None)
+        rest_shape = tuple(
+            dim if tile is None else (dim + tile - 1) // tile
+            for dim, tile in zip(value.shape, tile_entries)
+        )
+        rest_stride = tuple(
+            stride if tile is None else tile * stride
+            for stride, tile in zip(value.stride, tile_entries)
+        )
+        return HierarchicalLayout(
+            shape=(
+                _normalize_shape_tree(tile_shape),
+                _normalize_shape_tree(rest_shape),
+            ),
+            stride=(
+                _normalize_shape_tree(tile_stride),
+                _normalize_shape_tree(rest_stride),
+            ),
+            swizzle=value.swizzle,
+        )
     return TiledTensorView.create(value, tiler)
 
 
@@ -1670,6 +2046,8 @@ __all__ = [
     "lane_id",
     "lane_coords",
     "load",
+    "logical_divide",
+    "logical_product",
     "make_fragment",
     "make_fragment_like",
     "make_layout",
@@ -1680,6 +2058,7 @@ __all__ = [
     "make_fragment_b",
     "make_rmem_tensor",
     "print_tensor",
+    "recast_ptr",
     "recast_layout",
     "repeat_like",
     "make_tensor",
@@ -1695,9 +2074,14 @@ __all__ = [
     "select",
     "size",
     "store",
+    "tiled_divide",
+    "tiled_product",
     "thread_idx",
     "wait_group",
     "wave_id",
     "where",
+    "flat_product",
+    "zipped_product",
     "zipped_divide",
+    "struct",
 ]

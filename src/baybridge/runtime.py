@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Iterator, Sequence
 
 from .dtypes import element_type
@@ -73,6 +74,20 @@ class Pointer:
             address_space=self.address_space,
             assumed_align=self.assumed_align,
         )
+
+    @property
+    def dtype(self) -> str:
+        return self.value_type
+
+    def data_ptr(self) -> "Pointer":
+        return self
+
+
+class ReductionOp(str, Enum):
+    ADD = "add"
+    MUL = "mul"
+    MAX = "max"
+    MIN = "min"
 
 
 @dataclass(frozen=True)
@@ -157,6 +172,10 @@ class RuntimeTensor:
         return RuntimeTensor(self._storage, shape, dtype=self.dtype, stride=self.stride, offset=linear_offset)
 
     def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, tuple) and any(item is None for item in index):
+            from .frontend import slice_
+
+            return slice_(self, index)
         normalized = _normalize_runtime_index(index, self.ndim)
         linear = self.offset + sum(item * step for item, step in zip(normalized, self.stride))
         return self._storage[linear]
@@ -185,6 +204,27 @@ class RuntimeTensor:
 
     def fill(self, value: Any) -> None:
         self.store(value)
+
+    def reduce(
+        self,
+        op: ReductionOp | str,
+        init_value: Any,
+        *,
+        reduction_profile: Any = 0,
+    ) -> "RuntimeTensor | Any":
+        reduction = _normalize_reduction_op(op)
+        reduce_axes, keep_axes = _normalize_reduction_profile(reduction_profile, self.ndim)
+        if not keep_axes:
+            accumulator = init_value
+            for index in _iter_indices(self.shape):
+                accumulator = _apply_reduction(reduction, accumulator, self[index])
+            return accumulator
+        result_shape = tuple(self.shape[axis] for axis in keep_axes)
+        result = full(result_shape, init_value, dtype=self.dtype)
+        for index in _iter_indices(self.shape):
+            out_index = tuple(index[axis] for axis in keep_axes)
+            result[out_index] = _apply_reduction(reduction, result[out_index], self[index])
+        return result
 
     def _binary_op(self, other: Any, op, *, reverse: bool = False, dtype: str | None = None) -> "RuntimeTensor":
         if isinstance(other, RuntimeTensor):
@@ -442,6 +482,45 @@ def _normalize_runtime_index(index: Any, rank: int) -> tuple[int, ...]:
             raise TypeError("runtime tensor indices must be integers")
         result.append(item)
     return tuple(result)
+
+
+def _normalize_reduction_op(value: ReductionOp | str) -> ReductionOp:
+    if isinstance(value, ReductionOp):
+        return value
+    try:
+        return ReductionOp(str(value))
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in ReductionOp)
+        raise ValueError(f"unsupported reduction op '{value}', expected one of: {supported}") from exc
+
+
+def _normalize_reduction_profile(value: Any, rank: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if value == 0:
+        return tuple(range(rank)), ()
+    if not isinstance(value, (tuple, list)):
+        raise TypeError("reduction_profile must be 0 or a tuple/list describing kept axes with None")
+    if len(value) != rank:
+        raise ValueError(f"reduction_profile must have length {rank} for tensor rank {rank}")
+    reduce_axes: list[int] = []
+    keep_axes: list[int] = []
+    for axis, item in enumerate(value):
+        if item is None:
+            keep_axes.append(axis)
+        else:
+            reduce_axes.append(axis)
+    return tuple(reduce_axes), tuple(keep_axes)
+
+
+def _apply_reduction(op: ReductionOp, lhs: Any, rhs: Any) -> Any:
+    if op is ReductionOp.ADD:
+        return lhs + rhs
+    if op is ReductionOp.MUL:
+        return lhs * rhs
+    if op is ReductionOp.MAX:
+        return lhs if lhs >= rhs else rhs
+    if op is ReductionOp.MIN:
+        return lhs if lhs <= rhs else rhs
+    raise ValueError(f"unsupported reduction op '{op}'")
 
 
 def _iter_indices(shape: tuple[int, ...]):

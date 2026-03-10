@@ -61,6 +61,7 @@ class HipccExecBackend:
             "#include <hip/hip_cooperative_groups.h>\n"
             "#include <hip/hip_fp16.h>\n"
             "#include <hip/hip_bfloat16.h>\n"
+            "#include <cmath>\n"
             "#include <cstddef>\n"
             "#include <cstdint>\n\n"
             "namespace cg = cooperative_groups;\n\n"
@@ -280,7 +281,10 @@ class HipccExecBackend:
         if operation.op == "pointer_tensor":
             source_name = operation.inputs[0]
             spec = tensor_specs[operation.outputs[0]]
-            return [f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = {source_name};"]
+            return [
+                f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = "
+                f"reinterpret_cast<{self._cpp_tensor_base(spec.dtype)}*>({source_name});"
+            ]
         if operation.op == "slice":
             source_name, *index_names = operation.inputs
             spec = tensor_specs[operation.outputs[0]]
@@ -317,6 +321,24 @@ class HipccExecBackend:
                     "hipcc_exec tensor elementwise ops require matching tensor dtypes"
                 )
             return self._emit_tensor_binary(operation.op, lhs_name, lhs_spec, rhs_name, rhs_spec, out_name, out_spec)
+        if operation.op in {"math_sqrt", "math_sin", "math_exp2"}:
+            source_name = operation.inputs[0]
+            out_name = operation.outputs[0]
+            source_spec = tensor_specs[source_name]
+            out_spec = tensor_specs[out_name]
+            if source_spec.shape != out_spec.shape or source_spec.dtype != out_spec.dtype:
+                raise BackendNotImplementedError("hipcc_exec tensor math ops require matching tensor shapes and dtypes")
+            return self._emit_tensor_unary_math(operation.op, source_name, source_spec, out_name, out_spec)
+        if operation.op in {"reduce_add", "reduce_mul", "reduce_max", "reduce_min"}:
+            source_name, init_name = operation.inputs
+            source_spec = tensor_specs[source_name]
+            init_spec = value_types[init_name]
+            if init_spec.dtype != source_spec.dtype:
+                raise BackendNotImplementedError("hipcc_exec reductions require init values matching the tensor dtype")
+            if output is not None and output in tensor_specs:
+                return self._emit_tensor_reduce_tensor(operation, source_name, source_spec, init_name, tensor_specs[output])
+            if output is not None and output in value_types:
+                return self._emit_tensor_reduce_scalar(operation, source_name, source_spec, init_name, value_types[output])
         if operation.op == "thread_fragment_load":
             base_name, thread_name, *rest = operation.inputs
             out_name = operation.outputs[0]
@@ -514,6 +536,96 @@ class HipccExecBackend:
         lines.extend(self._emit_loop_nest(out_spec.shape, body))
         return lines
 
+    def _emit_tensor_unary_math(
+        self,
+        op: str,
+        source_name: str,
+        source_spec: TensorSpec,
+        out_name: str,
+        out_spec: TensorSpec,
+    ) -> list[str]:
+        expr = {
+            "math_sqrt": lambda value: f"sqrtf({value})",
+            "math_sin": lambda value: f"sinf({value})",
+            "math_exp2": lambda value: f"exp2f({value})",
+        }[op]
+        lines = [f"{self._cpp_tensor_base(out_spec.dtype)} {out_name}[{prod(out_spec.shape)}];"]
+
+        def body(index_names: list[str]) -> list[str]:
+            source_offset = self._offset_expr(source_spec, index_names)
+            out_offset = self._offset_expr(out_spec, index_names)
+            return [f"{out_name}[{out_offset}] = {expr(f'{source_name}[{source_offset}]')};"]
+
+        lines.extend(self._emit_loop_nest(out_spec.shape, body))
+        return lines
+
+    def _emit_tensor_reduce_scalar(
+        self,
+        operation: Operation,
+        source_name: str,
+        source_spec: TensorSpec,
+        init_name: str,
+        output_spec: ScalarSpec,
+    ) -> list[str]:
+        op_name = operation.op.removeprefix("reduce_")
+        if output_spec.dtype != source_spec.dtype:
+            raise BackendNotImplementedError("hipcc_exec scalar reductions require matching output and source dtypes")
+        output_name = operation.outputs[0]
+        lines = [f"{self._cpp_scalar_type(output_spec.dtype)} {output_name} = {init_name};"]
+
+        def body(index_names: list[str]) -> list[str]:
+            source_offset = self._offset_expr(source_spec, index_names)
+            value_expr = f"{source_name}[{source_offset}]"
+            return [self._reduction_update(op_name, output_name, value_expr)]
+
+        lines.extend(self._emit_loop_nest(source_spec.shape, body))
+        return lines
+
+    def _emit_tensor_reduce_tensor(
+        self,
+        operation: Operation,
+        source_name: str,
+        source_spec: TensorSpec,
+        init_name: str,
+        output_spec: TensorSpec,
+    ) -> list[str]:
+        op_name = operation.op.removeprefix("reduce_")
+        output_name = operation.outputs[0]
+        reduction_profile = operation.attrs.get("reduction_profile", 0)
+        if not isinstance(reduction_profile, list):
+            raise BackendNotImplementedError("hipcc_exec tensor reductions require an explicit reduction_profile list")
+        keep_axes = [axis for axis, marker in enumerate(reduction_profile) if marker is None]
+        if tuple(source_spec.shape[axis] for axis in keep_axes) != output_spec.shape:
+            raise BackendNotImplementedError("hipcc_exec tensor reductions require output shapes matching the kept axes")
+        lines = [f"{self._cpp_tensor_base(output_spec.dtype)} {output_name}[{prod(output_spec.shape)}];"]
+
+        def init_body(index_names: list[str]) -> list[str]:
+            out_offset = self._offset_expr(output_spec, index_names)
+            return [f"{output_name}[{out_offset}] = {init_name};"]
+
+        lines.extend(self._emit_loop_nest(output_spec.shape, init_body))
+
+        def reduce_body(index_names: list[str]) -> list[str]:
+            source_offset = self._offset_expr(source_spec, index_names)
+            out_indices = [index_names[axis] for axis in keep_axes]
+            out_offset = self._offset_expr(output_spec, out_indices) if out_indices else "0"
+            value_expr = f"{source_name}[{source_offset}]"
+            return [self._reduction_update(op_name, f"{output_name}[{out_offset}]", value_expr)]
+
+        lines.extend(self._emit_loop_nest(source_spec.shape, reduce_body))
+        return lines
+
+    def _reduction_update(self, op_name: str, lhs: str, rhs: str) -> str:
+        if op_name == "add":
+            return f"{lhs} = {lhs} + {rhs};"
+        if op_name == "mul":
+            return f"{lhs} = {lhs} * {rhs};"
+        if op_name == "max":
+            return f"{lhs} = {lhs} > {rhs} ? {lhs} : {rhs};"
+        if op_name == "min":
+            return f"{lhs} = {lhs} < {rhs} ? {lhs} : {rhs};"
+        raise BackendNotImplementedError(f"hipcc_exec does not support reduction op '{op_name}'")
+
     def _layout_from_dict(self, value: Any) -> Layout:
         return Layout(
             shape=tuple(value["shape"]),
@@ -638,6 +750,9 @@ class HipccExecBackend:
             "f16": "__half",
             "bf16": "hip_bfloat16",
             "i1": "bool",
+            "i8": "std::int8_t",
+            "i32": "std::int32_t",
+            "i64": "std::int64_t",
             "index": "std::int64_t",
         }
         try:
@@ -651,6 +766,9 @@ class HipccExecBackend:
             "f16": "__half",
             "bf16": "hip_bfloat16",
             "i1": "bool",
+            "i8": "std::int8_t",
+            "i32": "std::int32_t",
+            "i64": "std::int64_t",
         }
         try:
             return table[dtype]
