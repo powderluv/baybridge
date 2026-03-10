@@ -20,6 +20,8 @@ _HIPKITTENS_ENV = "BAYBRIDGE_HIPKITTENS_ROOT"
 @dataclass(frozen=True)
 class HipKittensExecDescriptor:
     family: str
+    operand_dtype: str
+    accumulator_dtype: str
     a_tile_shape: tuple[int, int]
     b_tile_shape: tuple[int, int]
     c_tile_shape: tuple[int, int]
@@ -29,7 +31,13 @@ class HipKittensExecDescriptor:
     a_layout: str
     b_layout: str
     c_layout: str
-    mma_op: str
+    gl_operand_dtype: str
+    gl_accumulator_dtype: str
+    rt_operand_alias: str
+    rt_accumulator_alias: str
+    host_operand_pointer: str
+    host_accumulator_pointer: str
+    mma_statement: str
     reference_path: str
 
 
@@ -49,6 +57,8 @@ class HipKittensExecMatch:
 _DESCRIPTORS = (
     HipKittensExecDescriptor(
         family="bf16_gemm_32x16x32",
+        operand_dtype="bf16",
+        accumulator_dtype="f32",
         a_tile_shape=(32, 16),
         b_tile_shape=(16, 32),
         c_tile_shape=(32, 32),
@@ -58,11 +68,19 @@ _DESCRIPTORS = (
         a_layout="ducks::rt_layout::row",
         b_layout="ducks::rt_layout::col",
         c_layout="ducks::rt_layout::col",
-        mma_op="mma_AB",
+        gl_operand_dtype="bf16",
+        gl_accumulator_dtype="float",
+        rt_operand_alias="rt_bf",
+        rt_accumulator_alias="rt_fl",
+        host_operand_pointer="const std::uint16_t*",
+        host_accumulator_pointer="float*",
+        mma_statement="mma_AB(c_accum, a_tile, b_tile, c_accum);",
         reference_path="include/ops/warp/register/tile/mma.cuh",
     ),
     HipKittensExecDescriptor(
         family="bf16_gemm_16x32x16",
+        operand_dtype="bf16",
+        accumulator_dtype="f32",
         a_tile_shape=(16, 32),
         b_tile_shape=(32, 16),
         c_tile_shape=(16, 16),
@@ -72,7 +90,57 @@ _DESCRIPTORS = (
         a_layout="ducks::rt_layout::row",
         b_layout="ducks::rt_layout::col",
         c_layout="ducks::rt_layout::col",
-        mma_op="mma_AB",
+        gl_operand_dtype="bf16",
+        gl_accumulator_dtype="float",
+        rt_operand_alias="rt_bf",
+        rt_accumulator_alias="rt_fl",
+        host_operand_pointer="const std::uint16_t*",
+        host_accumulator_pointer="float*",
+        mma_statement="mma_AB(c_accum, a_tile, b_tile, c_accum);",
+        reference_path="include/ops/warp/register/tile/mma.cuh",
+    ),
+    HipKittensExecDescriptor(
+        family="f16_gemm_32x16x32",
+        operand_dtype="f16",
+        accumulator_dtype="f32",
+        a_tile_shape=(32, 16),
+        b_tile_shape=(16, 32),
+        c_tile_shape=(32, 32),
+        a_rt_shape="ducks::rt_shape::rt_32x16",
+        b_rt_shape="ducks::rt_shape::rt_16x32",
+        c_rt_shape="ducks::rt_shape::rt_32x32",
+        a_layout="ducks::rt_layout::row",
+        b_layout="ducks::rt_layout::col",
+        c_layout="ducks::rt_layout::col",
+        gl_operand_dtype="half",
+        gl_accumulator_dtype="float",
+        rt_operand_alias="rt_hf",
+        rt_accumulator_alias="rt_fl",
+        host_operand_pointer="const std::uint16_t*",
+        host_accumulator_pointer="float*",
+        mma_statement="mfma323216(c_accum.tiles[0][0].data, a_tile.tiles[0][0].data, b_tile.tiles[0][0].data, c_accum.tiles[0][0].data);",
+        reference_path="include/ops/warp/register/tile/mma.cuh",
+    ),
+    HipKittensExecDescriptor(
+        family="f16_gemm_16x32x16",
+        operand_dtype="f16",
+        accumulator_dtype="f32",
+        a_tile_shape=(16, 32),
+        b_tile_shape=(32, 16),
+        c_tile_shape=(16, 16),
+        a_rt_shape="ducks::rt_shape::rt_16x32",
+        b_rt_shape="ducks::rt_shape::rt_32x16",
+        c_rt_shape="ducks::rt_shape::rt_16x16",
+        a_layout="ducks::rt_layout::row",
+        b_layout="ducks::rt_layout::col",
+        c_layout="ducks::rt_layout::col",
+        gl_operand_dtype="half",
+        gl_accumulator_dtype="float",
+        rt_operand_alias="rt_hf",
+        rt_accumulator_alias="rt_fl",
+        host_operand_pointer="const std::uint16_t*",
+        host_accumulator_pointer="float*",
+        mma_statement="mfma161632(c_accum.tiles[0][0].data, a_tile.tiles[0][0].data, b_tile.tiles[0][0].data, c_accum.tiles[0][0].data);",
         reference_path="include/ops/warp/register/tile/mma.cuh",
     ),
 )
@@ -218,15 +286,17 @@ class HipKittensExecBackend:
             c_spec = specs[c_name]
         except KeyError as exc:
             raise BackendNotImplementedError("hipkittens_exec expects mma operands to be direct tensor arguments") from exc
-        if a_spec.dtype != "bf16" or b_spec.dtype != "bf16" or c_spec.dtype != "f32":
+        if a_spec.dtype != b_spec.dtype:
             raise BackendNotImplementedError(
-                f"hipkittens_exec requires bf16 inputs and f32 output, got {a_spec.dtype}, {b_spec.dtype}, {c_spec.dtype}"
+                f"hipkittens_exec requires matching operand dtypes, got {a_spec.dtype} and {b_spec.dtype}"
             )
         if a_spec.shape[1] != b_spec.shape[0] or c_spec.shape != (a_spec.shape[0], b_spec.shape[1]):
             raise BackendNotImplementedError(
                 f"hipkittens_exec requires GEMM-compatible shapes, got {a_spec.shape} x {b_spec.shape} -> {c_spec.shape}"
             )
         for descriptor in _DESCRIPTORS:
+            if a_spec.dtype != descriptor.operand_dtype or c_spec.dtype != descriptor.accumulator_dtype:
+                continue
             tile_m, tile_k = descriptor.a_tile_shape
             b_k, tile_n = descriptor.b_tile_shape
             if tile_k != b_k:
@@ -249,9 +319,10 @@ class HipKittensExecBackend:
                 k_tiles=a_spec.shape[1] // tile_k,
             )
         raise BackendNotImplementedError(
-            "hipkittens_exec only supports bf16 GEMM shapes composed from HipKittens tiles "
+            "hipkittens_exec only supports GEMM shapes composed from supported HipKittens tiles "
             + ", ".join(
-                f"{d.a_tile_shape} x {d.b_tile_shape} -> {d.c_tile_shape}" for d in _DESCRIPTORS
+                f"{d.operand_dtype}:{d.a_tile_shape} x {d.b_tile_shape} -> {d.accumulator_dtype}:{d.c_tile_shape}"
+                for d in _DESCRIPTORS
             )
         )
 
@@ -303,24 +374,24 @@ class HipKittensExecBackend:
             "#include <hip/hip_runtime.h>\n"
             "#include \"kittens.cuh\"\n\n"
             "using namespace kittens;\n\n"
-            "using GLA = gl<bf16, -1, -1, -1, -1>;\n"
-            "using GLB = gl<bf16, -1, -1, -1, -1>;\n"
-            "using GLC = gl<float, -1, -1, -1, -1>;\n\n"
+            f"using GLA = gl<{descriptor.gl_operand_dtype}, -1, -1, -1, -1>;\n"
+            f"using GLB = gl<{descriptor.gl_operand_dtype}, -1, -1, -1, -1>;\n"
+            f"using GLC = gl<{descriptor.gl_accumulator_dtype}, -1, -1, -1, -1>;\n\n"
             f"extern \"C\" __global__ void {entry_point}(GLA {match.a_name}, GLB {match.b_name}, GLC {match.c_name}) {{\n"
             "  const int tile_row = static_cast<int>(blockIdx.y);\n"
             "  const int tile_col = static_cast<int>(blockIdx.x);\n"
-            f"  rt_bf<{tile_m}, {tile_k}, {descriptor.a_layout}, {descriptor.a_rt_shape}> a_tile;\n"
-            f"  rt_bf<{tile_k}, {tile_n}, {descriptor.b_layout}, {descriptor.b_rt_shape}> b_tile;\n"
-            f"  rt_fl<{descriptor.c_tile_shape[0]}, {descriptor.c_tile_shape[1]}, {descriptor.c_layout}, {descriptor.c_rt_shape}> c_accum;\n"
+            f"  {descriptor.rt_operand_alias}<{tile_m}, {tile_k}, {descriptor.a_layout}, {descriptor.a_rt_shape}> a_tile;\n"
+            f"  {descriptor.rt_operand_alias}<{tile_k}, {tile_n}, {descriptor.b_layout}, {descriptor.b_rt_shape}> b_tile;\n"
+            f"  {descriptor.rt_accumulator_alias}<{descriptor.c_tile_shape[0]}, {descriptor.c_tile_shape[1]}, {descriptor.c_layout}, {descriptor.c_rt_shape}> c_accum;\n"
             "  zero(c_accum);\n"
             f"  for (int k_tile = 0; k_tile < {match.k_tiles}; ++k_tile) {{\n"
             f"    load(a_tile, {match.a_name}, {{0, 0, tile_row, k_tile}});\n"
             f"    load(b_tile, {match.b_name}, {{0, 0, k_tile, tile_col}});\n"
-            f"    {descriptor.mma_op}(c_accum, a_tile, b_tile, c_accum);\n"
+            f"    {descriptor.mma_statement}\n"
             "  }\n"
             f"  store({match.c_name}, c_accum, {{0, 0, tile_row, tile_col}});\n"
             "}\n\n"
-            f"extern \"C\" int launch_{entry_point}(const std::uint16_t* {match.a_name}, const std::uint16_t* {match.b_name}, float* {match.c_name}) {{\n"
+            f"extern \"C\" int launch_{entry_point}({descriptor.host_operand_pointer} {match.a_name}, {descriptor.host_operand_pointer} {match.b_name}, {descriptor.host_accumulator_pointer} {match.c_name}) {{\n"
             f"  auto gl_a = make_gl<GLA>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.a_name})), 1, 1, {match.a_shape[0]}, {match.a_shape[1]});\n"
             f"  auto gl_b = make_gl<GLB>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.b_name})), 1, 1, {match.b_shape[0]}, {match.b_shape[1]});\n"
             f"  auto gl_c = make_gl<GLC>(reinterpret_cast<uint64_t>({match.c_name}), 1, 1, {match.c_shape[0]}, {match.c_shape[1]});\n"

@@ -8,7 +8,7 @@ import baybridge as bb
 
 @bb.kernel
 
-def bf16_gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+def gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
     bb.gemm(a, b, c)
 
 
@@ -25,7 +25,7 @@ def _fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BAYBRIDGE_HIPKITTENS_ROOT", str(fake_root))
 
 
-def _make_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+def _make_bf16_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="bf16")
     b_data = []
     for row in range(16):
@@ -38,7 +38,7 @@ def _make_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     return a, b, c
 
 
-def _make_tiled_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+def _make_bf16_tiled_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(64)], dtype="bf16")
     b_data = []
     for row in range(32):
@@ -55,11 +55,24 @@ def _make_tiled_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     return a, b, c
 
 
+def _make_f16_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="f16")
+    b_data = []
+    for row in range(16):
+        values = []
+        for col in range(32):
+            values.append(1.0 if col == row else 0.0)
+        b_data.append(values)
+    b = bb.tensor(b_data, dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
 def test_hipkittens_exec_lowers_supported_bf16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
-    a, b, c = _make_micro_inputs()
+    a, b, c = _make_bf16_micro_inputs()
     artifact = bb.compile(
-        bf16_gemm_kernel,
+        gemm_kernel,
         a,
         b,
         c,
@@ -75,16 +88,40 @@ def test_hipkittens_exec_lowers_supported_bf16_gemm(tmp_path: Path, monkeypatch:
     assert 'mma_AB(c_accum, a_tile, b_tile, c_accum);' in text
     assert 'rt_bf<32, 16, ducks::rt_layout::row, ducks::rt_shape::rt_32x16> a_tile;' in text
     assert 'rt_bf<16, 32, ducks::rt_layout::col, ducks::rt_shape::rt_16x32> b_tile;' in text
+    assert 'rt_fl<32, 32, ducks::rt_layout::col, ducks::rt_shape::rt_32x32> c_accum;' in text
     assert 'for (int k_tile = 0; k_tile < 1; ++k_tile)' in text
     assert '<<<dim3(1, 1, 1), dim3(kittens::WARP_THREADS, 1, 1)>>>' in text
 
 
 
+def test_hipkittens_exec_lowers_supported_f16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_f16_micro_inputs()
+    artifact = bb.compile(
+        gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert 'using GLA = gl<half, -1, -1, -1, -1>;' in text
+    assert 'using GLC = gl<float, -1, -1, -1, -1>;' in text
+    assert 'rt_hf<32, 16, ducks::rt_layout::row, ducks::rt_shape::rt_32x16> a_tile;' in text
+    assert 'rt_fl<32, 32, ducks::rt_layout::col, ducks::rt_shape::rt_32x32> c_accum;' in text
+    assert 'mfma323216(c_accum.tiles[0][0].data, a_tile.tiles[0][0].data, b_tile.tiles[0][0].data, c_accum.tiles[0][0].data);' in text
+
+
+
 def test_hipkittens_exec_lowers_tiled_bf16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
-    a, b, c = _make_tiled_inputs()
+    a, b, c = _make_bf16_tiled_inputs()
     artifact = bb.compile(
-        bf16_gemm_kernel,
+        gemm_kernel,
         a,
         b,
         c,
@@ -111,7 +148,7 @@ def test_hipkittens_exec_rejects_unsupported_shape(tmp_path: Path, monkeypatch: 
     b = bb.tensor([[1.0] * 16 for _ in range(16)], dtype="bf16")
     c = bb.zeros((16, 16), dtype="f32")
 
-    with pytest.raises(bb.BackendNotImplementedError, match="hipkittens_exec only supports bf16 GEMM shapes"):
+    with pytest.raises(bb.BackendNotImplementedError, match="hipkittens_exec only supports GEMM shapes"):
         bb.compile(
             unsupported_gemm,
             a,
@@ -123,36 +160,39 @@ def test_hipkittens_exec_rejects_unsupported_shape(tmp_path: Path, monkeypatch: 
         )
 
 
+
 def test_compile_auto_prefers_hipkittens_exec_for_matching_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
-    a, b, c = _make_micro_inputs()
+    a, b, c = _make_bf16_micro_inputs()
 
-    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx950"))
+    artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx950"))
 
     assert artifact.backend_name == "hipkittens_exec"
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.dialect == "hipkittens_exec_cpp"
 
 
+
 def test_compile_keeps_default_backend_when_hipkittens_exec_is_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_root(tmp_path, monkeypatch)
-    a, b, c = _make_micro_inputs()
+    a, b, c = _make_bf16_micro_inputs()
 
-    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
+    artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
 
     assert artifact.backend_name == "mlir_text"
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.dialect == "baybridge"
 
 
+
 def test_compile_uses_target_env_for_auto_preference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
     monkeypatch.setenv("BAYBRIDGE_EXEC_ARCH", "gfx950")
-    a, b, c = _make_micro_inputs()
+    a, b, c = _make_bf16_micro_inputs()
 
-    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path)
+    artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path)
 
     assert artifact.target.arch == "gfx950"
     assert artifact.backend_name == "hipkittens_exec"
@@ -165,10 +205,10 @@ def test_hipkittens_exec_runs_supported_bf16_gemm(tmp_path: Path) -> None:
     if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
         pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
 
-    a, b, c = _make_micro_inputs()
+    a, b, c = _make_bf16_micro_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
     artifact = bb.compile(
-        bf16_gemm_kernel,
+        gemm_kernel,
         a,
         b,
         c,
@@ -194,10 +234,10 @@ def test_hipkittens_exec_runs_tiled_bf16_gemm(tmp_path: Path) -> None:
     if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
         pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
 
-    a, b, c = _make_tiled_inputs()
+    a, b, c = _make_bf16_tiled_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
     artifact = bb.compile(
-        bf16_gemm_kernel,
+        gemm_kernel,
         a,
         b,
         c,
@@ -215,4 +255,33 @@ def test_hipkittens_exec_runs_tiled_bf16_gemm(tmp_path: Path) -> None:
         expected[row][16:32] = rounded_a[row][0:16]
         expected[row][32:48] = rounded_a[row][16:32]
         expected[row][48:64] = rounded_a[row][16:32]
+    assert c.tolist() == expected
+
+
+
+def test_hipkittens_exec_runs_supported_f16_gemm(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HipKittens backend tests")
+    if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
+        pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
+
+    a, b, c = _make_f16_micro_inputs()
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    artifact = bb.compile(
+        gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+
+    artifact(a, b, c)
+
+    expected = [[0.0 for _ in range(32)] for _ in range(32)]
+    rounded_a = a.tolist()
+    for row in range(32):
+        for col in range(16):
+            expected[row][col] = rounded_a[row][col]
     assert c.tolist() == expected
