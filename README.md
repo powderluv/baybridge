@@ -218,6 +218,11 @@ Useful helpers:
   - full tensor shapes may be larger as long as they are exact multiples of one supported micro tile and the reduction dimension is tiled accordingly
   - requires `BAYBRIDGE_HIPKITTENS_ROOT` to point at a HipKittens checkout
 
+Default backend behavior:
+- if `compile(...)` is called without an explicit backend and the traced kernel matches `hipkittens_exec` on `gfx950`, Baybridge auto-prefers `hipkittens_exec`
+- otherwise it falls back to the normal default textual backend
+- if `BAYBRIDGE_EXEC_ARCH` is set, Baybridge uses that architecture as the default compile target
+
 Example:
 
 ```python

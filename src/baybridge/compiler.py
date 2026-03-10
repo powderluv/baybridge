@@ -19,6 +19,7 @@ from .tracing import IRBuilder, ScalarValue, TensorValue, tracing
 from .views import TiledTensorView
 
 _CACHE_ENV = "BAYBRIDGE_CACHE_DIR"
+_TARGET_ENV = "BAYBRIDGE_EXEC_ARCH"
 _DEFAULT_BACKEND = "mlir_text"
 
 
@@ -86,6 +87,13 @@ def _default_cache_dir() -> Path:
     return Path.home() / ".cache" / "baybridge"
 
 
+def _default_target() -> AMDTarget:
+    configured_arch = os.environ.get(_TARGET_ENV)
+    if configured_arch:
+        return AMDTarget(arch=configured_arch)
+    return AMDTarget()
+
+
 def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None]:
     if backend is None:
         backend = _DEFAULT_BACKEND
@@ -104,6 +112,20 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, HipccExecBackend()
         raise CompilationError(f"unknown backend '{backend}'")
     return backend.name, backend
+
+
+def _resolve_backend_for_ir(
+    ir: PortableKernelIR | None,
+    target: AMDTarget,
+    backend: str | Backend | None,
+) -> tuple[str, Backend | None]:
+    if backend is not None:
+        return _resolve_backend(backend)
+    if ir is not None:
+        hipkittens_backend = HipKittensExecBackend()
+        if hipkittens_backend.supports(ir, target):
+            return hipkittens_backend.name, hipkittens_backend
+    return _resolve_backend(_DEFAULT_BACKEND)
 
 
 def _normalize_kernel(kernel: KernelDefinition | Any) -> KernelDefinition:
@@ -486,20 +508,20 @@ def compile(
     use_cache: bool = True,
 ) -> CompiledKernel:
     definition = _normalize_kernel(kernel)
-    selected_target = target or AMDTarget()
-    backend_name, resolved_backend = _resolve_backend(backend)
+    selected_target = target or _default_target()
     resolved_cache_dir = Path(cache_dir).expanduser() if cache_dir else _default_cache_dir()
     normalized_sample_args = tuple(normalize_runtime_argument(arg) for arg in sample_args)
     ir: PortableKernelIR | None = None
     lowered_module: LoweredModule | None = None
     runtime_metadata: dict[str, Any] | None = None
-    artifact_extension = getattr(resolved_backend, "artifact_extension", ".mlir")
     try:
         ir = _trace(definition, normalized_sample_args)
     except CompilationError as exc:
         if not _can_runtime_compile(definition, normalized_sample_args):
             raise
         runtime_metadata = {"mode": "runtime_only", "trace_error": str(exc)}
+    backend_name, resolved_backend = _resolve_backend_for_ir(ir, selected_target, backend)
+    artifact_extension = getattr(resolved_backend, "artifact_extension", ".mlir")
     if ir is not None:
         cache_key = _cache_key(_trace_cache_payload(ir, selected_target, backend_name))
         lowered_module = resolved_backend.lower(ir, selected_target) if resolved_backend else None

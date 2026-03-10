@@ -58,7 +58,15 @@ def _make_tiled_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
 def test_hipkittens_exec_lowers_supported_bf16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
     a, b, c = _make_micro_inputs()
-    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, backend="hipkittens_exec")
+    artifact = bb.compile(
+        bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
 
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.dialect == "hipkittens_exec_cpp"
@@ -75,7 +83,15 @@ def test_hipkittens_exec_lowers_supported_bf16_gemm(tmp_path: Path, monkeypatch:
 def test_hipkittens_exec_lowers_tiled_bf16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
     a, b, c = _make_tiled_inputs()
-    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, backend="hipkittens_exec")
+    artifact = bb.compile(
+        bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
 
     assert artifact.lowered_module is not None
     text = artifact.lowered_module.text
@@ -96,7 +112,50 @@ def test_hipkittens_exec_rejects_unsupported_shape(tmp_path: Path, monkeypatch: 
     c = bb.zeros((16, 16), dtype="f32")
 
     with pytest.raises(bb.BackendNotImplementedError, match="hipkittens_exec only supports bf16 GEMM shapes"):
-        bb.compile(unsupported_gemm, a, b, c, cache_dir=tmp_path, backend="hipkittens_exec")
+        bb.compile(
+            unsupported_gemm,
+            a,
+            b,
+            c,
+            cache_dir=tmp_path,
+            backend="hipkittens_exec",
+            target=bb.AMDTarget(arch="gfx950"),
+        )
+
+
+def test_compile_auto_prefers_hipkittens_exec_for_matching_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_micro_inputs()
+
+    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx950"))
+
+    assert artifact.backend_name == "hipkittens_exec"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "hipkittens_exec_cpp"
+
+
+def test_compile_keeps_default_backend_when_hipkittens_exec_is_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_micro_inputs()
+
+    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
+
+    assert artifact.backend_name == "mlir_text"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "baybridge"
+
+
+def test_compile_uses_target_env_for_auto_preference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    monkeypatch.setenv("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    a, b, c = _make_micro_inputs()
+
+    artifact = bb.compile(bf16_gemm_kernel, a, b, c, cache_dir=tmp_path)
+
+    assert artifact.target.arch == "gfx950"
+    assert artifact.backend_name == "hipkittens_exec"
 
 
 

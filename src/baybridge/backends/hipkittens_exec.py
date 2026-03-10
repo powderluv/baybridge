@@ -82,8 +82,15 @@ class HipKittensExecBackend:
     name = "hipkittens_exec"
     artifact_extension = ".hipkittens.cpp"
 
+    def supports(self, ir: PortableKernelIR, target: AMDTarget) -> bool:
+        try:
+            self._match(ir, target)
+        except BackendNotImplementedError:
+            return False
+        return True
+
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
-        match = self._match(ir)
+        match = self._match(ir, target)
         root = self._configured_root()
         text = self._render_cpp(ir.name, target, match, root)
         return LoweredModule(
@@ -100,7 +107,7 @@ class HipKittensExecBackend:
         lowered_module: LoweredModule,
         source_path: Path,
     ):
-        self._match(ir)
+        self._match(ir, target)
         root = self._require_root()
         shared_path = source_path.with_suffix("").with_suffix(".so")
         state: dict[str, Any] = {}
@@ -192,7 +199,11 @@ class HipKittensExecBackend:
                 argtypes.append(scalar_ctype(argument.spec.dtype))
         return argtypes
 
-    def _match(self, ir: PortableKernelIR) -> HipKittensExecMatch:
+    def _match(self, ir: PortableKernelIR, target: AMDTarget) -> HipKittensExecMatch:
+        if target.arch != "gfx950":
+            raise BackendNotImplementedError(
+                f"hipkittens_exec currently supports gfx950 only, got target arch '{target.arch}'"
+            )
         mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
         if len(mma_ops) != 1:
             raise BackendNotImplementedError("hipkittens_exec currently supports exactly one mma op")
@@ -262,8 +273,6 @@ class HipKittensExecBackend:
         return root
 
     def _arch_define(self, target: AMDTarget) -> str:
-        if target.arch == "gfx942":
-            return "-DKITTENS_CDNA3"
         if target.arch == "gfx950":
             return "-DKITTENS_CDNA4"
         raise BackendNotImplementedError(f"hipkittens_exec does not support target arch '{target.arch}'")
