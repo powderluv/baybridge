@@ -1,0 +1,33 @@
+{
+  "repo_url": "https://github.com/NVIDIA/cutlass.git",
+  "git_ref": "73c59c055c0fec87792470dbf33325158113db5e",
+  "selection": [
+    "examples/python/CuTeDSL/ampere/call_bypass_dlpack.py",
+    "examples/python/CuTeDSL/ampere/call_from_jit.py",
+    "examples/python/CuTeDSL/ampere/cooperative_launch.py",
+    "examples/python/CuTeDSL/ampere/dynamic_smem_size.py",
+    "examples/python/CuTeDSL/ampere/elementwise_add.py",
+    "examples/python/CuTeDSL/ampere/elementwise_add_autotune.py",
+    "examples/python/CuTeDSL/ampere/elementwise_apply.py",
+    "examples/python/CuTeDSL/ampere/flash_attention_v2.py",
+    "examples/python/CuTeDSL/ampere/hstu_attention.py",
+    "examples/python/CuTeDSL/ampere/inline_ptx.py",
+    "examples/python/CuTeDSL/ampere/sgemm.py",
+    "examples/python/CuTeDSL/ampere/smem_allocator.py",
+    "examples/python/CuTeDSL/ampere/tensorop_gemm.py",
+    "examples/python/CuTeDSL/notebooks/README.md",
+    "examples/python/CuTeDSL/notebooks/async_pipeline.ipynb",
+    "examples/python/CuTeDSL/notebooks/benchmark_autotune.ipynb",
+    "examples/python/CuTeDSL/notebooks/composed_layout.ipynb",
+    "examples/python/CuTeDSL/notebooks/cuda_graphs.ipynb",
+    "examples/python/CuTeDSL/notebooks/cute_layout_algebra.ipynb",
+    "examples/python/CuTeDSL/notebooks/data_types.ipynb",
+    "examples/python/CuTeDSL/notebooks/elementwise_add.ipynb",
+    "examples/python/CuTeDSL/notebooks/hello_world.ipynb",
+    "examples/python/CuTeDSL/notebooks/print.ipynb",
+    "examples/python/CuTeDSL/notebooks/tensor.ipynb",
+    "examples/python/CuTeDSL/notebooks/tensorssa.ipynb",
+    "examples/python/CuTeDSL/notebooks/tour_to_sol_gemm.ipynb",
+    "examples/python/CuTeDSL/utils/test_sparse_utils.py"
+  ]
+}
