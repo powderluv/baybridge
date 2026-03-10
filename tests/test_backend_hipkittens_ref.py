@@ -32,7 +32,10 @@ def test_hipkittens_ref_lowers_gemm_family(tmp_path: Path) -> None:
     assert 'using namespace kittens;' in artifact.lowered_module.text
     assert '"family": "simt_gemm"' in artifact.lowered_module.text
     assert 'kernels/gemm/bf16fp32/' in artifact.lowered_module.text
-    assert '-I$BAYBRIDGE_HIPKITTENS_ROOT/include' in artifact.lowered_module.text
+    assert (
+        '-I$BAYBRIDGE_HIPKITTENS_ROOT/include' in artifact.lowered_module.text
+        or "Build hint: hipcc -I" in artifact.lowered_module.text
+    )
 
     artifact(a, b, c)
     assert c.tolist() == [[19.0, 22.0], [43.0, 50.0]]

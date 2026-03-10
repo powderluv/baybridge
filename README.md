@@ -7,12 +7,13 @@ Today it provides:
 - a portable kernel IR
 - textual lowering backends (`mlir_text`, `gpu_text`, and `hipkittens_ref`)
 - executable HIP lowering for a narrow validated subset
+- an optional executable HipKittens backend for a narrow BF16 GEMM subset
 - a reference runtime for basic examples and `@jit` wrapper execution
 
 It does not yet provide:
-- executable ROCm code generation
 - HSACO production or HIP launch
 - PTX-to-AMDGCN translation
+- broad executable lowering for the full DSL surface
 
 ## What Works Today
 
@@ -206,6 +207,12 @@ Useful helpers:
   - lowers matched GEMM and attention-family kernels to a HipKittens-oriented C++ reference artifact
   - this is a reference backend, not an executable backend
   - if `BAYBRIDGE_HIPKITTENS_ROOT` points at a HipKittens checkout, the artifact includes a direct include-path build hint
+- `backend="hipcc_exec"`
+  - builds and runs a narrow executable HIP subset through `hipcc`
+- `backend="hipkittens_exec"`
+  - builds and runs a narrow executable HipKittens subset
+  - current supported kernel family: BF16 GEMM with exact shapes `(32, 16) x (16, 32) -> (32, 32)` and `(16, 32) x (32, 16) -> (16, 16)`
+  - requires `BAYBRIDGE_HIPKITTENS_ROOT` to point at a HipKittens checkout
 
 Example:
 
@@ -222,6 +229,20 @@ print(artifact.lowered_module.dialect)  # hipkittens_cpp
 print(artifact.lowered_module.text)
 ```
 
+HipKittens executable example:
+
+```python
+artifact = cute.compile(
+    bf16_gemm_kernel,
+    a,
+    b,
+    c,
+    backend="hipkittens_exec",
+    target=cute.AMDTarget(arch="gfx950"),
+)
+artifact(a, b, c)
+```
+
 ## Working Examples In This Repo
 
 These tests are the best executable documentation today:
@@ -235,6 +256,8 @@ These tests are the best executable documentation today:
   - `gpu_text` lowering surface
 - `tests/test_backend_hipkittens_ref.py`
   - HipKittens reference backend family matching
+- `tests/test_backend_hipkittens_exec.py`
+  - HipKittens executable BF16 GEMM path
 - `tests/test_validation.py`
   - explicit unsupported cases and diagnostics
 
@@ -268,6 +291,8 @@ Important limitations in the current tracer:
   - GPU/ROCDL-flavored textual lowering
 - `src/baybridge/backends/hipkittens_ref.py`
   - HipKittens-oriented reference lowering for matched kernel families
+- `src/baybridge/backends/hipkittens_exec.py`
+  - narrow executable HipKittens lowering for supported BF16 GEMM tiles
 
 ## Status
 

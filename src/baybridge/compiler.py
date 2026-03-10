@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .backend import Backend, LoweredModule
-from .backends import GpuTextBackend, HipKittensRefBackend, HipccExecBackend, MlirTextBackend
+from .backends import GpuTextBackend, HipKittensExecBackend, HipKittensRefBackend, HipccExecBackend, MlirTextBackend
 from .diagnostics import BackendNotImplementedError, CompilationError
 from .frontend import KernelDefinition, TraceKernelLaunch
 from .ir import PortableKernelIR, ScalarSpec, TensorSpec
@@ -96,6 +96,8 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, MlirTextBackend()
         if backend == "gpu_text":
             return backend, GpuTextBackend()
+        if backend == "hipkittens_exec":
+            return backend, HipKittensExecBackend()
         if backend == "hipkittens_ref":
             return backend, HipKittensRefBackend()
         if backend == "hipcc_exec":
