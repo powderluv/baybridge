@@ -211,7 +211,11 @@ Useful helpers:
   - builds and runs a narrow executable HIP subset through `hipcc`
 - `backend="hipkittens_exec"`
   - builds and runs a narrow executable HipKittens subset
-  - current supported kernel family: BF16 GEMM with exact shapes `(32, 16) x (16, 32) -> (32, 32)` and `(16, 32) x (32, 16) -> (16, 16)`
+  - current supported kernel family: pure BF16 GEMM composed from HipKittens micro tiles
+  - supported micro tiles:
+    - `(32, 16) x (16, 32) -> (32, 32)`
+    - `(16, 32) x (32, 16) -> (16, 16)`
+  - full tensor shapes may be larger as long as they are exact multiples of one supported micro tile and the reduction dimension is tiled accordingly
   - requires `BAYBRIDGE_HIPKITTENS_ROOT` to point at a HipKittens checkout
 
 Example:
