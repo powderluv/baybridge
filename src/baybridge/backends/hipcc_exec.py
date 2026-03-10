@@ -316,6 +316,15 @@ class HipccExecBackend:
             return [
                 f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = &{source_name}[{offset}];"
             ]
+        if operation.op == "copy_async":
+            src_name, dst_name = operation.inputs
+            src_spec = tensor_specs[src_name]
+            dst_spec = tensor_specs[dst_name]
+            if src_spec.shape != dst_spec.shape:
+                raise BackendNotImplementedError(
+                    f"hipcc_exec copy_async requires matching tensor shapes, got {src_spec.shape} and {dst_spec.shape}"
+                )
+            return self._emit_tensor_copy(src_name, src_spec, dst_name, dst_spec)
         if operation.op == "copy":
             src_name, dst_name = operation.inputs
             src_spec = tensor_specs[src_name]

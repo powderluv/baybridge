@@ -5,7 +5,7 @@
 Today it provides:
 - a Python frontend with an example-friendly `import baybridge as cute` surface
 - a portable kernel IR
-- textual lowering backends (`mlir_text` and `gpu_text`)
+- textual lowering backends (`mlir_text`, `gpu_text`, and `hipkittens_ref`)
 - executable HIP lowering for a narrow validated subset
 - a reference runtime for basic examples and `@jit` wrapper execution
 
@@ -202,11 +202,23 @@ Useful helpers:
   - lowers portable IR to a baybridge-specific textual form
 - `backend="gpu_text"`
   - lowers portable IR to GPU/ROCDL-flavored textual IR
+- `backend="hipkittens_ref"`
+  - lowers matched GEMM and attention-family kernels to a HipKittens-oriented C++ reference artifact
+  - this is a reference backend, not an executable backend
+  - if `BAYBRIDGE_HIPKITTENS_ROOT` points at a HipKittens checkout, the artifact includes a direct include-path build hint
 
 Example:
 
 ```python
 artifact = cute.compile(indexed_add_kernel, a, b, c, backend="gpu_text")
+print(artifact.lowered_module.text)
+```
+
+HipKittens reference example:
+
+```python
+artifact = cute.compile(gemm_kernel, a, b, c, backend="hipkittens_ref")
+print(artifact.lowered_module.dialect)  # hipkittens_cpp
 print(artifact.lowered_module.text)
 ```
 
@@ -221,6 +233,8 @@ These tests are the best executable documentation today:
   - traced launch wrapper behavior
 - `tests/test_backend_gpu.py`
   - `gpu_text` lowering surface
+- `tests/test_backend_hipkittens_ref.py`
+  - HipKittens reference backend family matching
 - `tests/test_validation.py`
   - explicit unsupported cases and diagnostics
 
@@ -252,6 +266,8 @@ Important limitations in the current tracer:
   - portable textual lowering
 - `src/baybridge/backends/gpu_text.py`
   - GPU/ROCDL-flavored textual lowering
+- `src/baybridge/backends/hipkittens_ref.py`
+  - HipKittens-oriented reference lowering for matched kernel families
 
 ## Status
 

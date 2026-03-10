@@ -5,7 +5,7 @@ from math import prod
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .dtypes import element_type
+from .dtypes import element_type, resolve_element_type_name
 from .diagnostics import CompilationError, UnsupportedOperationError
 from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec, normalize_address_space
 from .mfma import MFMADescriptor, resolve_mfma_descriptor
@@ -49,9 +49,119 @@ class CopyUniversalOp:
 
 
 @dataclass(frozen=True)
+class MmaUniversalOp:
+    accumulator_dtype: str
+    wave_size: int = 64
+    tile: tuple[int, int, int] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyG2SOp:
+    cache_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyBulkTensorTileG2SOp:
+    cta_group: Any = None
+
+
+@dataclass(frozen=True)
+class WarpLdMatrix8x8x16bOp:
+    transpose: bool = False
+    num_matrices: int = 1
+
+    def __post_init__(self) -> None:
+        if self.num_matrices <= 0:
+            raise ValueError("LdMatrix8x8x16bOp requires num_matrices > 0")
+
+
+@dataclass(frozen=True)
+class WarpMmaF16BF16Op:
+    dtype: Any
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    wave_size: int = 64
+    lane_shape: tuple[int, int] = (4, 8)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", resolve_element_type_name(self.dtype))
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def operand_dtype(self) -> str:
+        return str(self.dtype)
+
+
+@dataclass(frozen=True)
+class Tcgen05Ld32x32bOp:
+    repetition: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05MmaF16BF16Op:
+    dtype: Any
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    cta_group: Any = None
+    operand_source: Any = None
+    operand_major_mode_a: Any = None
+    operand_major_mode_b: Any = None
+    wave_size: int = 64
+    lane_shape: tuple[int, int] = (4, 8)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", resolve_element_type_name(self.dtype))
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def operand_dtype(self) -> str:
+        return str(self.dtype)
+
+
+@dataclass(frozen=True)
+class CompatibleMmaDescriptor:
+    tile: tuple[int, int, int]
+    operand_dtype: str
+    accumulator_dtype: str
+    wave_size: int = 64
+    lane_shape: tuple[int, int] = (4, 16)
+    variant_name: str = "compatible_mma"
+    llvm_intrinsic: str | None = None
+
+    def operand_shape(self, role: str) -> tuple[int, int]:
+        m, n, k = self.tile
+        table = {
+            "a": (m, k),
+            "b": (k, n),
+            "acc": (m, n),
+        }
+        try:
+            return table[role]
+        except KeyError as exc:
+            raise ValueError(f"unsupported MMA fragment role '{role}'") from exc
+
+
+@dataclass(frozen=True)
 class CopyAtom:
     op: Any
     value_type: str
+    num_bits_per_copy: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value_type", resolve_element_type_name(self.value_type))
+        if self.num_bits_per_copy is not None and self.num_bits_per_copy <= 0:
+            raise ValueError("copy atoms require num_bits_per_copy > 0 when specified")
+
+    @property
+    def vector_bytes(self) -> int | None:
+        if self.num_bits_per_copy is None:
+            return None
+        if self.num_bits_per_copy % 8 != 0:
+            raise ValueError("copy atoms require num_bits_per_copy to be byte aligned")
+        return self.num_bits_per_copy // 8
 
 
 @dataclass(frozen=True)
@@ -92,8 +202,10 @@ TiledCopy = TiledCopyTV
 
 @dataclass(frozen=True)
 class TiledMma:
-    descriptor: MFMADescriptor
+    descriptor: MFMADescriptor | CompatibleMmaDescriptor
     axes: tuple[str, str] = ("x", "y")
+    atom_layout: Layout | None = None
+    permutation_mnk: Any = None
 
     @property
     def tile(self) -> tuple[int, int, int]:
@@ -106,6 +218,26 @@ class TiledMma:
     def get_slice(self, thread_index: ScalarValue | int) -> "TiledMmaSlice":
         return TiledMmaSlice(self, thread_index)
 
+    def make_fragment_A(self, tensor: TensorValue | RuntimeTensor) -> TensorValue | RuntimeTensor:
+        dtype = tensor.spec.dtype if isinstance(tensor, TensorValue) else tensor.dtype
+        return make_rmem_tensor(self.descriptor.operand_shape("a"), dtype)
+
+    def make_fragment_B(self, tensor: TensorValue | RuntimeTensor) -> TensorValue | RuntimeTensor:
+        dtype = tensor.spec.dtype if isinstance(tensor, TensorValue) else tensor.dtype
+        return make_rmem_tensor(self.descriptor.operand_shape("b"), dtype)
+
+    def partition_shape_C(self, shape: tuple[int, int]) -> tuple[int, int]:
+        del shape
+        return self.descriptor.operand_shape("acc")
+
+    def make_fragment_C(self, shape: tuple[int, ...]) -> TensorValue | RuntimeTensor:
+        return make_rmem_tensor(shape, self.descriptor.accumulator_dtype)
+
+    def set(self, field: Any, value: Any) -> "TiledMma":
+        del field
+        del value
+        return self
+
 
 @dataclass(frozen=True)
 class TiledMmaSlice:
@@ -114,23 +246,39 @@ class TiledMmaSlice:
 
     def partition_A(self, tensor: TensorValue) -> TensorValue:
         del self.thread_index
-        return make_fragment_a(
-            tensor,
-            tile=self.tiled_mma.tile,
-            axes=self.tiled_mma.axes,
-            wave_size=self.tiled_mma.descriptor.wave_size,
-            accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
-        )
+        try:
+            return make_fragment_a(
+                tensor,
+                tile=self.tiled_mma.tile,
+                axes=self.tiled_mma.axes,
+                wave_size=self.tiled_mma.descriptor.wave_size,
+                accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
+            )
+        except ValueError:
+            return partition_wave(
+                tensor,
+                self.tiled_mma.descriptor.operand_shape("a"),
+                axes=self.tiled_mma.axes,
+                wave_size=self.tiled_mma.descriptor.wave_size,
+            )
 
     def partition_B(self, tensor: TensorValue) -> TensorValue:
         del self.thread_index
-        return make_fragment_b(
-            tensor,
-            tile=self.tiled_mma.tile,
-            axes=self.tiled_mma.axes,
-            wave_size=self.tiled_mma.descriptor.wave_size,
-            accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
-        )
+        try:
+            return make_fragment_b(
+                tensor,
+                tile=self.tiled_mma.tile,
+                axes=self.tiled_mma.axes,
+                wave_size=self.tiled_mma.descriptor.wave_size,
+                accumulator_dtype=self.tiled_mma.descriptor.accumulator_dtype,
+            )
+        except ValueError:
+            return partition_wave(
+                tensor,
+                self.tiled_mma.descriptor.operand_shape("b"),
+                axes=self.tiled_mma.axes,
+                wave_size=self.tiled_mma.descriptor.wave_size,
+            )
 
     def partition_C(self, tensor: TensorValue) -> TensorValue:
         del self.thread_index
@@ -1957,8 +2105,105 @@ def store(
         runtime_tensor[normalized_indices] = value
 
 
-def make_copy_atom(op: Any, value_type: str) -> CopyAtom:
-    return CopyAtom(op=op, value_type=str(value_type))
+def _layout_shape(layout: Any) -> tuple[int, ...]:
+    if isinstance(layout, Layout):
+        return tuple(int(dim) for dim in layout.shape)
+    if hasattr(layout, "shape"):
+        shape = getattr(layout, "shape")
+        if isinstance(shape, tuple):
+            return tuple(int(dim) for dim in shape)
+        if isinstance(shape, list):
+            return tuple(int(dim) for dim in shape)
+    if isinstance(layout, tuple):
+        return tuple(int(dim) for dim in layout)
+    raise TypeError("tiled MMA layout inputs must provide a shape")
+
+
+def _infer_universal_mma_tile(atom_layout: Any, permutation_mnk: Any) -> tuple[int, int, int]:
+    if isinstance(permutation_mnk, tuple) and len(permutation_mnk) == 3:
+        resolved: list[int] = []
+        for item in permutation_mnk:
+            if item is None:
+                resolved.append(1)
+            elif isinstance(item, int):
+                resolved.append(int(item))
+            else:
+                shape = _layout_shape(item)
+                resolved.append(prod(shape) if shape else 1)
+        return tuple(resolved)  # type: ignore[return-value]
+    if atom_layout is not None:
+        shape = _layout_shape(atom_layout)
+        if len(shape) >= 2:
+            m = int(shape[0])
+            n = int(shape[1])
+            k = int(shape[2]) if len(shape) >= 3 else 1
+            return (m, n, k)
+    return (1, 1, 1)
+
+
+def _compatible_mma_descriptor(
+    *,
+    tile: tuple[int, int, int],
+    operand_dtype: str,
+    accumulator_dtype: str,
+    wave_size: int = 64,
+    lane_shape: tuple[int, int] = (4, 16),
+    variant_name: str = "compatible_mma",
+) -> CompatibleMmaDescriptor:
+    return CompatibleMmaDescriptor(
+        tile=tuple(int(dim) for dim in tile),
+        operand_dtype=resolve_element_type_name(operand_dtype),
+        accumulator_dtype=resolve_element_type_name(accumulator_dtype),
+        wave_size=int(wave_size),
+        lane_shape=tuple(int(dim) for dim in lane_shape),
+        variant_name=variant_name,
+    )
+
+
+def _resolve_descriptor_or_compatible(
+    *,
+    tile: tuple[int, int, int],
+    operand_dtype: str,
+    accumulator_dtype: str,
+    wave_size: int = 64,
+    lane_shape: tuple[int, int] = (4, 16),
+    variant_name: str = "compatible_mma",
+) -> MFMADescriptor | CompatibleMmaDescriptor:
+    operand_dtype = resolve_element_type_name(operand_dtype)
+    accumulator_dtype = resolve_element_type_name(accumulator_dtype)
+    try:
+        return resolve_mfma_descriptor(tuple(tile), operand_dtype, accumulator_dtype, wave_size=wave_size)
+    except ValueError:
+        return _compatible_mma_descriptor(
+            tile=tile,
+            operand_dtype=operand_dtype,
+            accumulator_dtype=accumulator_dtype,
+            wave_size=wave_size,
+            lane_shape=lane_shape,
+            variant_name=variant_name,
+        )
+
+
+def _is_cpasync_copy_op(op: Any) -> bool:
+    return isinstance(op, (CpAsyncCopyG2SOp, CpAsyncCopyBulkTensorTileG2SOp))
+
+
+def _tensor_element_type_name(tensor: Any) -> str:
+    if isinstance(tensor, TensorValue):
+        return tensor.spec.dtype
+    if isinstance(tensor, RuntimeTensor):
+        return tensor.dtype
+    value = getattr(tensor, "element_type", None)
+    if value is not None:
+        return resolve_element_type_name(value)
+    raise TypeError("tensor inputs must expose an element type")
+
+
+def make_copy_atom(op: Any, value_type: Any, *, num_bits_per_copy: int | None = None) -> CopyAtom:
+    resolved_type = resolve_element_type_name(value_type)
+    if num_bits_per_copy is None:
+        num_bits_per_copy = element_type(resolved_type).width
+    return CopyAtom(op=op, value_type=resolved_type, num_bits_per_copy=num_bits_per_copy)
 
 
 def make_tiled_copy_tv(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -> TiledCopyTV:
@@ -1967,23 +2212,85 @@ def make_tiled_copy_tv(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -
     return TiledCopyTV(atom=atom, thread_layout=thr_layout, value_layout=val_layout)
 
 
-def _resolve_tiled_mma_descriptor(op: Any) -> MFMADescriptor:
+def _resolve_tiled_mma_descriptor(
+    op: Any,
+    atom_layout: Any = None,
+    permutation_mnk: Any = None,
+) -> MFMADescriptor | CompatibleMmaDescriptor:
     if isinstance(op, MFMADescriptor):
         return op
+    if isinstance(op, CompatibleMmaDescriptor):
+        return op
+    if isinstance(op, MmaUniversalOp):
+        tile = tuple(op.tile) if op.tile is not None else _infer_universal_mma_tile(atom_layout, permutation_mnk)
+        return _compatible_mma_descriptor(
+            tile=tile,
+            operand_dtype=op.accumulator_dtype,
+            accumulator_dtype=op.accumulator_dtype,
+            wave_size=op.wave_size,
+            lane_shape=(4, 4),
+            variant_name="universal_mma",
+        )
+    if isinstance(op, WarpMmaF16BF16Op):
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=op.operand_dtype,
+            accumulator_dtype=op.accumulator_dtype,
+            wave_size=op.wave_size,
+            lane_shape=op.lane_shape,
+            variant_name="warp_mma_f16bf16",
+        )
+    if isinstance(op, Tcgen05MmaF16BF16Op):
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=op.operand_dtype,
+            accumulator_dtype=op.accumulator_dtype,
+            wave_size=op.wave_size,
+            lane_shape=op.lane_shape,
+            variant_name="tcgen05_mma_f16bf16",
+        )
     if hasattr(op, "variant_name") and hasattr(op, "tile") and hasattr(op, "operand_dtype") and hasattr(op, "accumulator_dtype"):
-        wave_size = getattr(op, "wave_size", 64)
-        return resolve_mfma_descriptor(tuple(op.tile), str(op.operand_dtype), str(op.accumulator_dtype), wave_size=wave_size)
-    if hasattr(op, "tile") and hasattr(op, "dtype"):
-        operand_dtype = str(op.dtype)
-        accumulator_dtype = str(getattr(op, "accumulator_dtype", operand_dtype))
         wave_size = int(getattr(op, "wave_size", 64))
-        return resolve_mfma_descriptor(tuple(op.tile), operand_dtype, accumulator_dtype, wave_size=wave_size)
+        lane_shape = tuple(getattr(op, "lane_shape", (4, 16)))
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=str(op.operand_dtype),
+            accumulator_dtype=str(op.accumulator_dtype),
+            wave_size=wave_size,
+            lane_shape=lane_shape,
+            variant_name=str(getattr(op, "variant_name", "compatible_mma")),
+        )
+    if hasattr(op, "tile") and hasattr(op, "dtype"):
+        operand_dtype = resolve_element_type_name(op.dtype)
+        accumulator_dtype = resolve_element_type_name(getattr(op, "accumulator_dtype", operand_dtype))
+        wave_size = int(getattr(op, "wave_size", 64))
+        lane_shape = tuple(getattr(op, "lane_shape", (4, 16)))
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=operand_dtype,
+            accumulator_dtype=accumulator_dtype,
+            wave_size=wave_size,
+            lane_shape=lane_shape,
+            variant_name=str(getattr(op, "variant_name", "compatible_mma")),
+        )
     raise TypeError("make_tiled_mma expects an MFMA descriptor or a descriptor-like object with tile/dtype metadata")
 
 
-def make_tiled_mma(op: Any, *, axes: tuple[str, str] = ("x", "y")) -> TiledMma:
-    descriptor = _resolve_tiled_mma_descriptor(op)
-    return TiledMma(descriptor=descriptor, axes=axes)
+def make_tiled_mma(
+    op: Any,
+    atom_layout: Any = None,
+    *,
+    permutation_mnk: Any = None,
+    axes: tuple[str, str] = ("x", "y"),
+) -> TiledMma:
+    normalized_atom_layout = atom_layout if isinstance(atom_layout, Layout) or atom_layout is None else make_layout(atom_layout)
+    descriptor = _resolve_tiled_mma_descriptor(op, atom_layout=normalized_atom_layout, permutation_mnk=permutation_mnk)
+    return TiledMma(
+        descriptor=descriptor,
+        axes=axes,
+        atom_layout=normalized_atom_layout,
+        permutation_mnk=permutation_mnk,
+    )
 
 
 def _make_tiled_copy_from_mma(atom: CopyAtom, tiled_mma: TiledMma, role: str) -> TiledCopyTV:
@@ -2040,7 +2347,12 @@ def _normalize_predicate_fragment(
     raise TypeError("copy predicates must be baybridge tensors")
 
 
-def copy(*args: Any, vector_bytes: int | None = None, pred: TensorValue | RuntimeTensor | None = None) -> None:
+def copy(
+    *args: Any,
+    vector_bytes: int | None = None,
+    pred: TensorValue | RuntimeTensor | None = None,
+    tma_bar_ptr: Any | None = None,
+) -> None:
     copy_atom = None
     if len(args) == 2:
         src, dst = args
@@ -2048,8 +2360,6 @@ def copy(*args: Any, vector_bytes: int | None = None, pred: TensorValue | Runtim
         copy_atom, src, dst = args
     else:
         raise TypeError("copy expects (src, dst) or (copy_atom, src, dst)")
-
-    del copy_atom
 
     if isinstance(src, ThreadFragmentTensorValue) and isinstance(dst, TensorValue):
         predicate = _normalize_predicate_fragment(pred, shape=src.shape)
@@ -2068,13 +2378,22 @@ def copy(*args: Any, vector_bytes: int | None = None, pred: TensorValue | Runtim
         dst.store(src, predicate=predicate if isinstance(predicate, RuntimeTensor) else None)
         return
 
+    if copy_atom is not None and vector_bytes is None:
+        vector_bytes = copy_atom.vector_bytes
+
     if pred is not None:
         raise UnsupportedOperationError("predicated copy is only implemented for baybridge thread fragments today")
+
+    if copy_atom is not None and _is_cpasync_copy_op(copy_atom.op):
+        del tma_bar_ptr
+        copy_async(src, dst, vector_bytes=vector_bytes)
+        return
 
     try:
         require_builder().emit_void("copy", src, dst, attrs={"vector_bytes": vector_bytes})
     except CompilationError:
         del vector_bytes
+        del tma_bar_ptr
         _copy_runtime_tensor(_runtime_tensor(src), _runtime_tensor(dst))
 
 
@@ -2456,12 +2775,161 @@ class _UnsupportedNamespace:
         )
 
 
+class _CpAsyncLoadCacheMode:
+    GLOBAL = "global"
+    ALWAYS = "always"
+
+
+class _CpAsyncNamespace(_UnsupportedNamespace):
+    LoadCacheMode = _CpAsyncLoadCacheMode
+
+    def __init__(self):
+        super().__init__("nvgpu.cpasync")
+
+    def CopyG2SOp(self, *, cache_mode: str | None = None) -> CpAsyncCopyG2SOp:
+        return CpAsyncCopyG2SOp(cache_mode=cache_mode)
+
+    def CopyBulkTensorTileG2SOp(self, cta_group: Any = None) -> CpAsyncCopyBulkTensorTileG2SOp:
+        return CpAsyncCopyBulkTensorTileG2SOp(cta_group=cta_group)
+
+    def prefetch_descriptor(self, descriptor: Any) -> None:
+        del descriptor
+
+    def tma_partition(
+        self,
+        tma_atom: Any,
+        stage: Any,
+        layout: Any,
+        smem_tensor: Any,
+        gmem_tensor: Any,
+    ) -> tuple[Any, Any]:
+        del tma_atom
+        del stage
+        del layout
+        return smem_tensor, gmem_tensor
+
+
+class _WarpNamespace(_UnsupportedNamespace):
+    def __init__(self):
+        super().__init__("nvgpu.warp")
+
+    def MmaF16BF16Op(
+        self,
+        operand_dtype: Any,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+    ) -> WarpMmaF16BF16Op:
+        return WarpMmaF16BF16Op(operand_dtype, accumulator_dtype, tile)
+
+    def LdMatrix8x8x16bOp(
+        self,
+        *,
+        transpose: bool = False,
+        num_matrices: int = 1,
+        ) -> WarpLdMatrix8x8x16bOp:
+        return WarpLdMatrix8x8x16bOp(transpose=transpose, num_matrices=num_matrices)
+
+
+class _Tcgen05CtaGroup:
+    ONE = "one"
+
+
+class _Tcgen05OperandSource:
+    SMEM = "smem"
+
+
+class _Tcgen05OperandMajorMode:
+    K = "k"
+
+
+class _Tcgen05Repetition:
+    x64 = "x64"
+
+
+class _Tcgen05Field:
+    ACCUMULATE = "accumulate"
+
+
+class _Tcgen05Namespace(_UnsupportedNamespace):
+    CtaGroup = _Tcgen05CtaGroup
+    OperandSource = _Tcgen05OperandSource
+    OperandMajorMode = _Tcgen05OperandMajorMode
+    Repetition = _Tcgen05Repetition
+    Field = _Tcgen05Field
+
+    def __init__(self):
+        super().__init__("nvgpu.tcgen05")
+
+    def MmaF16BF16Op(
+        self,
+        operand_dtype: Any,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+        cta_group: Any = None,
+        operand_source: Any = None,
+        operand_major_mode_a: Any = None,
+        operand_major_mode_b: Any = None,
+    ) -> Tcgen05MmaF16BF16Op:
+        return Tcgen05MmaF16BF16Op(
+            operand_dtype,
+            accumulator_dtype,
+            tile,
+            cta_group,
+            operand_source,
+            operand_major_mode_a,
+            operand_major_mode_b,
+        )
+
+    def Ld32x32bOp(self, repetition: Any = None) -> Tcgen05Ld32x32bOp:
+        return Tcgen05Ld32x32bOp(repetition=repetition)
+
+    def make_tmem_copy(self, atom: CopyAtom, tensor: Any) -> TiledCopyTV:
+        shape = getattr(tensor, "shape", None)
+        if not isinstance(shape, tuple) or len(shape) < 2:
+            raise ValueError("tcgen05.make_tmem_copy expects a tensor-like value with rank >= 2")
+        thread_layout = Layout.ordered((1, shape[1]), order=(1, 0))
+        value_layout = Layout.ordered((shape[0], 1), order=(1, 0))
+        return make_tiled_copy_tv(atom, thread_layout, value_layout)
+
+
 class _NvgpuNamespace(_UnsupportedNamespace):
     def __init__(self):
         super().__init__("nvgpu")
+        self.cpasync = _CpAsyncNamespace()
+        self.warp = _WarpNamespace()
+        self.tcgen05 = _Tcgen05Namespace()
 
     def CopyUniversalOp(self) -> CopyUniversalOp:
         return CopyUniversalOp()
+
+    def MmaUniversalOp(self, accumulator_dtype: Any) -> MmaUniversalOp:
+        return MmaUniversalOp(accumulator_dtype)
+
+    def make_tiled_tma_atom_A(
+        self,
+        op: Any,
+        tensor: TensorValue | RuntimeTensor,
+        smem_layout: Any,
+        mma_tiler: Any,
+        tiled_mma: TiledMma,
+    ) -> tuple[CopyAtom, TensorValue | RuntimeTensor]:
+        del smem_layout
+        del mma_tiler
+        del tiled_mma
+        return make_copy_atom(op, _tensor_element_type_name(tensor)), tensor
+
+    def make_tiled_tma_atom_B(
+        self,
+        op: Any,
+        tensor: TensorValue | RuntimeTensor,
+        smem_layout: Any,
+        mma_tiler: Any,
+        tiled_mma: TiledMma,
+    ) -> tuple[CopyAtom, TensorValue | RuntimeTensor]:
+        del smem_layout
+        del mma_tiler
+        del tiled_mma
+        return make_copy_atom(op, _tensor_element_type_name(tensor)), tensor
 
 
 class _ArchNamespace:

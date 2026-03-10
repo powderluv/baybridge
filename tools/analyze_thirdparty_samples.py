@@ -16,6 +16,14 @@ SUPPORTED_DSL = {
     "IdentityLayout",
     "LaunchConfig",
     "Layout",
+    "Boolean",
+    "BFloat16",
+    "Float16",
+    "Float32",
+    "Int",
+    "Int8",
+    "Int32",
+    "Int64",
     "Pointer",
     "ReductionOp",
     "Shape",
@@ -121,8 +129,34 @@ SUPPORTED_DSL = {
 
 MISSING_DSL = set()
 
-NVIDIA_SPECIFIC = {
-    "nvgpu",
+NVIDIA_SPECIFIC = {"nvgpu"}
+
+SUPPORTED_NVIDIA_MARKERS = {
+    "nvgpu.CopyUniversalOp",
+    "nvgpu.MmaUniversalOp",
+    "nvgpu.cpasync.CopyBulkTensorTileG2SOp",
+    "nvgpu.cpasync.CopyG2SOp",
+    "nvgpu.cpasync.LoadCacheMode",
+    "nvgpu.cpasync.prefetch_descriptor",
+    "nvgpu.cpasync.tma_partition",
+    "nvgpu.make_tiled_tma_atom_A",
+    "nvgpu.make_tiled_tma_atom_B",
+    "nvgpu.warp.MmaF16BF16Op",
+    "nvgpu.warp.LdMatrix8x8x16bOp",
+    "tcgen05.CtaGroup",
+    "tcgen05.Field",
+    "tcgen05.Ld32x32bOp",
+    "tcgen05.MmaF16BF16Op",
+    "tcgen05.OperandMajorMode",
+    "tcgen05.OperandSource",
+    "tcgen05.Repetition",
+    "tcgen05.make_tmem_copy",
+}
+
+UNSUPPORTED_NVIDIA_MARKERS = {
+    "nvgpu.warpgroup": "nvgpu.warpgroup",
+    "nvgpu.wgmma": "nvgpu.wgmma",
+    "nvgpu.mbarrier": "nvgpu.mbarrier",
 }
 
 EXTERNAL_IMPORT_MARKERS = {
@@ -212,11 +246,30 @@ def dynamic_control_flow(text: str) -> bool:
     return "cutlass.dynamic_expr" in text or "if cutlass.dynamic_expr" in text
 
 
+def nvidia_markers(text: str, dsl_names: list[str]) -> list[str]:
+    if "nvgpu" not in dsl_names and not any(marker in text for marker in UNSUPPORTED_NVIDIA_MARKERS):
+        return []
+    unsupported = sorted(
+        {
+            label
+            for marker, label in UNSUPPORTED_NVIDIA_MARKERS.items()
+            if marker in text
+        }
+    )
+    if unsupported:
+        return unsupported
+    if any(marker in text for marker in SUPPORTED_NVIDIA_MARKERS):
+        return []
+    if "nvgpu" in dsl_names:
+        return ["nvgpu"]
+    return []
+
+
 def classify(relative_path: str, text: str) -> dict[str, object]:
     override = STATUS_OVERRIDES.get(relative_path)
     dsl_names = dsl_symbols(text)
     missing = sorted(name for name in dsl_names if name in MISSING_DSL)
-    nvidia_only = sorted(name for name in dsl_names if name in NVIDIA_SPECIFIC)
+    nvidia_only = nvidia_markers(text, dsl_names)
     unknown = sorted(name for name in dsl_names if name not in SUPPORTED_DSL | MISSING_DSL | NVIDIA_SPECIFIC)
     deps = external_markers(text)
 

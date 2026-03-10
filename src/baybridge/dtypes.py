@@ -36,6 +36,20 @@ def element_type(dtype: str) -> ElementType:
     return ElementType(dtype)
 
 
+def resolve_element_type_name(value: Any) -> str:
+    if isinstance(value, ElementType):
+        return normalize_dtype_name(str(value))
+    if isinstance(value, str):
+        return normalize_dtype_name(value)
+    dtype = getattr(value, "__baybridge_dtype__", None)
+    if isinstance(dtype, str):
+        return normalize_dtype_name(dtype)
+    dtype = getattr(value, "dtype", None)
+    if isinstance(dtype, str):
+        return normalize_dtype_name(dtype)
+    raise TypeError("element type values must be baybridge dtype strings or scalar constructors")
+
+
 def normalize_dtype_name(dtype: str) -> str:
     normalized = _ALIAS_TABLE.get(dtype, dtype)
     if normalized not in _WIDTH_TABLE:

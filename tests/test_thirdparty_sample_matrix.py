@@ -145,6 +145,24 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
         "    cute.autovec_copy(x, y)\n"
         "    cute.nvgpu.CopyUniversalOp()\n",
     )
+    _write_text(
+        upstream_root / "examples/python/CuTeDSL/ampere/tensorop_gemm.py",
+        "import torch\nimport baybridge as cute\n"
+        "def fn(a, b, c):\n"
+        "    cute.make_copy_atom(cute.nvgpu.cpasync.CopyG2SOp(cache_mode=cute.nvgpu.cpasync.LoadCacheMode.GLOBAL), 'f16', num_bits_per_copy=128)\n"
+        "    cute.make_copy_atom(cute.nvgpu.warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4), 'f16')\n"
+        "    op = cute.nvgpu.warp.MmaF16BF16Op(cute.Float16, cute.Float32, (16, 8, 16))\n"
+        "    cute.make_tiled_mma(op, cute.make_layout((2, 2, 1)), permutation_mnk=(32, 16, 16))\n",
+    )
+    _write_ipynb(
+        upstream_root / "examples/python/CuTeDSL/notebooks/tour_to_sol_gemm.ipynb",
+        "import torch\nimport baybridge as cute\n"
+        "from baybridge.nvgpu import cpasync, tcgen05\n"
+        "cpasync.CopyBulkTensorTileG2SOp(tcgen05.CtaGroup.ONE)\n"
+        "cpasync.prefetch_descriptor(desc)\n"
+        "cute.nvgpu.make_tiled_tma_atom_A(x)\n"
+        "cute.nvgpu.cpasync.tma_partition(atom, tensor, coord)\n",
+    )
     _write_ipynb(
         upstream_root / "examples/python/CuTeDSL/notebooks/print.ipynb",
         "import torch\nimport baybridge as cute\n"
@@ -266,7 +284,7 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     assert "unknown:recast_ptr" not in smem_allocator["blockers"]
 
     sgemm = _entry(entries, "examples/python/CuTeDSL/ampere/sgemm.py")
-    assert sgemm["status"] == "blocked_nvidia_specific"
+    assert sgemm["status"] == "blocked_external_dependency"
     assert "unknown:ComposedLayout" not in sgemm["blockers"]
     assert "unknown:CopyAtom" not in sgemm["blockers"]
     assert "unknown:TiledCopy" not in sgemm["blockers"]
@@ -285,6 +303,15 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
     assert "unknown:make_swizzle" not in sgemm["blockers"]
     assert "unknown:basic_copy" not in sgemm["blockers"]
     assert "unknown:autovec_copy" not in sgemm["blockers"]
+    assert "nvidia:nvgpu" not in sgemm["blockers"]
+
+    tensorop_gemm = _entry(entries, "examples/python/CuTeDSL/ampere/tensorop_gemm.py")
+    assert tensorop_gemm["status"] == "blocked_external_dependency"
+    assert "nvidia:nvgpu" not in tensorop_gemm["blockers"]
+
+    tour_to_sol = _entry(entries, "examples/python/CuTeDSL/notebooks/tour_to_sol_gemm.ipynb")
+    assert tour_to_sol["status"] == "blocked_external_dependency"
+    assert not any(blocker.startswith("nvidia:") for blocker in tour_to_sol["blockers"])
 
     print_notebook = _entry(entries, "examples/python/CuTeDSL/notebooks/print.ipynb")
     assert print_notebook["status"] == "blocked_external_dependency"

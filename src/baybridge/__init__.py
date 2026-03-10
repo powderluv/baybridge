@@ -72,7 +72,6 @@ from .frontend import (
     repeat_like,
     make_tensor,
     mma,
-    nvgpu,
     partition,
     partition_program,
     partition_thread,
@@ -97,6 +96,7 @@ from .frontend import (
     zipped_divide,
 )
 from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec
+from . import nvgpu
 from .structs import struct
 from . import runtime, testing, typing
 from .runtime import (
