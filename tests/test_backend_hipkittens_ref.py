@@ -18,6 +18,44 @@ def attention_like_kernel(q: bb.Tensor, k: bb.Tensor, scores: bb.Tensor, probs: 
     row_sum.store(exp_scores.reduce(bb.ReductionOp.ADD, 0.0, reduction_profile=(None, 1)))
 
 
+def test_compile_auto_prefers_hipkittens_ref_for_attention_kernel(tmp_path: Path) -> None:
+    q = bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32")
+    k = bb.tensor([[1.0, 0.0], [0.0, 1.0]], dtype="f32")
+    scores = bb.zeros((2, 2), dtype="f32")
+    probs = bb.zeros((2, 2), dtype="f32")
+    row_sum = bb.zeros((2,), dtype="f32")
+
+    artifact = bb.compile(attention_like_kernel, q, k, scores, probs, row_sum, cache_dir=tmp_path)
+
+    assert artifact.backend_name == "hipkittens_ref"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "hipkittens_cpp"
+
+
+def test_compile_auto_prefers_hipkittens_ref_for_tensorop_family_when_exec_is_unavailable(tmp_path: Path) -> None:
+    a = bb.tensor([[1.0] * 16 for _ in range(32)], dtype="bf16")
+    b = bb.tensor([[1.0] * 32 for _ in range(16)], dtype="bf16")
+    c = bb.zeros((32, 32), dtype="f32")
+
+    artifact = bb.compile(simt_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
+
+    assert artifact.backend_name == "hipkittens_ref"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "hipkittens_cpp"
+
+
+def test_compile_keeps_default_backend_for_non_hipkittens_family(tmp_path: Path) -> None:
+    a = bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32")
+    b = bb.tensor([[5.0, 6.0], [7.0, 8.0]], dtype="f32")
+    c = bb.zeros((2, 2), dtype="f32")
+
+    artifact = bb.compile(simt_gemm_kernel, a, b, c, cache_dir=tmp_path)
+
+    assert artifact.backend_name == "mlir_text"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "baybridge"
+
+
 def test_hipkittens_ref_lowers_gemm_family(tmp_path: Path) -> None:
     a = bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32")
     b = bb.tensor([[5.0, 6.0], [7.0, 8.0]], dtype="f32")

@@ -30,11 +30,15 @@ class HipKittensRefBackend:
     name = "hipkittens_ref"
     artifact_extension = ".cpp"
 
+    def supports(self, ir: PortableKernelIR, target: AMDTarget) -> bool:
+        try:
+            match = self._analyze(ir)
+        except BackendNotImplementedError:
+            return False
+        return match.family in {"tensorop_gemm", "attention"}
+
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
-        value_specs = self._seed_value_specs(ir.arguments)
-        for operation in ir.operations:
-            self._record_result_specs(operation, value_specs)
-        match = self._match_family(ir, value_specs)
+        match = self._analyze(ir)
         root = self._configured_root()
         text = self._render_cpp(ir, target, match, root)
         return LoweredModule(
@@ -43,6 +47,12 @@ class HipKittensRefBackend:
             dialect="hipkittens_cpp",
             text=text,
         )
+
+    def _analyze(self, ir: PortableKernelIR) -> HipKittensMatch:
+        value_specs = self._seed_value_specs(ir.arguments)
+        for operation in ir.operations:
+            self._record_result_specs(operation, value_specs)
+        return self._match_family(ir, value_specs)
 
     def _seed_value_specs(self, arguments: tuple[KernelArgument, ...]) -> dict[str, TensorSpec | ScalarSpec]:
         return {argument.name: argument.spec for argument in arguments}

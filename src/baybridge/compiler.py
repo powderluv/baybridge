@@ -125,6 +125,9 @@ def _resolve_backend_for_ir(
         hipkittens_backend = HipKittensExecBackend()
         if hipkittens_backend.supports(ir, target):
             return hipkittens_backend.name, hipkittens_backend
+        hipkittens_ref_backend = HipKittensRefBackend()
+        if hipkittens_ref_backend.supports(ir, target):
+            return hipkittens_ref_backend.name, hipkittens_ref_backend
     return _resolve_backend(_DEFAULT_BACKEND)
 
 

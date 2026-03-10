@@ -173,7 +173,7 @@ def test_compile_auto_prefers_hipkittens_exec_for_matching_kernel(tmp_path: Path
 
 
 
-def test_compile_keeps_default_backend_when_hipkittens_exec_is_unsupported(
+def test_compile_falls_back_to_hipkittens_ref_when_hipkittens_exec_is_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_root(tmp_path, monkeypatch)
@@ -181,9 +181,9 @@ def test_compile_keeps_default_backend_when_hipkittens_exec_is_unsupported(
 
     artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
 
-    assert artifact.backend_name == "mlir_text"
+    assert artifact.backend_name == "hipkittens_ref"
     assert artifact.lowered_module is not None
-    assert artifact.lowered_module.dialect == "baybridge"
+    assert artifact.lowered_module.dialect == "hipkittens_cpp"
 
 
 

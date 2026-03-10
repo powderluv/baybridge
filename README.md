@@ -211,8 +211,10 @@ Useful helpers:
   - builds and runs a narrow executable HIP subset through `hipcc`
 - `backend="hipkittens_exec"`
   - builds and runs a narrow executable HipKittens subset
-  - current supported kernel family: pure BF16 GEMM composed from HipKittens micro tiles
+  - current supported kernel family: pure BF16/F16 GEMM composed from HipKittens micro tiles
   - supported micro tiles:
+    - `f16/f16 -> f32`
+    - `bf16/bf16 -> f32`
     - `(32, 16) x (16, 32) -> (32, 32)`
     - `(16, 32) x (32, 16) -> (16, 16)`
   - full tensor shapes may be larger as long as they are exact multiples of one supported micro tile and the reduction dimension is tiled accordingly
@@ -220,6 +222,7 @@ Useful helpers:
 
 Default backend behavior:
 - if `compile(...)` is called without an explicit backend and the traced kernel matches `hipkittens_exec` on `gfx950`, Baybridge auto-prefers `hipkittens_exec`
+- otherwise, if the traced kernel matches a HipKittens tensorop GEMM or attention family, Baybridge auto-prefers `hipkittens_ref`
 - otherwise it falls back to the normal default textual backend
 - if `BAYBRIDGE_EXEC_ARCH` is set, Baybridge uses that architecture as the default compile target
 
