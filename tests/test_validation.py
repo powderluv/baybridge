@@ -6,6 +6,8 @@ import baybridge as bb
 def test_launch_config_rejects_bad_dim3() -> None:
     with pytest.raises(ValueError, match="exactly 3 dimensions"):
         bb.LaunchConfig(grid=(1, 1), block=(1, 1, 1))
+    with pytest.raises(ValueError, match="exactly 3 dimensions"):
+        bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1), cluster=(1, 1))
 
 
 def test_launch_config_rejects_non_positive_dims() -> None:
@@ -23,9 +25,14 @@ def test_layout_rejects_rank_mismatch() -> None:
         bb.make_layout((4, 8), stride=(1,))
 
 
-def test_layout_rejects_non_positive_stride() -> None:
-    with pytest.raises(ValueError, match="strides must be > 0"):
-        bb.make_layout((4, 8), stride=(1, 0))
+def test_layout_rejects_negative_stride() -> None:
+    with pytest.raises(ValueError, match="strides must be >= 0"):
+        bb.make_layout((4, 8), stride=(1, -1))
+
+
+def test_layout_accepts_zero_stride_for_broadcast_views() -> None:
+    layout = bb.Layout(shape=(2, 3), stride=(1, 0))
+    assert layout.stride == (1, 0)
 
 
 def test_make_ordered_layout_rejects_non_permutation_order() -> None:
@@ -55,6 +62,21 @@ def test_lane_coords_rejects_empty_shape() -> None:
         bb.lane_coords(())
 
 
+def test_tensor_handle_rejects_bad_dynamic_layout_axis() -> None:
+    class FakeTensor:
+        shape = (4, 8)
+        dtype = "float16"
+
+        def __dlpack__(self):
+            return "capsule"
+
+        def __dlpack_device__(self):
+            return (2, 0)
+
+    with pytest.raises(ValueError, match="leading_dim"):
+        bb.from_dlpack(FakeTensor()).mark_layout_dynamic(leading_dim=2)
+
+
 def test_make_identity_tensor_rejects_empty_shape() -> None:
     with pytest.raises(ValueError, match="non-empty shape"):
         bb.make_identity_tensor(())
@@ -78,6 +100,12 @@ def test_composition_rejects_non_layout_rest_mapping() -> None:
 
     with pytest.raises(TypeError, match="baybridge.Layout"):
         bb.composition(tiled, (None, (2, 2)))
+
+
+def test_local_partition_rejects_unsupported_proj() -> None:
+    tensor = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
+    with pytest.raises(bb.UnsupportedOperationError, match="proj=1 only"):
+        bb.local_partition(tensor, (2,), 0, proj=(None, 1))
 
 
 @bb.kernel

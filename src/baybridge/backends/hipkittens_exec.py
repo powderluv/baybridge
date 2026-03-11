@@ -13,7 +13,7 @@ from ..backend import LoweredModule
 from ..diagnostics import BackendNotImplementedError
 from ..hip_runtime import HipRuntime, load_hip_library, require_hipcc, scalar_ctype
 from ..ir import KernelArgument, PortableKernelIR, TensorSpec
-from ..runtime import RuntimeTensor
+from ..runtime import RuntimeTensor, TensorHandle
 from ..target import AMDTarget
 
 _HIPKITTENS_ENV = "BAYBRIDGE_HIPKITTENS_ROOT"
@@ -555,13 +555,22 @@ class HipKittensExecBackend:
                     ctype = scalar_ctype(argument.spec.dtype)
                     c_args.append(ctype(value))
                     continue
-                if not isinstance(value, RuntimeTensor):
-                    raise TypeError(
-                        f"hipkittens_exec expects RuntimeTensor values for tensor argument '{argument.name}', got {type(value).__name__}"
-                    )
-                allocation = hip.upload_tensor(value)
-                tensor_allocations.append(allocation)
-                c_args.append(allocation.ptr)
+                if isinstance(value, RuntimeTensor):
+                    allocation = hip.upload_tensor(value)
+                    tensor_allocations.append(allocation)
+                    c_args.append(allocation.ptr)
+                    continue
+                if isinstance(value, TensorHandle):
+                    data_ptr = value.data_ptr()
+                    if not data_ptr:
+                        raise TypeError(
+                            f"hipkittens_exec tensor handle for argument '{argument.name}' does not expose a usable data_ptr()"
+                        )
+                    c_args.append(ctypes.c_void_p(data_ptr))
+                    continue
+                raise TypeError(
+                    f"hipkittens_exec expects RuntimeTensor or TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
+                )
             status = function(*c_args)
             if status != 0:
                 raise RuntimeError(f"launch_{ir.name} returned HIP status {status}")

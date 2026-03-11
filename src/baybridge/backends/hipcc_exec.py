@@ -10,7 +10,7 @@ from ..backend import LoweredModule
 from ..diagnostics import BackendNotImplementedError
 from ..hip_runtime import HipRuntime, load_hip_library, require_hipcc, scalar_ctype
 from ..ir import KernelArgument, Layout, Operation, PortableKernelIR, ScalarSpec, TensorSpec
-from ..runtime import RuntimeTensor
+from ..runtime import RuntimeTensor, TensorHandle
 from ..target import AMDTarget
 
 
@@ -146,13 +146,22 @@ class HipccExecBackend:
         try:
             for argument, value in zip(ir.arguments, args):
                 if isinstance(argument.spec, TensorSpec):
-                    if not isinstance(value, RuntimeTensor):
-                        raise TypeError(
-                            f"hipcc_exec expects RuntimeTensor values for tensor argument '{argument.name}', got {type(value).__name__}"
-                        )
-                    allocation = hip.upload_tensor(value)
-                    tensor_allocations.append(allocation)
-                    c_args.append(allocation.ptr)
+                    if isinstance(value, RuntimeTensor):
+                        allocation = hip.upload_tensor(value)
+                        tensor_allocations.append(allocation)
+                        c_args.append(allocation.ptr)
+                        continue
+                    if isinstance(value, TensorHandle):
+                        data_ptr = value.data_ptr()
+                        if not data_ptr:
+                            raise TypeError(
+                                f"hipcc_exec tensor handle for argument '{argument.name}' does not expose a usable data_ptr()"
+                            )
+                        c_args.append(ctypes.c_void_p(data_ptr))
+                        continue
+                    raise TypeError(
+                        f"hipcc_exec expects RuntimeTensor or TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
+                    )
                 else:
                     ctype = scalar_ctype(argument.spec.dtype)
                     c_args.append(ctype(value))
@@ -317,6 +326,10 @@ class HipccExecBackend:
             return [
                 f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = &{source_name}[{offset}];"
             ]
+        if operation.op == "broadcast_to":
+            source_name = operation.inputs[0]
+            spec = tensor_specs[operation.outputs[0]]
+            return [f"{self._cpp_tensor_base(spec.dtype)}* {operation.outputs[0]} = {source_name};"]
         if operation.op == "copy_async":
             src_name, dst_name = operation.inputs
             src_spec = tensor_specs[src_name]
@@ -339,7 +352,7 @@ class HipccExecBackend:
             tensor_name, value_name = operation.inputs
             tensor_spec = tensor_specs[tensor_name]
             return self._emit_tensor_fill(tensor_name, tensor_spec, value_name)
-        if operation.op in {"tensor_add", "tensor_sub", "tensor_mul"}:
+        if operation.op in {"tensor_add", "tensor_sub", "tensor_mul", "tensor_div"}:
             lhs_name, rhs_name = operation.inputs
             out_name = operation.outputs[0]
             lhs_spec = tensor_specs[lhs_name]
@@ -354,14 +367,28 @@ class HipccExecBackend:
                     "hipcc_exec tensor elementwise ops require matching tensor dtypes"
                 )
             return self._emit_tensor_binary(operation.op, lhs_name, lhs_spec, rhs_name, rhs_spec, out_name, out_spec)
-        if operation.op in {"math_sqrt", "math_rsqrt", "math_sin", "math_exp2"}:
+        if operation.op in {"math_sqrt", "math_rsqrt", "math_sin", "math_cos", "math_exp", "math_exp2", "math_log", "math_log2", "math_log10", "math_erf"}:
             source_name = operation.inputs[0]
             out_name = operation.outputs[0]
-            source_spec = tensor_specs[source_name]
-            out_spec = tensor_specs[out_name]
-            if source_spec.shape != out_spec.shape or source_spec.dtype != out_spec.dtype:
-                raise BackendNotImplementedError("hipcc_exec tensor math ops require matching tensor shapes and dtypes")
-            return self._emit_tensor_unary_math(operation.op, source_name, source_spec, out_name, out_spec)
+            if source_name in tensor_specs and out_name in tensor_specs:
+                source_spec = tensor_specs[source_name]
+                out_spec = tensor_specs[out_name]
+                if source_spec.shape != out_spec.shape or source_spec.dtype != out_spec.dtype:
+                    raise BackendNotImplementedError("hipcc_exec tensor math ops require matching tensor shapes and dtypes")
+                return self._emit_tensor_unary_math(operation.op, source_name, source_spec, out_name, out_spec)
+            dtype = value_types[output].dtype
+            return [f"const {self._cpp_scalar_type(dtype)} {output} = {self._scalar_unary_math_expr(operation.op, source_name)};"]
+        if operation.op == "math_atan2":
+            lhs_name, rhs_name = operation.inputs
+            if output in tensor_specs:
+                lhs_spec = tensor_specs[lhs_name]
+                rhs_spec = tensor_specs[rhs_name]
+                out_spec = tensor_specs[output]
+                if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != out_spec.shape:
+                    raise BackendNotImplementedError("hipcc_exec tensor atan2 requires matching tensor shapes")
+                return self._emit_tensor_binary_math(operation.op, lhs_name, lhs_spec, rhs_name, rhs_spec, output, out_spec)
+            dtype = value_types[output].dtype
+            return [f"const {self._cpp_scalar_type(dtype)} {output} = atan2f({lhs_name}, {rhs_name});"]
         if operation.op in {"reduce_add", "reduce_mul", "reduce_max", "reduce_min"}:
             source_name, init_name = operation.inputs
             source_spec = tensor_specs[source_name]
@@ -411,6 +438,8 @@ class HipccExecBackend:
                 if not self._cooperative_launch:
                     raise BackendNotImplementedError("grid-wide barriers require cooperative launch")
                 return ["cg::this_grid().sync();"]
+            if kind == "warp":
+                return ["/* baybridge.sync_warp: AMD wavefronts are lockstep, no-op */"]
             return ["__syncthreads();"]
         if operation.op == "tensor_dim":
             return [f"const std::int64_t {output} = {int(operation.attrs['value'])};"]
@@ -576,6 +605,7 @@ class HipccExecBackend:
             "tensor_add": "+",
             "tensor_sub": "-",
             "tensor_mul": "*",
+            "tensor_div": "/",
         }[op]
         lines = [f"{self._cpp_tensor_base(out_spec.dtype)} {out_name}[{prod(out_spec.shape)}];"]
 
@@ -600,7 +630,13 @@ class HipccExecBackend:
             "math_sqrt": lambda value: f"sqrtf({value})",
             "math_rsqrt": lambda value: f"rsqrtf({value})",
             "math_sin": lambda value: f"sinf({value})",
+            "math_cos": lambda value: f"cosf({value})",
+            "math_exp": lambda value: f"expf({value})",
             "math_exp2": lambda value: f"exp2f({value})",
+            "math_log": lambda value: f"logf({value})",
+            "math_log2": lambda value: f"log2f({value})",
+            "math_log10": lambda value: f"log10f({value})",
+            "math_erf": lambda value: f"erff({value})",
         }[op]
         lines = [f"{self._cpp_tensor_base(out_spec.dtype)} {out_name}[{prod(out_spec.shape)}];"]
 
@@ -611,6 +647,44 @@ class HipccExecBackend:
 
         lines.extend(self._emit_loop_nest(out_spec.shape, body))
         return lines
+
+    def _emit_tensor_binary_math(
+        self,
+        op: str,
+        lhs_name: str,
+        lhs_spec: TensorSpec,
+        rhs_name: str,
+        rhs_spec: TensorSpec,
+        out_name: str,
+        out_spec: TensorSpec,
+    ) -> list[str]:
+        expr = {
+            "math_atan2": lambda lhs, rhs: f"atan2f({lhs}, {rhs})",
+        }[op]
+        lines = [f"{self._cpp_tensor_base(out_spec.dtype)} {out_name}[{prod(out_spec.shape)}];"]
+
+        def body(index_names: list[str]) -> list[str]:
+            lhs_offset = self._offset_expr(lhs_spec, index_names)
+            rhs_offset = self._offset_expr(rhs_spec, index_names)
+            out_offset = self._offset_expr(out_spec, index_names)
+            return [f"{out_name}[{out_offset}] = {expr(f'{lhs_name}[{lhs_offset}]', f'{rhs_name}[{rhs_offset}]')};"]
+
+        lines.extend(self._emit_loop_nest(out_spec.shape, body))
+        return lines
+
+    def _scalar_unary_math_expr(self, op: str, value: str) -> str:
+        return {
+            "math_sqrt": f"sqrtf({value})",
+            "math_rsqrt": f"rsqrtf({value})",
+            "math_sin": f"sinf({value})",
+            "math_cos": f"cosf({value})",
+            "math_exp": f"expf({value})",
+            "math_exp2": f"exp2f({value})",
+            "math_log": f"logf({value})",
+            "math_log2": f"log2f({value})",
+            "math_log10": f"log10f({value})",
+            "math_erf": f"erff({value})",
+        }[op]
 
     def _emit_tensor_reduce_scalar(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Iterator, Sequence
 
@@ -20,12 +20,14 @@ from .dtypes import (
 class LaunchConfig:
     grid: tuple[int, int, int] = (1, 1, 1)
     block: tuple[int, int, int] = (1, 1, 1)
+    cluster: tuple[int, int, int] = (1, 1, 1)
     shared_mem_bytes: int = 0
     cooperative: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "grid", _normalize_dim3(self.grid, name="grid"))
         object.__setattr__(self, "block", _normalize_dim3(self.block, name="block"))
+        object.__setattr__(self, "cluster", _normalize_dim3(self.cluster, name="cluster"))
         if self.shared_mem_bytes < 0:
             raise ValueError("shared_mem_bytes must be >= 0")
 
@@ -33,6 +35,7 @@ class LaunchConfig:
         launch = {
             "grid": list(self.grid),
             "block": list(self.block),
+            "cluster": list(self.cluster),
             "shared_mem_bytes": self.shared_mem_bytes,
         }
         if self.cooperative:
@@ -47,6 +50,34 @@ class TensorHandle:
     dtype: str
     device_type: int
     device_id: int
+    source: Any | None = None
+    stride: tuple[int, ...] | None = None
+    assumed_align: int | None = None
+    dynamic_layout_leading_dim: int | None = None
+    raw_address: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shape", tuple(int(dim) for dim in self.shape))
+        object.__setattr__(self, "dtype", normalize_dtype_name(str(self.dtype)))
+        if self.stride is not None:
+            object.__setattr__(self, "stride", tuple(int(dim) for dim in self.stride))
+
+    def mark_layout_dynamic(self, leading_dim: int | None = None) -> "TensorHandle":
+        if leading_dim is not None and (leading_dim < 0 or leading_dim >= len(self.shape)):
+            raise ValueError(f"leading_dim must be within [0, {len(self.shape)})")
+        return replace(self, dynamic_layout_leading_dim=leading_dim)
+
+    def data_ptr(self) -> int:
+        if self.raw_address is not None:
+            return int(self.raw_address)
+        if self.source is not None and hasattr(self.source, "data_ptr"):
+            return int(self.source.data_ptr())
+        return 0
+
+    def to_runtime_tensor(self) -> "RuntimeTensor":
+        if self.source is not None and hasattr(self.source, "tolist"):
+            return tensor(self.source.tolist(), dtype=self.dtype)
+        raise TypeError("tensor handle cannot be converted to a baybridge runtime tensor")
 
 
 @dataclass(frozen=True)
@@ -239,6 +270,29 @@ class ExecutionState:
     def grid_dim(self) -> tuple[int, int, int]:
         return self.launch.grid
 
+    @property
+    def cluster_dim(self) -> tuple[int, int, int]:
+        return self.launch.cluster
+
+    @property
+    def cluster_idx(self) -> tuple[int, int, int]:
+        return tuple(block // cluster for block, cluster in zip(self.block_idx, self.cluster_dim))
+
+    @property
+    def block_idx_in_cluster(self) -> tuple[int, int, int]:
+        return tuple(block % cluster for block, cluster in zip(self.block_idx, self.cluster_dim))
+
+    @property
+    def cluster_size(self) -> int:
+        x, y, z = self.cluster_dim
+        return x * y * z
+
+    @property
+    def block_rank_in_cluster(self) -> int:
+        x, y, z = self.block_idx_in_cluster
+        dim_x, dim_y, _ = self.cluster_dim
+        return x + (dim_x * (y + (dim_y * z)))
+
 
 _current_execution: ContextVar[ExecutionState | None] = ContextVar("baybridge_execution", default=None)
 
@@ -306,6 +360,17 @@ class RuntimeTensor:
             linear_offset += index * self.stride[axis]
         return RuntimeTensor(self._storage, shape, dtype=self.dtype, stride=self.stride, offset=linear_offset)
 
+    def broadcast_to(self, shape: tuple[int, ...]) -> "RuntimeTensor":
+        target_shape = tuple(int(dim) for dim in shape)
+        target_stride = _broadcast_stride(self.shape, self.stride, target_shape)
+        return RuntimeTensor(
+            self._storage,
+            target_shape,
+            dtype=self.dtype,
+            stride=target_stride,
+            offset=self.offset,
+        )
+
     def __getitem__(self, index: Any) -> Any:
         if isinstance(index, tuple) and any(item is None for item in index):
             from .frontend import slice_
@@ -363,15 +428,16 @@ class RuntimeTensor:
 
     def _binary_op(self, other: Any, op, *, reverse: bool = False, dtype: str | None = None) -> "RuntimeTensor":
         if isinstance(other, RuntimeTensor):
-            if self.shape != other.shape:
-                raise ValueError(f"tensor shapes must match, got {self.shape} and {other.shape}")
+            result_shape = _broadcast_shape(self.shape, other.shape)
+            lhs_tensor = self.broadcast_to(result_shape) if self.shape != result_shape else self
+            rhs_tensor = other.broadcast_to(result_shape) if other.shape != result_shape else other
             flat = []
-            for index in _iter_indices(self.shape):
-                lhs = self[index]
-                rhs = other[index]
+            for index in _iter_indices(result_shape):
+                lhs = lhs_tensor[index]
+                rhs = rhs_tensor[index]
                 flat.append(op(rhs, lhs) if reverse else op(lhs, rhs))
             result_dtype = dtype or _binary_dtype(self.dtype, other.dtype)
-            return RuntimeTensor(flat, self.shape, dtype=result_dtype)
+            return RuntimeTensor(flat, result_shape, dtype=result_dtype)
         other_value = _unwrap_scalar_host_value(other)
         other_dtype = other.dtype if isinstance(other, RuntimeScalar) else type(other).__name__
         flat = []
@@ -466,19 +532,28 @@ def full(shape: tuple[int, ...], fill_value: Any, *, dtype: str = "f32") -> Runt
     return RuntimeTensor([_unwrap_scalar_host_value(fill_value) for _ in range(size)], shape, dtype=dtype)
 
 
-def from_dlpack(value: Any) -> TensorHandle:
+def from_dlpack(value: Any, assumed_align: int | None = None) -> TensorHandle:
     if not hasattr(value, "__dlpack__") or not hasattr(value, "__dlpack_device__"):
         raise TypeError("from_dlpack expects an object implementing __dlpack__ and __dlpack_device__")
     device_type, device_id = value.__dlpack_device__()
     capsule = value.__dlpack__()
     shape = tuple(getattr(value, "shape", ()))
     dtype = str(getattr(value, "dtype", "unknown"))
+    stride_value = getattr(value, "stride", None)
+    if callable(stride_value):
+        stride_value = stride_value()
+    stride = tuple(int(dim) for dim in stride_value) if stride_value is not None else None
+    raw_address = int(value.data_ptr()) if hasattr(value, "data_ptr") else None
     return TensorHandle(
         capsule=capsule,
         shape=shape,
         dtype=dtype,
         device_type=device_type,
         device_id=device_id,
+        source=value,
+        stride=stride,
+        assumed_align=assumed_align,
+        raw_address=raw_address,
     )
 
 
@@ -497,8 +572,16 @@ def make_ptr(
             assumed_align=assumed_align,
         )
     normalized = normalize_runtime_argument(value)
+    if isinstance(normalized, TensorHandle):
+        return Pointer(
+            value_type=str(value_type),
+            tensor=normalized,
+            raw_address=normalized.data_ptr() or normalized.raw_address,
+            address_space=address_space,
+            assumed_align=assumed_align or normalized.assumed_align,
+        )
     if not isinstance(normalized, RuntimeTensor):
-        raise TypeError("make_ptr expects a RuntimeTensor, nested tensor data, or an integer address")
+        raise TypeError("make_ptr expects a RuntimeTensor, tensor handle, nested tensor data, or an integer address")
     return Pointer(
         value_type=str(value_type),
         tensor=normalized,
@@ -511,6 +594,8 @@ def infer_runtime_spec(value: Any) -> tuple[str, tuple[int, ...] | None]:
     if isinstance(value, RuntimeScalar):
         return value.dtype, None
     if isinstance(value, RuntimeTensor):
+        return value.dtype, value.shape
+    if isinstance(value, TensorHandle):
         return value.dtype, value.shape
     if isinstance(value, Pointer) and isinstance(value.tensor, RuntimeTensor):
         return "python_object", None
@@ -531,6 +616,8 @@ def normalize_runtime_argument(value: Any) -> Any:
         return value
     if isinstance(value, RuntimeTensor):
         return value
+    if isinstance(value, TensorHandle):
+        return value
     if isinstance(value, Pointer):
         if value.tensor is None:
             return value
@@ -542,6 +629,8 @@ def normalize_runtime_argument(value: Any) -> Any:
             address_space=value.address_space,
             assumed_align=value.assumed_align,
         )
+    if hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__"):
+        return from_dlpack(value)
     if _looks_like_nested_tensor(value):
         return tensor(value)
     if isinstance(value, list):
@@ -571,6 +660,46 @@ def _canonical_stride(shape: tuple[int, ...]) -> tuple[int, ...]:
         stride[index] = running
         running *= shape[index]
     return tuple(stride)
+
+
+def _broadcast_shape(lhs: tuple[int, ...], rhs: tuple[int, ...]) -> tuple[int, ...]:
+    rank = max(len(lhs), len(rhs))
+    lhs_aligned = (1,) * (rank - len(lhs)) + lhs
+    rhs_aligned = (1,) * (rank - len(rhs)) + rhs
+    result: list[int] = []
+    for lhs_dim, rhs_dim in zip(lhs_aligned, rhs_aligned):
+        if lhs_dim == rhs_dim:
+            result.append(lhs_dim)
+            continue
+        if lhs_dim == 1:
+            result.append(rhs_dim)
+            continue
+        if rhs_dim == 1:
+            result.append(lhs_dim)
+            continue
+        raise ValueError(f"tensor shapes are not broadcast-compatible: {lhs} and {rhs}")
+    return tuple(result)
+
+
+def _broadcast_stride(
+    source_shape: tuple[int, ...],
+    source_stride: tuple[int, ...],
+    target_shape: tuple[int, ...],
+) -> tuple[int, ...]:
+    if len(target_shape) < len(source_shape):
+        raise ValueError(f"cannot broadcast rank-{len(source_shape)} tensor to rank-{len(target_shape)} shape {target_shape}")
+    padded_shape = (1,) * (len(target_shape) - len(source_shape)) + source_shape
+    padded_stride = (0,) * (len(target_shape) - len(source_stride)) + source_stride
+    result: list[int] = []
+    for source_dim, target_dim, stride in zip(padded_shape, target_shape, padded_stride):
+        if source_dim == target_dim:
+            result.append(stride)
+            continue
+        if source_dim == 1 and target_dim >= 1:
+            result.append(0)
+            continue
+        raise ValueError(f"cannot broadcast shape {source_shape} to {target_shape}")
+    return tuple(result)
 
 
 def _looks_like_nested_tensor(value: Any) -> bool:

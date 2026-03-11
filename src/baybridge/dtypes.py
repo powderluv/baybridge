@@ -18,8 +18,23 @@ _FLOAT_DTYPES = {"f16", "bf16", "f32"}
 _INTEGER_DTYPES = {"i1", "i8", "i32", "i64", "index"}
 _ALIAS_TABLE = {
     "bool": "i1",
+    "torch.bool": "i1",
     "int": "index",
+    "torch.int": "index",
+    "int8": "i8",
+    "torch.int8": "i8",
+    "int32": "i32",
+    "torch.int32": "i32",
+    "int64": "i64",
+    "torch.int64": "i64",
     "float": "f32",
+    "float16": "f16",
+    "torch.float16": "f16",
+    "bfloat16": "bf16",
+    "torch.bfloat16": "bf16",
+    "float32": "f32",
+    "torch.float32": "f32",
+    "torch.float": "f32",
 }
 
 

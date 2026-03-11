@@ -195,6 +195,8 @@ class GpuTextBackend:
             kind = operation.attrs.get("kind", "block")
             if kind == "grid":
                 return ['"amdgpu.grid_barrier"() : () -> ()']
+            if kind == "warp":
+                return ['"amdgpu.wave_barrier"() : () -> ()']
             return ["gpu.barrier"]
         if operation.op == "commit_group":
             group = operation.attrs["group"]

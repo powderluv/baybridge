@@ -268,14 +268,33 @@ class TensorValue:
             ),
         )
 
+    def broadcast_to(self, shape: tuple[int, ...]) -> "TensorValue":
+        target_shape = tuple(int(dim) for dim in shape)
+        if target_shape == self.spec.shape:
+            return self
+        return require_builder().emit_tensor(
+            "broadcast_to",
+            self,
+            spec=TensorSpec(
+                shape=target_shape,
+                dtype=self.spec.dtype,
+                layout=_broadcast_layout(self.spec.resolved_layout(), target_shape),
+                address_space=self.spec.address_space,
+            ),
+            attrs={"target_shape": list(target_shape)},
+            name_hint=f"{self.name}_broadcast",
+        )
+
     def _tensor_binary(self, op: str, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
         builder = require_builder()
         if isinstance(other, TensorValue):
-            if self.spec.shape != other.spec.shape:
-                raise ValueError(f"tensor shapes must match, got {self.spec.shape} and {other.spec.shape}")
+            result_shape = _broadcast_shape(self.spec.shape, other.spec.shape)
+            lhs = self.broadcast_to(result_shape) if self.spec.shape != result_shape else self
+            rhs = other.broadcast_to(result_shape) if other.spec.shape != result_shape else other
             if self.spec.dtype != other.spec.dtype:
                 raise ValueError(f"tensor dtypes must match, got {self.spec.dtype} and {other.spec.dtype}")
-            inputs = (self, other)
+            inputs = (lhs, rhs)
+            result_shape = lhs.spec.shape
         else:
             if isinstance(other, ScalarValue):
                 scalar = other
@@ -284,11 +303,12 @@ class TensorValue:
             if scalar.spec.dtype != self.spec.dtype:
                 raise ValueError(f"{op} scalar dtype must match {self.spec.dtype}, got {scalar.spec.dtype}")
             inputs = (self, scalar)
+            result_shape = self.spec.shape
         return require_builder().emit_tensor(
             op,
             *inputs,
             spec=TensorSpec(
-                shape=self.spec.shape,
+                shape=result_shape,
                 dtype=self.spec.dtype,
                 address_space=AddressSpace.REGISTER,
             ),
@@ -593,6 +613,46 @@ def _coerce_scalar(
 
 def _binary_dtype(lhs: str, rhs: str) -> str:
     return promote_scalar_dtype(lhs, rhs)
+
+
+def _broadcast_shape(lhs: tuple[int, ...], rhs: tuple[int, ...]) -> tuple[int, ...]:
+    rank = max(len(lhs), len(rhs))
+    lhs_aligned = (1,) * (rank - len(lhs)) + lhs
+    rhs_aligned = (1,) * (rank - len(rhs)) + rhs
+    result: list[int] = []
+    for lhs_dim, rhs_dim in zip(lhs_aligned, rhs_aligned):
+        if lhs_dim == rhs_dim:
+            result.append(lhs_dim)
+            continue
+        if lhs_dim == 1:
+            result.append(rhs_dim)
+            continue
+        if rhs_dim == 1:
+            result.append(lhs_dim)
+            continue
+        raise ValueError(f"tensor shapes are not broadcast-compatible: {lhs} and {rhs}")
+    return tuple(result)
+
+
+def _broadcast_layout(layout, target_shape: tuple[int, ...]):
+    source_shape = layout.shape
+    source_stride = layout.stride
+    if len(target_shape) < len(source_shape):
+        raise ValueError(f"cannot broadcast rank-{len(source_shape)} tensor to rank-{len(target_shape)} shape {target_shape}")
+    padded_shape = (1,) * (len(target_shape) - len(source_shape)) + source_shape
+    padded_stride = (0,) * (len(target_shape) - len(source_stride)) + source_stride
+    target_stride: list[int] = []
+    for source_dim, target_dim, stride in zip(padded_shape, target_shape, padded_stride):
+        if source_dim == target_dim:
+            target_stride.append(stride)
+            continue
+        if source_dim == 1 and target_dim >= 1:
+            target_stride.append(0)
+            continue
+        raise ValueError(f"cannot broadcast shape {source_shape} to {target_shape}")
+    from .ir import Layout
+
+    return Layout(shape=target_shape, stride=tuple(target_stride), swizzle=layout.swizzle)
 
 
 def _resolve_scalar_target_dtype(target: object) -> str:

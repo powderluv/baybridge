@@ -32,6 +32,28 @@ def reduction_wrapper(src: bb.Tensor, dst_scalar: bb.Tensor, dst_rows: bb.Tensor
     reduction_kernel(src, dst_scalar, dst_rows, dst_cols).launch(grid=(1, 1, 1), block=(1, 1, 1))
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def tensor_factory_kernel(dst_zero: bb.Tensor, dst_one: bb.Tensor, dst_full: bb.Tensor):
+    dst_zero.store(bb.zeros_like(dst_zero))
+    dst_one.store(bb.ones_like(dst_one))
+    dst_full.store(bb.full_like(dst_full, 7.0))
+
+
+@bb.jit
+def tensor_factory_wrapper(dst_zero: bb.Tensor, dst_one: bb.Tensor, dst_full: bb.Tensor):
+    tensor_factory_kernel(dst_zero, dst_one, dst_full).launch(grid=(1, 1, 1), block=(1, 1, 1))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def broadcast_add_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    dst.store(lhs.load() + rhs.load())
+
+
+@bb.jit
+def broadcast_add_wrapper(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    broadcast_add_kernel(lhs, rhs, dst).launch(grid=(1, 1, 1), block=(1, 1, 1))
+
+
 def test_tensor_ssa_runtime_slice_math_and_reduce() -> None:
     src = bb.tensor(
         [
@@ -81,6 +103,26 @@ def test_tensor_ssa_runtime_slice_math_and_reduce() -> None:
     )
     assert reduced_cols.tolist() == [6.0, 8.0, 10.0]
 
+    broadcasted = bb.tensor([[1.0], [2.0]], dtype="f32").broadcast_to((2, 3))
+    assert broadcasted.shape == (2, 3)
+    assert broadcasted.tolist() == [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]
+
+    sum_res = bb.tensor([[1.0], [2.0]], dtype="f32") + bb.tensor([[10.0, 20.0, 30.0]], dtype="f32")
+    assert sum_res.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
+
+    empty = bb.empty_like(bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32"))
+    assert empty.shape == (2, 2)
+    assert empty.dtype == "f32"
+
+    ones = bb.ones_like(bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32"))
+    assert ones.tolist() == [[1, 1], [1, 1]]
+
+    zeroes = bb.zeros_like(bb.tensor([[1.0, 2.0], [3.0, 4.0]], dtype="f32"))
+    assert zeroes.tolist() == [[0, 0], [0, 0]]
+
+    sevens = bb.full((2, 2), 7.0, dtype="f32")
+    assert sevens.tolist() == [[7.0, 7.0], [7.0, 7.0]]
+
 
 def test_unary_math_and_reduction_runtime_and_compile(tmp_path: Path) -> None:
     src = bb.tensor([1.0, 4.0, 9.0], dtype="f32")
@@ -114,6 +156,42 @@ def test_unary_math_and_reduction_runtime_and_compile(tmp_path: Path) -> None:
 
     assert red_artifact.ir is not None
     assert any(operation.op == "reduce_add" for operation in red_artifact.ir.operations)
+
+    dst_zero = bb.zeros((2, 2), dtype="f32")
+    dst_one = bb.zeros((2, 2), dtype="f32")
+    dst_full = bb.zeros((2, 2), dtype="f32")
+    tensor_factory_wrapper(dst_zero, dst_one, dst_full)
+    assert dst_zero.tolist() == [[0, 0], [0, 0]]
+    assert dst_one.tolist() == [[1, 1], [1, 1]]
+    assert dst_full.tolist() == [[7.0, 7.0], [7.0, 7.0]]
+
+    factory_artifact = bb.compile(
+        tensor_factory_wrapper,
+        dst_zero,
+        dst_one,
+        dst_full,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+    )
+    assert factory_artifact.ir is not None
+    assert any(operation.op == "fill" for operation in factory_artifact.ir.operations)
+
+    lhs = bb.tensor([[1.0], [2.0]], dtype="f32")
+    rhs = bb.tensor([[10.0, 20.0, 30.0]], dtype="f32")
+    dst = bb.zeros((2, 3), dtype="f32")
+    broadcast_add_wrapper(lhs, rhs, dst)
+    assert dst.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
+
+    broadcast_artifact = bb.compile(
+        broadcast_add_wrapper,
+        lhs,
+        rhs,
+        dst,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+    )
+    assert broadcast_artifact.ir is not None
+    assert any(operation.op == "broadcast_to" for operation in broadcast_artifact.ir.operations)
 
 
 def test_unary_math_and_reduction_run_on_amd_hardware(tmp_path: Path) -> None:
@@ -154,3 +232,35 @@ def test_unary_math_and_reduction_run_on_amd_hardware(tmp_path: Path) -> None:
     assert dst_scalar.tolist() == [21.0]
     assert dst_rows.tolist() == [6.0, 15.0]
     assert dst_cols.tolist() == [6.0, 8.0, 10.0]
+
+    dst_zero = bb.zeros((2, 2), dtype="f32")
+    dst_one = bb.zeros((2, 2), dtype="f32")
+    dst_full = bb.zeros((2, 2), dtype="f32")
+    factory_artifact = bb.compile(
+        tensor_factory_wrapper,
+        dst_zero,
+        dst_one,
+        dst_full,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+    factory_artifact(dst_zero, dst_one, dst_full)
+    assert dst_zero.tolist() == [[0, 0], [0, 0]]
+    assert dst_one.tolist() == [[1, 1], [1, 1]]
+    assert dst_full.tolist() == [[7.0, 7.0], [7.0, 7.0]]
+
+    lhs = bb.tensor([[1.0], [2.0]], dtype="f32")
+    rhs = bb.tensor([[10.0, 20.0, 30.0]], dtype="f32")
+    dst = bb.zeros((2, 3), dtype="f32")
+    broadcast_artifact = bb.compile(
+        broadcast_add_wrapper,
+        lhs,
+        rhs,
+        dst,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+    broadcast_artifact(lhs, rhs, dst)
+    assert dst.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from itertools import product
 from math import prod
 from dataclasses import dataclass
@@ -14,10 +15,11 @@ from .runtime import (
     LaunchConfig,
     Pointer,
     RuntimeScalar,
+    TensorHandle,
     RuntimeTensor,
     current_execution,
     execution_context,
-    full,
+    full as runtime_full,
     normalize_runtime_argument,
     zeros,
 )
@@ -418,6 +420,7 @@ class KernelLaunch:
         *,
         grid: tuple[int, int, int] | list[int],
         block: tuple[int, int, int] | list[int],
+        cluster: tuple[int, int, int] | list[int] = (1, 1, 1),
         shared_mem_bytes: int = 0,
         cooperative: bool = False,
         stream: Any | None = None,
@@ -426,6 +429,7 @@ class KernelLaunch:
         launch = LaunchConfig(
             grid=tuple(grid),
             block=tuple(block),
+            cluster=tuple(cluster),
             shared_mem_bytes=shared_mem_bytes,
             cooperative=cooperative,
         )
@@ -1378,6 +1382,95 @@ class SmemAllocator:
         return (element_type(dtype).width + 7) // 8
 
 
+@dataclass(frozen=True)
+class NamedBarrier:
+    barrier_id: int
+    num_threads: int
+
+    def __post_init__(self) -> None:
+        if self.barrier_id < 0:
+            raise ValueError("barrier_id must be >= 0")
+        if self.num_threads <= 0:
+            raise ValueError("num_threads must be > 0")
+
+    def arrive(self) -> None:
+        barrier(kind="block", barrier_id=self.barrier_id, num_threads=self.num_threads, scope="named")
+
+    def wait(self) -> None:
+        barrier(kind="block", barrier_id=self.barrier_id, num_threads=self.num_threads, scope="named")
+
+    def arrive_and_wait(self) -> None:
+        barrier(kind="block", barrier_id=self.barrier_id, num_threads=self.num_threads, scope="named")
+
+    def sync(self) -> None:
+        self.arrive_and_wait()
+
+
+@dataclass(frozen=True)
+class Mbarrier:
+    index: int
+
+    def arrive(self) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier")
+
+    def wait(self) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier")
+
+    def arrive_and_wait(self) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier")
+
+
+@dataclass(frozen=True)
+class MbarrierArray:
+    count: int
+
+    def __post_init__(self) -> None:
+        if self.count <= 0:
+            raise ValueError("MbarrierArray count must be > 0")
+
+    def __getitem__(self, index: int) -> Mbarrier:
+        if not 0 <= index < self.count:
+            raise IndexError(index)
+        return Mbarrier(index=index)
+
+    def data_ptr(self) -> Pointer:
+        return Pointer(value_type="i64", raw_address=0, address_space=AddressSpace.SHARED, assumed_align=8)
+
+
+@dataclass
+class TmemAllocator:
+    backing: Any | None = None
+    barrier_for_retrieve: NamedBarrier | None = None
+    allocation_index: int = 0
+
+    def allocate(self, item: int | tuple[int, ...], *, dtype: str = "i32") -> TensorValue | RuntimeTensor:
+        if isinstance(item, int):
+            shape = (int(item),)
+        else:
+            shape = tuple(int(dim) for dim in item)
+        if not shape or any(dim <= 0 for dim in shape):
+            raise ValueError("TmemAllocator.allocate expects a positive shape")
+        self.allocation_index += 1
+        return make_tensor(
+            f"tmem_{self.allocation_index}",
+            shape,
+            dtype,
+            address_space=AddressSpace.REGISTER,
+        )
+
+
+@dataclass(frozen=True)
+class TmaStoreFence:
+    def arrive(self) -> None:
+        barrier(kind="block", scope="tma_store_fence")
+
+    def wait(self) -> None:
+        barrier(kind="block", scope="tma_store_fence")
+
+    def arrive_and_wait(self) -> None:
+        barrier(kind="block", scope="tma_store_fence")
+
+
 def _normalize_axis(axis: str) -> str:
     if axis not in {"x", "y", "z"}:
         raise ValueError("axis must be one of: x, y, z")
@@ -1413,9 +1506,11 @@ def _runtime_state() -> ExecutionState:
     return state
 
 
-def _runtime_tensor(value: TensorValue | RuntimeTensor) -> RuntimeTensor:
+def _runtime_tensor(value: TensorValue | RuntimeTensor | TensorHandle) -> RuntimeTensor:
     if isinstance(value, RuntimeTensor):
         return value
+    if isinstance(value, TensorHandle):
+        return value.to_runtime_tensor()
     raise CompilationError("runtime tensor operations require launched baybridge tensors")
 
 
@@ -1599,6 +1694,68 @@ def wave_id(*, axis: str = "x", wave_size: int = 64) -> ScalarValue:
     return thread_idx(normalized_axis) // wave_size
 
 
+def cluster_dim(axis: str = "x") -> ScalarValue | int:
+    normalized_axis = _normalize_axis(axis)
+    try:
+        builder = require_builder()
+        return builder.constant(builder.launch.cluster[_axis_index(normalized_axis)], dtype="index")
+    except CompilationError:
+        return _runtime_state().cluster_dim[_axis_index(normalized_axis)]
+
+
+def cluster_idx(axis: str = "x") -> ScalarValue | int:
+    normalized_axis = _normalize_axis(axis)
+    return block_idx(normalized_axis) // cluster_dim(normalized_axis)
+
+
+def cluster_size() -> ScalarValue | int:
+    try:
+        builder = require_builder()
+        return builder.constant(prod(builder.launch.cluster), dtype="index")
+    except CompilationError:
+        return _runtime_state().cluster_size
+
+
+def block_idx_in_cluster(axis: str = "x") -> ScalarValue | int:
+    normalized_axis = _normalize_axis(axis)
+    return block_idx(normalized_axis) % cluster_dim(normalized_axis)
+
+
+def block_rank_in_cluster() -> ScalarValue | int:
+    x = block_idx_in_cluster("x")
+    y = block_idx_in_cluster("y")
+    z = block_idx_in_cluster("z")
+    dim_x = cluster_dim("x")
+    dim_y = cluster_dim("y")
+    return x + (dim_x * (y + (dim_y * z)))
+
+
+def block_in_cluster_idx() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+    return (block_idx_in_cluster("x"), block_idx_in_cluster("y"), block_idx_in_cluster("z"))
+
+
+def block_in_cluster_dim() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+    return (cluster_dim("x"), cluster_dim("y"), cluster_dim("z"))
+
+
+def sync_warp(*, loc: Any | None = None, ip: Any | None = None) -> None:
+    del loc
+    del ip
+    barrier(kind="warp")
+
+
+def elect_one() -> ScalarValue | bool:
+    return lane_id() == 0
+
+
+def get_dyn_smem_size() -> ScalarValue | int:
+    try:
+        builder = require_builder()
+        return builder.constant(max(builder.launch.shared_mem_bytes, builder._dynamic_shared_mem_bytes), dtype="index")
+    except CompilationError:
+        return _runtime_state().launch.shared_mem_bytes
+
+
 def make_warp_uniform(value: Any) -> Any:
     return value
 
@@ -1627,6 +1784,134 @@ def size(value: Any, *, mode: list[int] | tuple[int, ...] | None = None) -> int:
         selected = selected_items[0] if len(selected_items) == 1 else selected_items
     dims = _flatten_dims(selected)
     return prod(dims) if dims else 1
+
+
+def _static_loop_value(value: ScalarValue | RuntimeScalar | int, *, name: str) -> int:
+    if isinstance(value, RuntimeScalar):
+        return int(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, ScalarValue):
+        builder = require_builder()
+        operations_by_output = {
+            output: operation
+            for operation in builder.operations
+            for output in operation.outputs
+        }
+
+        def resolve(scalar_name: str) -> int:
+            operation = operations_by_output.get(scalar_name)
+            if operation is None:
+                raise CompilationError(
+                    f"{name} only supports statically resolvable traced bounds; value '{scalar_name}' is dynamic"
+                )
+            if operation.op in {"constant", "tensor_dim"}:
+                return int(operation.attrs["value"])
+            if operation.op == "add":
+                return resolve(operation.inputs[0]) + resolve(operation.inputs[1])
+            if operation.op == "sub":
+                return resolve(operation.inputs[0]) - resolve(operation.inputs[1])
+            if operation.op == "mul":
+                return resolve(operation.inputs[0]) * resolve(operation.inputs[1])
+            if operation.op in {"div", "floordiv"}:
+                return resolve(operation.inputs[0]) // resolve(operation.inputs[1])
+            if operation.op == "mod":
+                return resolve(operation.inputs[0]) % resolve(operation.inputs[1])
+            if operation.op == "neg":
+                return -resolve(operation.inputs[0])
+            if operation.op == "cast":
+                return resolve(operation.inputs[0])
+            raise CompilationError(
+                f"{name} only supports statically resolvable traced bounds; op '{operation.op}' is not static"
+            )
+
+        return resolve(value.name)
+    raise TypeError(f"{name} expects integer or statically-known baybridge scalar bounds")
+
+
+def _normalize_loop_range_args(args: tuple[Any, ...], *, name: str) -> tuple[int, int, int]:
+    if not 1 <= len(args) <= 3:
+        raise TypeError(f"{name} expects 1 to 3 positional arguments")
+    if len(args) == 1:
+        start = 0
+        stop = _static_loop_value(args[0], name=name)
+        step = 1
+    elif len(args) == 2:
+        start = _static_loop_value(args[0], name=name)
+        stop = _static_loop_value(args[1], name=name)
+        step = 1
+    else:
+        start = _static_loop_value(args[0], name=name)
+        stop = _static_loop_value(args[1], name=name)
+        step = _static_loop_value(args[2], name=name)
+    if step == 0:
+        raise ValueError(f"{name} step must not be zero")
+    return start, stop, step
+
+
+def _record_loop_hint(
+    kind: str,
+    *,
+    start: int,
+    stop: int,
+    step: int,
+    prefetch_stages: int | None,
+    unroll_full: bool | None,
+) -> None:
+    try:
+        builder = require_builder()
+    except CompilationError:
+        return
+    hints = builder.metadata.setdefault("loop_hints", [])
+    if isinstance(hints, list):
+        hints.append(
+            {
+                "kind": kind,
+                "start": start,
+                "stop": stop,
+                "step": step,
+                "prefetch_stages": prefetch_stages,
+                "unroll_full": unroll_full,
+            }
+        )
+
+
+def dsl_range(
+    *args: Any,
+    prefetch_stages: int | None = None,
+    unroll_full: bool | None = None,
+    loc: Any | None = None,
+    ip: Any | None = None,
+):
+    del loc
+    del ip
+    if prefetch_stages is not None and prefetch_stages < 0:
+        raise ValueError("prefetch_stages must be >= 0")
+    start, stop, step = _normalize_loop_range_args(args, name="range")
+    _record_loop_hint(
+        "range",
+        start=start,
+        stop=stop,
+        step=step,
+        prefetch_stages=prefetch_stages,
+        unroll_full=unroll_full,
+    )
+    return builtins.range(start, stop, step)
+
+
+def dsl_range_constexpr(*args: Any, loc: Any | None = None, ip: Any | None = None):
+    del loc
+    del ip
+    start, stop, step = _normalize_loop_range_args(args, name="range_constexpr")
+    _record_loop_hint(
+        "range_constexpr",
+        start=start,
+        stop=stop,
+        step=step,
+        prefetch_stages=None,
+        unroll_full=True,
+    )
+    return builtins.range(start, stop, step)
 
 
 def product_each(value: Any) -> tuple[int, int, int]:
@@ -1934,10 +2219,58 @@ def repeat_like(value: Any, like: Any) -> Any:
     return value
 
 
-def full_like(value: RuntimeTensor, fill_value: Any, dtype: str | None = None) -> RuntimeTensor:
-    if isinstance(value, TensorValue):
-        raise CompilationError("full_like is only implemented on the reference runtime today")
-    return full(value.shape, fill_value, dtype=dtype or value.dtype)
+def full(
+    shape: tuple[int, ...],
+    fill_value: Any,
+    *,
+    dtype: str = "f32",
+) -> TensorValue | RuntimeTensor:
+    try:
+        builder = require_builder()
+    except CompilationError:
+        return runtime_full(shape, fill_value, dtype=dtype)
+    tensor = builder.make_tensor(
+        f"full_{builder._temp_index + 1}",
+        TensorSpec(
+            shape=tuple(int(dim) for dim in shape),
+            dtype=str(dtype),
+            address_space=AddressSpace.REGISTER,
+        ),
+    )
+    tensor.fill(fill_value)
+    return tensor
+
+
+def empty_like(value: TensorValue | RuntimeTensor, dtype: str | None = None) -> TensorValue | RuntimeTensor:
+    shape = tuple(value.shape)
+    layout = value.layout if isinstance(getattr(value, "layout", None), Layout) else None
+    if isinstance(value, RuntimeTensor):
+        element_dtype = dtype or value.dtype
+    else:
+        element_dtype = dtype or value.spec.dtype
+    return make_tensor(
+        "empty_like",
+        shape,
+        element_dtype,
+        layout=layout,
+        address_space=AddressSpace.REGISTER,
+    )
+
+
+def full_like(value: TensorValue | RuntimeTensor, fill_value: Any, dtype: str | None = None) -> TensorValue | RuntimeTensor:
+    target = empty_like(value, dtype=dtype)
+    target.fill(fill_value)
+    return target
+
+
+def zeros_like(value: TensorValue | RuntimeTensor, dtype: str | None = None) -> TensorValue | RuntimeTensor:
+    target_dtype = dtype or (value.dtype if isinstance(value, RuntimeTensor) else value.spec.dtype)
+    return full_like(value, 0, dtype=target_dtype)
+
+
+def ones_like(value: TensorValue | RuntimeTensor, dtype: str | None = None) -> TensorValue | RuntimeTensor:
+    target_dtype = dtype or (value.dtype if isinstance(value, RuntimeTensor) else value.spec.dtype)
+    return full_like(value, 1, dtype=target_dtype)
 
 
 def assume(value: Any, **kwargs: Any) -> Any:
@@ -2206,10 +2539,42 @@ def make_copy_atom(op: Any, value_type: Any, *, num_bits_per_copy: int | None = 
     return CopyAtom(op=op, value_type=resolved_type, num_bits_per_copy=num_bits_per_copy)
 
 
+def make_atom(op: Any, *args: Any, **kwargs: Any) -> Any:
+    if isinstance(op, (MmaUniversalOp, WarpMmaF16BF16Op, Tcgen05MmaF16BF16Op)) or (
+        hasattr(op, "tile") and hasattr(op, "dtype")
+    ):
+        return make_mma_atom(op, *args, **kwargs)
+    if args:
+        value_type = args[0]
+        return make_copy_atom(op, value_type, **kwargs)
+    value_type = kwargs.pop("value_type", None)
+    if value_type is None:
+        raise TypeError("make_atom expects either an MMA-like op or a copy op plus value_type")
+    return make_copy_atom(op, value_type, **kwargs)
+
+
+def make_mma_atom(
+    op: Any,
+    atom_layout: Any = None,
+    *,
+    permutation_mnk: Any = None,
+) -> MFMADescriptor | CompatibleMmaDescriptor:
+    normalized_atom_layout = atom_layout if isinstance(atom_layout, Layout) or atom_layout is None else make_layout(atom_layout)
+    return _resolve_tiled_mma_descriptor(op, atom_layout=normalized_atom_layout, permutation_mnk=permutation_mnk)
+
+
 def make_tiled_copy_tv(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -> TiledCopyTV:
     if not isinstance(atom, CopyAtom):
         raise TypeError("make_tiled_copy_tv expects a baybridge CopyAtom")
     return TiledCopyTV(atom=atom, thread_layout=thr_layout, value_layout=val_layout)
+
+
+def make_tiled_copy(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -> TiledCopyTV:
+    return make_tiled_copy_tv(atom, thr_layout, val_layout)
+
+
+def make_cotiled_copy(atom: CopyAtom, thr_layout: Layout, val_layout: Layout) -> TiledCopyTV:
+    return make_tiled_copy_tv(atom, thr_layout, val_layout)
 
 
 def _resolve_tiled_mma_descriptor(
@@ -2323,6 +2688,18 @@ def make_tiled_copy_B(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
 
 def make_tiled_copy_C(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
     return _make_tiled_copy_from_mma(atom, tiled_mma, "acc")
+
+
+def make_tiled_copy_S(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
+    return make_tiled_copy_A(atom, tiled_mma)
+
+
+def make_tiled_copy_D(atom: CopyAtom, tiled_mma: TiledMma) -> TiledCopyTV:
+    return make_tiled_copy_C(atom, tiled_mma)
+
+
+def make_tiled_copy_C_atom(op: Any, value_type: Any, *, num_bits_per_copy: int | None = None) -> CopyAtom:
+    return make_copy_atom(op, value_type, num_bits_per_copy=num_bits_per_copy)
 
 
 def _normalize_predicate_fragment(
@@ -2449,17 +2826,20 @@ def wait_group(*, count: int = 0, group: str = "default") -> None:
         del group
 
 
-def barrier(*, kind: str = "block") -> None:
-    if kind not in {"block", "grid"}:
-        raise ValueError("barrier kind must be 'block' or 'grid'")
+def barrier(*, kind: str = "block", **attrs: Any) -> None:
+    if kind not in {"block", "grid", "warp"}:
+        raise ValueError("barrier kind must be 'block', 'grid', or 'warp'")
     try:
-        require_builder().emit_void("barrier", attrs={"kind": kind})
+        payload = {"kind": kind}
+        payload.update(attrs)
+        require_builder().emit_void("barrier", attrs=payload)
     except CompilationError:
         if kind == "grid":
             raise UnsupportedOperationError(
                 "baybridge grid-wide barriers require a compiled cooperative launch"
             ) from None
         del kind
+        del attrs
 
 
 def domain_offset(
@@ -2604,6 +2984,43 @@ def partition_wave(
     resolved_axes = _resolve_axes(len(tile), axes)
     offsets = tuple(wave_id(axis=axis, wave_size=wave_size) * step for axis, step in zip(resolved_axes, tile))
     return partition(tensor, tile, offset=offsets, policy=policy)
+
+
+def local_partition(
+    tensor: TensorValue | RuntimeTensor | IdentityTensor | TiledTensorView,
+    tiler: ThreadValueLayout | TiledCopyTV | Layout | tuple[int, ...] | tuple[tuple[int, ...], ThreadValueLayout],
+    index: ScalarValue | int | tuple[ScalarValue | int, ...],
+    proj: Any = 1,
+) -> Any:
+    if isinstance(tiler, TiledCopyTV):
+        tile_shape = tiler.tiler
+        tv_layout = tiler.tv_layout
+    elif isinstance(tiler, ThreadValueLayout):
+        tile_shape = tiler.tile_shape
+        tv_layout = tiler
+    elif (
+        isinstance(tiler, tuple)
+        and len(tiler) == 2
+        and isinstance(tiler[0], tuple)
+        and isinstance(tiler[1], ThreadValueLayout)
+    ):
+        tile_shape = tuple(int(dim) for dim in tiler[0])
+        tv_layout = tiler[1]
+    elif isinstance(tiler, Layout):
+        tile_shape = tiler.shape
+        tv_layout = None
+    elif isinstance(tiler, tuple):
+        tile_shape = tuple(int(dim) for dim in tiler)
+        tv_layout = None
+    else:
+        raise TypeError("local_partition expects a baybridge tiler shape/layout or thread-value partitioner")
+    if proj not in (1, None):
+        raise UnsupportedOperationError("baybridge.local_partition currently supports proj=1 only")
+    tiled = tensor if isinstance(tensor, TiledTensorView) else zipped_divide(tensor, tile_shape)
+    if tv_layout is not None:
+        target = tiled[(None, tuple(0 for _ in tiled.shape[1]))]
+        return composition(target, tv_layout)[(index, None)]
+    return tiled[(None, index)]
 
 
 def gemm(
@@ -2986,6 +3403,34 @@ class _ArchNamespace:
         return (grid_dim("x"), grid_dim("y"), grid_dim("z"))
 
     @staticmethod
+    def cluster_dim() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+        return (cluster_dim("x"), cluster_dim("y"), cluster_dim("z"))
+
+    @staticmethod
+    def cluster_idx() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+        return (cluster_idx("x"), cluster_idx("y"), cluster_idx("z"))
+
+    @staticmethod
+    def cluster_size() -> ScalarValue | int:
+        return cluster_size()
+
+    @staticmethod
+    def block_idx_in_cluster() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+        return block_in_cluster_idx()
+
+    @staticmethod
+    def block_rank_in_cluster() -> ScalarValue | int:
+        return block_rank_in_cluster()
+
+    @staticmethod
+    def block_in_cluster_idx() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+        return block_in_cluster_idx()
+
+    @staticmethod
+    def block_in_cluster_dim() -> tuple[ScalarValue | int, ScalarValue | int, ScalarValue | int]:
+        return block_in_cluster_dim()
+
+    @staticmethod
     def lane_id() -> ScalarValue | int:
         return lane_id()
 
@@ -3004,10 +3449,22 @@ class _ArchNamespace:
         barrier(kind="block")
 
     @staticmethod
+    def sync_warp(*, loc: Any | None = None, ip: Any | None = None) -> None:
+        sync_warp(loc=loc, ip=ip)
+
+    @staticmethod
     def sync_grid(*, loc: Any | None = None, ip: Any | None = None) -> None:
         del loc
         del ip
         barrier(kind="grid")
+
+    @staticmethod
+    def elect_one() -> ScalarValue | bool:
+        return elect_one()
+
+    @staticmethod
+    def get_dyn_smem_size() -> ScalarValue | int:
+        return get_dyn_smem_size()
 
 
 nvgpu = _NvgpuNamespace()
@@ -3020,9 +3477,14 @@ __all__ = [
     "IdentityLayout",
     "KernelDefinition",
     "LaunchConfig",
+    "Mbarrier",
+    "MbarrierArray",
+    "NamedBarrier",
     "ScalarSpec",
     "SmemAllocator",
     "Swizzle",
+    "TmaStoreFence",
+    "TmemAllocator",
     "TiledCopy",
     "TiledMma",
     "TensorSpec",
@@ -3032,8 +3494,15 @@ __all__ = [
     "barrier",
     "basic_copy",
     "block_dim",
+    "block_in_cluster_dim",
+    "block_in_cluster_idx",
     "block_idx",
+    "block_idx_in_cluster",
+    "block_rank_in_cluster",
     "ceil_div",
+    "cluster_dim",
+    "cluster_idx",
+    "cluster_size",
     "composition",
     "commit_group",
     "cosize",
@@ -3041,31 +3510,46 @@ __all__ = [
     "copy_async",
     "dim",
     "domain_offset",
+    "dsl_range",
+    "dsl_range_constexpr",
+    "empty_like",
     "elem_less",
+    "full",
     "full_like",
     "gemm",
+    "get_dyn_smem_size",
     "grid_dim",
     "group_modes",
     "jit",
     "kernel",
+    "elect_one",
     "lane_id",
     "lane_coords",
+    "local_partition",
     "local_tile",
     "load",
     "logical_divide",
     "logical_product",
+    "make_atom",
+    "make_copy_atom",
     "make_fragment",
     "make_fragment_like",
     "make_layout",
     "make_identity_tensor",
     "make_layout_tv",
+    "make_mma_atom",
     "make_ordered_layout",
     "make_fragment_a",
     "make_fragment_b",
+    "make_cotiled_copy",
     "make_swizzle",
+    "make_tiled_copy",
     "make_tiled_copy_A",
     "make_tiled_copy_B",
     "make_tiled_copy_C",
+    "make_tiled_copy_C_atom",
+    "make_tiled_copy_D",
+    "make_tiled_copy_S",
     "make_tiled_mma",
     "make_rmem_tensor",
     "make_warp_uniform",
@@ -3080,6 +3564,7 @@ __all__ = [
     "partition_program",
     "partition_thread",
     "partition_wave",
+    "ones_like",
     "printf",
     "product_each",
     "program_id",
@@ -3091,10 +3576,12 @@ __all__ = [
     "tiled_product",
     "tile_to_shape",
     "thread_idx",
+    "sync_warp",
     "wait_group",
     "warp_idx",
     "wave_id",
     "where",
+    "zeros_like",
     "flat_product",
     "zipped_product",
     "zipped_divide",

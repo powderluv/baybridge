@@ -57,8 +57,8 @@ class Layout:
             raise ValueError("layout shape and stride must have the same rank")
         if any(dim <= 0 for dim in self.shape):
             raise ValueError("layout shape dimensions must be > 0")
-        if any(step <= 0 for step in self.stride):
-            raise ValueError("layout strides must be > 0")
+        if any(step < 0 for step in self.stride):
+            raise ValueError("layout strides must be >= 0")
 
     def __call__(self, coord: int | tuple[int, ...]) -> int:
         if isinstance(coord, int):
