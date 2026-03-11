@@ -87,6 +87,27 @@ def _make_f16_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     return a, b, c
 
 
+def _make_f16_micro_inputs_atb() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(32)] for row in range(16)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_f16_micro_inputs_abt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_f16_micro_inputs_atbt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
 def _make_bf16_micro_inputs_atb() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="bf16")
     b = bb.tensor([[1.0 if col == row else 0.0 for col in range(32)] for row in range(16)], dtype="bf16")
@@ -522,3 +543,69 @@ def test_hipkittens_exec_runs_supported_bf16_atbt_gemm(tmp_path: Path) -> None:
 
     artifact(a, b, c)
     assert c.tolist() == _expected_atb(a)
+
+
+@bb.kernel
+
+def gemm_f16_atb_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_a=True)
+
+
+@bb.kernel
+
+def gemm_f16_abt_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_b=True)
+
+
+@bb.kernel
+
+def gemm_f16_atbt_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_a=True, transpose_b=True)
+
+
+def _make_f16_micro_inputs_atb() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(32)] for row in range(16)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_f16_micro_inputs_abt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_f16_micro_inputs_atbt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="f16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def test_compile_auto_prefers_hipkittens_ref_for_transposed_f16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_f16_micro_inputs_atb()
+
+    artifact = bb.compile(gemm_f16_atb_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx950"))
+
+    assert artifact.backend_name == "hipkittens_ref"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "hipkittens_cpp"
+
+
+def test_hipkittens_exec_rejects_transposed_f16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_f16_micro_inputs_abt()
+
+    with pytest.raises(bb.BackendNotImplementedError, match="hipkittens_exec only supports GEMM shapes"):
+        bb.compile(
+            gemm_f16_abt_kernel,
+            a,
+            b,
+            c,
+            cache_dir=tmp_path,
+            backend="hipkittens_exec",
+            target=bb.AMDTarget(arch="gfx950"),
+        )
