@@ -2606,30 +2606,59 @@ def partition_wave(
     return partition(tensor, tile, offset=offsets, policy=policy)
 
 
-def gemm(a: TensorValue | RuntimeTensor, b: TensorValue | RuntimeTensor, c: TensorValue | RuntimeTensor) -> Any:
+def gemm(
+    a: TensorValue | RuntimeTensor,
+    b: TensorValue | RuntimeTensor,
+    c: TensorValue | RuntimeTensor,
+    *,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
+) -> Any:
     if isinstance(a, RuntimeTensor) and isinstance(b, RuntimeTensor) and isinstance(c, RuntimeTensor):
         if len(a.shape) != 2 or len(b.shape) != 2 or len(c.shape) != 2:
             raise ValueError("runtime baybridge.gemm currently requires rank-2 tensors")
-        m, k = a.shape
-        kb, n = b.shape
+        if transpose_a:
+            k, m = a.shape
+        else:
+            m, k = a.shape
+        if transpose_b:
+            n, kb = b.shape
+        else:
+            kb, n = b.shape
         if kb != k or c.shape != (m, n):
             raise ValueError(f"gemm shape mismatch: {a.shape} x {b.shape} -> {c.shape}")
         for row in range(m):
             for col in range(n):
                 acc = 0.0 if c.dtype.startswith("f") else 0
                 for kk in range(k):
-                    acc += a[row, kk] * b[kk, col]
+                    lhs = a[kk, row] if transpose_a else a[row, kk]
+                    rhs = b[col, kk] if transpose_b else b[kk, col]
+                    acc += lhs * rhs
                 c[row, col] = acc
         return c
     if not isinstance(a, TensorValue) or not isinstance(b, TensorValue) or not isinstance(c, TensorValue):
         raise TypeError("baybridge.gemm expects all arguments to be runtime tensors or all to be traced tensors")
     if len(a.spec.shape) != 2 or len(b.spec.shape) != 2 or len(c.spec.shape) != 2:
         raise ValueError("traced baybridge.gemm currently requires rank-2 tensors")
-    m, k = a.spec.shape
-    kb, n = b.spec.shape
+    if transpose_a:
+        k, m = a.spec.shape
+    else:
+        m, k = a.spec.shape
+    if transpose_b:
+        n, kb = b.spec.shape
+    else:
+        kb, n = b.spec.shape
     if kb != k or c.spec.shape != (m, n):
         raise ValueError(f"gemm shape mismatch: {a.spec.shape} x {b.spec.shape} -> {c.spec.shape}")
-    return mma(a, b, c, tile=(m, n, k), accumulator_dtype=c.spec.dtype)
+    return mma(
+        a,
+        b,
+        c,
+        tile=(m, n, k),
+        accumulator_dtype=c.spec.dtype,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+    )
 
 
 def _default_accumulator_dtype(a_dtype: str, b_dtype: str) -> str:
@@ -2721,6 +2750,8 @@ def mma(
     tile: tuple[int, ...] | None = None,
     accumulate: bool = True,
     accumulator_dtype: str | None = None,
+    transpose_a: bool = False,
+    transpose_b: bool = False,
 ) -> TensorValue:
     if a.spec.dtype != b.spec.dtype:
         raise ValueError(f"mma currently requires matching operand dtypes, got {a.spec.dtype} and {b.spec.dtype}")
@@ -2743,7 +2774,12 @@ def mma(
         a,
         b,
         output,
-        attrs={"tile": list(tile) if tile else None, "accumulate": accumulate},
+        attrs={
+            "tile": list(tile) if tile else None,
+            "accumulate": accumulate,
+            "transpose_a": transpose_a,
+            "transpose_b": transpose_b,
+        },
     )
     return output
 

@@ -74,7 +74,7 @@ def test_gpu_text_backend_keeps_register_tensor_as_staging(tmp_path: Path) -> No
     assert "%b_part_2 = memref.subview %b[0, 0] [16, 16] [1, 1]" in text
     assert '%acc = "amdgpu.alloca_register"()' in text
     assert "!baybridge.reg<16x16xf32>" in text
-    assert '"amdgpu.mfma"(%a_part_1, %b_part_2, %acc) {tile = [16, 16, 16], accumulate = true, variant = "mfma_f32_16x16x16f16", operand_dtype = "f16", accumulator_dtype = "f32", wave_size = 64}' in text
+    assert '"amdgpu.mfma"(%a_part_1, %b_part_2, %acc) {tile = [16, 16, 16], accumulate = true, transpose_a = false, transpose_b = false, variant = "mfma_f32_16x16x16f16", operand_dtype = "f16", accumulator_dtype = "f32", wave_size = 64}' in text
 
 
 @bb.jit
@@ -93,7 +93,7 @@ def test_gpu_text_backend_selects_mixed_precision_bf16_variant(tmp_path: Path) -
     assert artifact.lowered_module is not None
     text = artifact.lowered_module.text
     assert "!baybridge.reg<16x16xf32>" in text
-    assert '"amdgpu.mfma"(%a_part_1, %b_part_2, %acc) {tile = [16, 16, 16], accumulate = true, variant = "mfma_f32_16x16x16bf16", operand_dtype = "bf16", accumulator_dtype = "f32", wave_size = 64}' in text
+    assert '"amdgpu.mfma"(%a_part_1, %b_part_2, %acc) {tile = [16, 16, 16], accumulate = true, transpose_a = false, transpose_b = false, variant = "mfma_f32_16x16x16bf16", operand_dtype = "bf16", accumulator_dtype = "f32", wave_size = 64}' in text
 
 
 @bb.jit

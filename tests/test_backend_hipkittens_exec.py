@@ -15,6 +15,24 @@ def gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
 
 @bb.kernel
 
+def gemm_atb_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_a=True)
+
+
+@bb.kernel
+
+def gemm_abt_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_b=True)
+
+
+@bb.kernel
+
+def gemm_atbt_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c, transpose_a=True, transpose_b=True)
+
+
+@bb.kernel
+
 def unsupported_gemm(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
     bb.gemm(a, b, c)
 
@@ -67,6 +85,45 @@ def _make_f16_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     b = bb.tensor(b_data, dtype="f16")
     c = bb.zeros((32, 32), dtype="f32")
     return a, b, c
+
+
+def _make_bf16_micro_inputs_atb() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(32)] for row in range(16)], dtype="bf16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_bf16_micro_inputs_abt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="bf16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="bf16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _make_bf16_micro_inputs_atbt() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
+    a = bb.tensor([[row * 32 + col + 1 for col in range(32)] for row in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(32)], dtype="bf16")
+    c = bb.zeros((32, 32), dtype="f32")
+    return a, b, c
+
+
+def _expected_atb(a: bb.Tensor) -> list[list[float]]:
+    source = a.tolist()
+    expected = [[0.0 for _ in range(32)] for _ in range(32)]
+    for row in range(32):
+        for col in range(16):
+            expected[row][col] = source[col][row]
+    return expected
+
+
+def _expected_abt(a: bb.Tensor) -> list[list[float]]:
+    source = a.tolist()
+    expected = [[0.0 for _ in range(32)] for _ in range(32)]
+    for row in range(32):
+        for col in range(16):
+            expected[row][col] = source[row][col]
+    return expected
 
 
 def _exec_backend_available(arch: str) -> bool:
@@ -146,6 +203,69 @@ def test_hipkittens_exec_lowers_tiled_bf16_gemm(tmp_path: Path, monkeypatch: pyt
     assert 'load(b_tile, b, {0, 0, k_tile, tile_col});' in text
     assert '<<<dim3(2, 2, 1), dim3(kittens::WARP_THREADS, 1, 1)>>>' in text
 
+
+
+def test_hipkittens_exec_lowers_bf16_atb_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_bf16_micro_inputs_atb()
+    artifact = bb.compile(
+        gemm_atb_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert '// family: bf16_gemm_AtB_32x16x32' in text
+    assert 'mma_AtB(c_accum, a_tile, b_tile, c_accum);' in text
+    assert 'rt_bf<16, 32, ducks::rt_layout::col, ducks::rt_shape::rt_16x32> a_tile;' in text
+    assert 'load(a_tile, a, {0, 0, k_tile, tile_row});' in text
+
+
+def test_hipkittens_exec_lowers_bf16_abt_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_bf16_micro_inputs_abt()
+    artifact = bb.compile(
+        gemm_abt_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert '// family: bf16_gemm_ABt_32x16x32' in text
+    assert 'mma_ABt(c_accum, a_tile, b_tile, c_accum);' in text
+    assert 'rt_bf<32, 16, ducks::rt_layout::row, ducks::rt_shape::rt_32x16> b_tile;' in text
+    assert 'load(b_tile, b, {0, 0, tile_col, k_tile});' in text
+
+
+def test_hipkittens_exec_lowers_bf16_atbt_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_bf16_micro_inputs_atbt()
+    artifact = bb.compile(
+        gemm_atbt_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert '// family: bf16_gemm_AtBt_32x16x32' in text
+    assert 'mma_AtBt(c_accum, a_tile, b_tile, c_accum);' in text
+    assert 'load(a_tile, a, {0, 0, k_tile, tile_row});' in text
+    assert 'load(b_tile, b, {0, 0, tile_col, k_tile});' in text
 
 
 def test_hipkittens_exec_rejects_unsupported_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,3 +450,75 @@ def test_hipkittens_exec_runs_supported_f16_gemm(tmp_path: Path) -> None:
         for col in range(16):
             expected[row][col] = rounded_a[row][col]
     assert c.tolist() == expected
+
+
+def test_hipkittens_exec_runs_supported_bf16_atb_gemm(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HipKittens backend tests")
+    if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
+        pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
+
+    a, b, c = _make_bf16_micro_inputs_atb()
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
+    artifact = bb.compile(
+        gemm_atb_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == _expected_atb(a)
+
+
+def test_hipkittens_exec_runs_supported_bf16_abt_gemm(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HipKittens backend tests")
+    if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
+        pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
+
+    a, b, c = _make_bf16_micro_inputs_abt()
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
+    artifact = bb.compile(
+        gemm_abt_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == _expected_abt(a)
+
+
+def test_hipkittens_exec_runs_supported_bf16_atbt_gemm(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HipKittens backend tests")
+    if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
+        pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
+
+    a, b, c = _make_bf16_micro_inputs_atbt()
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
+    artifact = bb.compile(
+        gemm_atbt_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == _expected_atb(a)
