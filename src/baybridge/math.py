@@ -4,15 +4,18 @@ import math as _math
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .ir import AddressSpace, TensorSpec
-from .runtime import RuntimeTensor
-from .tracing import TensorValue, require_builder
+from .ir import AddressSpace, ScalarSpec, TensorSpec
+from .runtime import RuntimeScalar, RuntimeTensor
+from .tracing import ScalarValue, TensorValue, require_builder
 
 
 @dataclass(frozen=True)
 class _MathNamespace:
     def sqrt(self, value: Any):
         return _tensor_unary(value, "math_sqrt", _math.sqrt)
+
+    def rsqrt(self, value: Any):
+        return _tensor_unary(value, "math_rsqrt", _rsqrt)
 
     def sin(self, value: Any):
         return _tensor_unary(value, "math_sin", _math.sin)
@@ -31,7 +34,24 @@ def _exp2(value: float) -> float:
     return 2.0 ** value
 
 
+def _rsqrt(value: float) -> float:
+    return 1.0 / _math.sqrt(value)
+
+
 def _tensor_unary(value: Any, op_name: str, fn: Callable[[float], float]):
+    if isinstance(value, RuntimeScalar):
+        if not value.dtype.startswith("f"):
+            raise TypeError(f"{op_name} requires a floating-point scalar")
+        return RuntimeScalar(fn(float(value)), dtype=value.dtype)
+    if isinstance(value, ScalarValue):
+        if not value.spec.dtype.startswith("f"):
+            raise TypeError(f"{op_name} requires a floating-point scalar")
+        return require_builder().emit_scalar(
+            op_name,
+            value,
+            spec=ScalarSpec(dtype=value.spec.dtype),
+            name_hint=op_name,
+        )
     if isinstance(value, RuntimeTensor):
         if not value.dtype.startswith("f"):
             raise TypeError(f"{op_name} requires a floating-point tensor")

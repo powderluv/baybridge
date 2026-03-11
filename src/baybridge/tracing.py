@@ -268,17 +268,25 @@ class TensorValue:
             ),
         )
 
-    def _tensor_binary(self, op: str, other: "TensorValue") -> "TensorValue":
-        if not isinstance(other, TensorValue):
-            raise TypeError(f"{op} requires baybridge tensor operands")
-        if self.spec.shape != other.spec.shape:
-            raise ValueError(f"tensor shapes must match, got {self.spec.shape} and {other.spec.shape}")
-        if self.spec.dtype != other.spec.dtype:
-            raise ValueError(f"tensor dtypes must match, got {self.spec.dtype} and {other.spec.dtype}")
+    def _tensor_binary(self, op: str, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        builder = require_builder()
+        if isinstance(other, TensorValue):
+            if self.spec.shape != other.spec.shape:
+                raise ValueError(f"tensor shapes must match, got {self.spec.shape} and {other.spec.shape}")
+            if self.spec.dtype != other.spec.dtype:
+                raise ValueError(f"tensor dtypes must match, got {self.spec.dtype} and {other.spec.dtype}")
+            inputs = (self, other)
+        else:
+            if isinstance(other, ScalarValue):
+                scalar = other
+            else:
+                scalar = builder.constant(other, dtype=self.spec.dtype)
+            if scalar.spec.dtype != self.spec.dtype:
+                raise ValueError(f"{op} scalar dtype must match {self.spec.dtype}, got {scalar.spec.dtype}")
+            inputs = (self, scalar)
         return require_builder().emit_tensor(
             op,
-            self,
-            other,
+            *inputs,
             spec=TensorSpec(
                 shape=self.spec.shape,
                 dtype=self.spec.dtype,
@@ -365,14 +373,17 @@ class TensorValue:
             name_hint=op_name,
         )
 
-    def __add__(self, other: "TensorValue") -> "TensorValue":
+    def __add__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
         return self._tensor_binary("tensor_add", other)
 
-    def __sub__(self, other: "TensorValue") -> "TensorValue":
+    def __sub__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
         return self._tensor_binary("tensor_sub", other)
 
-    def __mul__(self, other: "TensorValue") -> "TensorValue":
+    def __mul__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
         return self._tensor_binary("tensor_mul", other)
+
+    def __truediv__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        return self._tensor_binary("tensor_div", other)
 
 
 class IRBuilder:

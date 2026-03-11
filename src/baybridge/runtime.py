@@ -402,6 +402,12 @@ class RuntimeTensor:
     def __rmul__(self, other: Any) -> "RuntimeTensor":
         return self._binary_op(other, lambda lhs, rhs: lhs * rhs, reverse=True)
 
+    def __truediv__(self, other: Any) -> "RuntimeTensor":
+        return self._binary_op(other, lambda lhs, rhs: lhs / rhs)
+
+    def __rtruediv__(self, other: Any) -> "RuntimeTensor":
+        return self._binary_op(other, lambda lhs, rhs: lhs / rhs, reverse=True)
+
     def __lt__(self, other: Any) -> "RuntimeTensor":
         return self._compare_op(other, lambda lhs, rhs: lhs < rhs)
 

@@ -354,7 +354,7 @@ class HipccExecBackend:
                     "hipcc_exec tensor elementwise ops require matching tensor dtypes"
                 )
             return self._emit_tensor_binary(operation.op, lhs_name, lhs_spec, rhs_name, rhs_spec, out_name, out_spec)
-        if operation.op in {"math_sqrt", "math_sin", "math_exp2"}:
+        if operation.op in {"math_sqrt", "math_rsqrt", "math_sin", "math_exp2"}:
             source_name = operation.inputs[0]
             out_name = operation.outputs[0]
             source_spec = tensor_specs[source_name]
@@ -598,6 +598,7 @@ class HipccExecBackend:
     ) -> list[str]:
         expr = {
             "math_sqrt": lambda value: f"sqrtf({value})",
+            "math_rsqrt": lambda value: f"rsqrtf({value})",
             "math_sin": lambda value: f"sinf({value})",
             "math_exp2": lambda value: f"exp2f({value})",
         }[op]

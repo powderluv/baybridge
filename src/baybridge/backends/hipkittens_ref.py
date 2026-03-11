@@ -35,7 +35,7 @@ class HipKittensRefBackend:
             match = self._analyze(ir)
         except BackendNotImplementedError:
             return False
-        return match.family in {"tensorop_gemm", "attention"}
+        return match.family in {"tensorop_gemm", "attention", "layernorm", "rmsnorm"}
 
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
         match = self._analyze(ir)
@@ -89,8 +89,11 @@ class HipKittensRefBackend:
         op_counts = Counter(operation.op for operation in ir.operations)
         mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
         if not mma_ops:
+            norm_match = self._match_norm_family(ir, value_specs, op_counts)
+            if norm_match is not None:
+                return norm_match
             raise BackendNotImplementedError(
-                "hipkittens_ref currently targets Baybridge GEMM and attention kernel families"
+                "hipkittens_ref currently targets Baybridge GEMM, attention, layernorm, and rmsnorm kernel families"
             )
         mma_op = mma_ops[0]
         a_name, b_name, acc_name = mma_op.inputs
@@ -148,6 +151,59 @@ class HipKittensRefBackend:
             op_counts=dict(sorted(op_counts.items())),
         )
 
+    def _match_norm_family(
+        self,
+        ir: PortableKernelIR,
+        value_specs: dict[str, TensorSpec | ScalarSpec],
+        op_counts: Counter[str],
+    ) -> HipKittensMatch | None:
+        has_sqrt_path = op_counts.get("math_sqrt", 0) >= 1 and op_counts.get("tensor_div", 0) >= 1
+        has_rsqrt_path = op_counts.get("math_rsqrt", 0) >= 1 and op_counts.get("tensor_mul", 0) >= 1
+        if not has_sqrt_path and not has_rsqrt_path:
+            return None
+        tensor_args = [
+            argument.spec
+            for argument in ir.arguments
+            if isinstance(argument.spec, TensorSpec)
+        ]
+        if not tensor_args:
+            return None
+        primary = tensor_args[0]
+        trailing = int(primary.shape[-1]) if primary.shape else 1
+        has_mean_centering = op_counts.get("tensor_sub", 0) > 0 and op_counts.get("reduce_add", 0) >= 2
+        if has_mean_centering:
+            family = "layernorm"
+            reference_paths = ("kernels/layernorm/",)
+            notes: list[str] = [
+                "variance normalization pattern is present",
+                "mean-centering is present",
+            ]
+            if has_rsqrt_path:
+                notes.append("normalization uses reciprocal-sqrt")
+        else:
+            if op_counts.get("reduce_add", 0) < 1 or op_counts.get("tensor_mul", 0) < 1:
+                return None
+            family = "rmsnorm"
+            reference_paths = ("kernels/rmsnorm/", "kernels/layernorm/")
+            notes = [
+                "root-mean-square normalization pattern is present",
+            ]
+            if has_rsqrt_path:
+                notes.append("normalization uses reciprocal-sqrt")
+        if op_counts.get("tensor_add", 0):
+            notes.append("affine or residual add is present")
+        if op_counts.get("tensor_mul", 0) > 1:
+            notes.append("affine scale is present")
+        return HipKittensMatch(
+            family=family,
+            operand_dtype=primary.dtype,
+            accumulator_dtype=primary.dtype,
+            tile=(1, trailing, trailing),
+            reference_paths=reference_paths,
+            notes=tuple(notes),
+            op_counts=dict(sorted(op_counts.items())),
+        )
+
     def _configured_root(self) -> Path | None:
         configured = os.environ.get(_HIPKITTENS_ENV)
         if not configured:
@@ -180,7 +236,7 @@ class HipKittensRefBackend:
             "operand_dtype": match.operand_dtype,
             "accumulator_dtype": match.accumulator_dtype,
             "tile": list(match.tile),
-            "reference_paths": list(match.reference_paths),
+            "reference_paths": list(self._render_reference_paths(match.reference_paths, root)),
             "op_counts": match.op_counts,
             "notes": list(match.notes),
         }
@@ -190,7 +246,8 @@ class HipKittensRefBackend:
             if root is not None
             else f"// Build hint: set {_HIPKITTENS_ENV} to a HipKittens checkout, then compile with -I${_HIPKITTENS_ENV}/include\n"
         )
-        reference_lines = "\n".join(f"//   - {path}" for path in match.reference_paths)
+        reference_paths = self._render_reference_paths(match.reference_paths, root)
+        reference_lines = "\n".join(f"//   - {path}" for path in reference_paths)
         note_lines = "\n".join(f"//   - {note}" for note in match.notes) or "//   - none"
         argument_lines = ",\n    ".join(self._argument_decl(argument) for argument in ir.arguments)
         tensor_summary = "\n".join(self._tensor_summary(argument) for argument in ir.arguments)
@@ -215,6 +272,14 @@ class HipKittensRefBackend:
             "}\n\n"
             "} // namespace baybridge::hipkittens_ref\n"
         )
+
+    def _render_reference_paths(self, paths: tuple[str, ...], root: Path | None) -> tuple[str, ...]:
+        if root is None:
+            return paths
+        existing = tuple(path for path in paths if (root / path).is_dir())
+        if existing:
+            return existing
+        return paths
 
     def _argument_decl(self, argument: KernelArgument) -> str:
         spec = argument.spec
