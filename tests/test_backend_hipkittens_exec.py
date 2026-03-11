@@ -308,6 +308,8 @@ def test_hipkittens_exec_runs_supported_f16_gemm(tmp_path: Path) -> None:
 
     a, b, c = _make_f16_micro_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if target_arch == "gfx942":
+        pytest.skip("hipkittens_exec F16 GEMM is not wired for gfx942 yet")
     if not _exec_backend_available(target_arch):
         pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
     artifact = bb.compile(

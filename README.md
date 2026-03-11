@@ -212,7 +212,8 @@ Useful helpers:
 - `backend="hipkittens_exec"`
   - builds and runs a narrow executable HipKittens subset
   - current supported kernel family: pure BF16/F16 GEMM composed from HipKittens micro tiles
-  - currently validated for `gfx950`; `gfx942` lowering is wired, but executable auto-selection is gated on toolchain readiness
+  - currently validated for `gfx950`
+  - `gfx942` executable support is currently limited to the BF16 slice; F16 exec is not wired yet
   - supported micro tiles:
     - `f16/f16 -> f32`
     - `bf16/bf16 -> f32`

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
 from glob import glob
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 
 from ..backend import LoweredModule
 from ..diagnostics import BackendNotImplementedError
-from ..hip_runtime import HipRuntime, require_hipcc, scalar_ctype
+from ..hip_runtime import HipRuntime, load_hip_library, require_hipcc, scalar_ctype
 from ..ir import KernelArgument, PortableKernelIR, TensorSpec
 from ..runtime import RuntimeTensor
 from ..target import AMDTarget
@@ -197,6 +198,7 @@ class HipKittensExecBackend:
                 self._compile_shared_object(source_path, shared_path, target, lowered_module.text, root)
             function = state.get("function")
             if function is None:
+                load_hip_library(global_scope=True)
                 library = ctypes.CDLL(str(shared_path))
                 function = getattr(library, f"launch_{ir.name}")
                 function.argtypes = self._launcher_argtypes(ir.arguments)
@@ -227,10 +229,15 @@ class HipKittensExecBackend:
             f"--offload-arch={target.arch}",
             self._arch_define(target),
             f"-I{root / 'include'}",
-            str(source_path),
-            "-o",
-            str(shared_path),
         ]
+        command.extend(self._toolchain_include_args(target))
+        command.extend(
+            [
+                str(source_path),
+                "-o",
+                str(shared_path),
+            ]
+        )
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
@@ -304,6 +311,8 @@ class HipKittensExecBackend:
             )
         candidates: list[HipKittensExecMatch] = []
         for descriptor in _DESCRIPTORS:
+            if not self._descriptor_supported_on_target(descriptor, target):
+                continue
             if a_spec.dtype != descriptor.operand_dtype or c_spec.dtype != descriptor.accumulator_dtype:
                 continue
             tile_m, tile_k = descriptor.a_tile_shape
@@ -342,8 +351,18 @@ class HipKittensExecBackend:
             + ", ".join(
                 f"{d.operand_dtype}:{d.a_tile_shape} x {d.b_tile_shape} -> {d.accumulator_dtype}:{d.c_tile_shape}"
                 for d in _DESCRIPTORS
+                if self._descriptor_supported_on_target(d, target)
             )
         )
+
+    def _descriptor_supported_on_target(
+        self,
+        descriptor: HipKittensExecDescriptor,
+        target: AMDTarget,
+    ) -> bool:
+        if target.arch == "gfx942" and descriptor.operand_dtype == "f16":
+            return False
+        return True
 
     def _configured_root(self) -> Path | None:
         configured = os.environ.get(_HIPKITTENS_ENV)
@@ -366,15 +385,37 @@ class HipKittensExecBackend:
         if target.arch != "gfx942":
             return True
         for include_dir in self._include_search_roots():
-            if (include_dir / "hip_bf16.h").exists():
+            if (include_dir / "hip_bf16.h").exists() or (include_dir / "hip" / "hip_bf16.h").exists():
                 return True
         return False
+
+    def _toolchain_include_args(self, target: AMDTarget) -> list[str]:
+        if target.arch != "gfx942":
+            return []
+        include_args: list[str] = []
+        seen: set[Path] = set()
+        for include_dir in self._include_search_roots():
+            candidates = [include_dir]
+            if (include_dir / "hip" / "hip_bf16.h").exists():
+                candidates.append(include_dir / "hip")
+            if not any((candidate / "hip_bf16.h").exists() or (candidate / "hip" / "hip_bf16.h").exists() for candidate in candidates):
+                continue
+            for candidate in candidates:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                include_args.append(f"-I{candidate}")
+        return include_args
 
     def _include_search_roots(self) -> tuple[Path, ...]:
         roots: list[Path] = []
         rocm_env = os.environ.get("ROCM_PATH")
         if rocm_env:
             roots.append(Path(rocm_env).expanduser() / "include")
+        prefix = Path(sys.prefix)
+        roots.append(prefix / "include")
+        for candidate in glob(str(prefix / "lib" / "python*" / "site-packages" / "_rocm_sdk_*" / "include")):
+            roots.append(Path(candidate))
         for candidate in ("/opt/rocm/include", "/usr/include", "/usr/local/include"):
             roots.append(Path(candidate))
         for candidate in sorted(glob("/opt/rocm-*")):
@@ -427,9 +468,9 @@ class HipKittensExecBackend:
             f"extern \"C\" __global__ void {entry_point}(GLA {match.a_name}, GLB {match.b_name}, GLC {match.c_name}) {{\n"
             "  const int tile_row = static_cast<int>(blockIdx.y);\n"
             "  const int tile_col = static_cast<int>(blockIdx.x);\n"
-            f"  {descriptor.rt_operand_alias}<{tile_m}, {tile_k}, {descriptor.a_layout}, {descriptor.a_rt_shape}> a_tile;\n"
-            f"  {descriptor.rt_operand_alias}<{tile_k}, {tile_n}, {descriptor.b_layout}, {descriptor.b_rt_shape}> b_tile;\n"
-            f"  {descriptor.rt_accumulator_alias}<{descriptor.c_tile_shape[0]}, {descriptor.c_tile_shape[1]}, {descriptor.c_layout}, {descriptor.c_rt_shape}> c_accum;\n"
+            f"  {self._render_rt_type(descriptor.rt_operand_alias, tile_m, tile_k, descriptor.a_layout, descriptor.a_rt_shape, target)} a_tile;\n"
+            f"  {self._render_rt_type(descriptor.rt_operand_alias, tile_k, tile_n, descriptor.b_layout, descriptor.b_rt_shape, target)} b_tile;\n"
+            f"  {self._render_rt_type(descriptor.rt_accumulator_alias, descriptor.c_tile_shape[0], descriptor.c_tile_shape[1], descriptor.c_layout, descriptor.c_rt_shape, target)} c_accum;\n"
             "  zero(c_accum);\n"
             f"  for (int k_tile = 0; k_tile < {match.k_tiles}; ++k_tile) {{\n"
             f"    load(a_tile, {match.a_name}, {{0, 0, tile_row, k_tile}});\n"
@@ -446,3 +487,16 @@ class HipKittensExecBackend:
             "  return static_cast<int>(hipDeviceSynchronize());\n"
             "}\n"
         )
+
+    def _render_rt_type(
+        self,
+        alias: str,
+        rows: int,
+        cols: int,
+        layout: str,
+        rt_shape: str,
+        target: AMDTarget,
+    ) -> str:
+        if target.arch == "gfx942":
+            return f"{alias}<{rows}, {cols}, {layout}>"
+        return f"{alias}<{rows}, {cols}, {layout}, {rt_shape}>"

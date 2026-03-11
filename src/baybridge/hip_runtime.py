@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 import shutil
 import struct
+from glob import glob
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .diagnostics import BackendNotImplementedError
@@ -11,6 +14,7 @@ from .runtime import RuntimeTensor
 
 _HIP_MEMCPY_HOST_TO_DEVICE = 1
 _HIP_MEMCPY_DEVICE_TO_HOST = 2
+_HIP_LIBRARY_HANDLE: ctypes.CDLL | None = None
 
 
 def require_hipcc() -> str:
@@ -18,6 +22,69 @@ def require_hipcc() -> str:
     if hipcc is None:
         raise BackendNotImplementedError("hipcc was not found on PATH; the hipcc_exec backend cannot build kernels")
     return hipcc
+
+
+def _hip_library_candidates() -> list[str]:
+    candidates: list[Path] = []
+    prefix = Path(sys.prefix)
+    for candidate in glob(str(prefix / "lib" / "python*" / "site-packages" / "_rocm_sdk_*" / "lib")):
+        libdir = Path(candidate)
+        candidates.extend(
+            [
+                libdir / "libamdhip64.so",
+                libdir / "libamdhip64.so.7",
+            ]
+        )
+        candidates.extend(Path(path) for path in sorted(glob(str(libdir / "libamdhip64.so.*"))))
+    for root in [Path("/opt/rocm/lib"), Path("/opt/rocm/lib64"), Path("/usr/lib"), Path("/usr/lib64")]:
+        candidates.extend([root / "libamdhip64.so", root / "libamdhip64.so.7"])
+    for root in sorted(glob("/opt/rocm-*")):
+        path_root = Path(root)
+        for subdir in ("lib", "lib64"):
+            libdir = path_root / subdir
+            candidates.extend([libdir / "libamdhip64.so", libdir / "libamdhip64.so.7"])
+    deduped: list[str] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen or not candidate.exists():
+            continue
+        seen.add(candidate)
+        deduped.append(str(candidate))
+    deduped.append("libamdhip64.so")
+    return deduped
+
+
+def load_hip_library(*, global_scope: bool = False) -> ctypes.CDLL:
+    global _HIP_LIBRARY_HANDLE
+    if _HIP_LIBRARY_HANDLE is not None:
+        return _HIP_LIBRARY_HANDLE
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0) if global_scope else getattr(ctypes, "RTLD_LOCAL", 0)
+    fallback_handle: ctypes.CDLL | None = None
+    for candidate in _hip_library_candidates():
+        try:
+            handle = ctypes.CDLL(candidate, mode=mode)
+        except OSError:
+            continue
+        if fallback_handle is None:
+            fallback_handle = handle
+        if _hip_runtime_has_device(handle):
+            _HIP_LIBRARY_HANDLE = handle
+            return _HIP_LIBRARY_HANDLE
+    if fallback_handle is not None:
+        _HIP_LIBRARY_HANDLE = fallback_handle
+        return _HIP_LIBRARY_HANDLE
+    raise BackendNotImplementedError("libamdhip64 was not found; install ROCm or TheRock runtime libraries in the active environment")
+
+
+def _hip_runtime_has_device(handle: ctypes.CDLL) -> bool:
+    try:
+        handle.hipGetDeviceCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        handle.hipGetDeviceCount.restype = ctypes.c_int
+    except AttributeError:
+        return False
+    count = ctypes.c_int()
+    status = handle.hipGetDeviceCount(ctypes.byref(count))
+    return status == 0 and count.value >= 1
 
 
 def scalar_ctype(dtype: str):
@@ -81,7 +148,7 @@ class DeviceTensor:
 
 class HipRuntime:
     def __init__(self) -> None:
-        self._lib = ctypes.CDLL("libamdhip64.so")
+        self._lib = load_hip_library(global_scope=True)
         self._lib.hipGetErrorString.argtypes = [ctypes.c_int]
         self._lib.hipGetErrorString.restype = ctypes.c_char_p
         self._lib.hipMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]

@@ -8,7 +8,7 @@ from typing import Any
 
 from ..backend import LoweredModule
 from ..diagnostics import BackendNotImplementedError
-from ..hip_runtime import HipRuntime, require_hipcc, scalar_ctype
+from ..hip_runtime import HipRuntime, load_hip_library, require_hipcc, scalar_ctype
 from ..ir import KernelArgument, Layout, Operation, PortableKernelIR, ScalarSpec, TensorSpec
 from ..runtime import RuntimeTensor
 from ..target import AMDTarget
@@ -99,6 +99,7 @@ class HipccExecBackend:
                 self._compile_shared_object(source_path, shared_path, target, lowered_module.text)
             function = state.get("function")
             if function is None:
+                load_hip_library(global_scope=True)
                 library = ctypes.CDLL(str(shared_path))
                 function = getattr(library, f"launch_{ir.name}")
                 function.argtypes = self._launcher_argtypes(ir.arguments)
