@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import baybridge as bb
+from baybridge.backends.hipkittens_exec import HipKittensExecBackend
 
 
 @bb.kernel
@@ -66,6 +67,10 @@ def _make_f16_micro_inputs() -> tuple[bb.Tensor, bb.Tensor, bb.Tensor]:
     b = bb.tensor(b_data, dtype="f16")
     c = bb.zeros((32, 32), dtype="f32")
     return a, b, c
+
+
+def _exec_backend_available(arch: str) -> bool:
+    return HipKittensExecBackend().available(bb.AMDTarget(arch=arch))
 
 
 def test_hipkittens_exec_lowers_supported_bf16_gemm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,7 +167,7 @@ def test_hipkittens_exec_rejects_unsupported_shape(tmp_path: Path, monkeypatch: 
 
 
 
-def test_compile_auto_prefers_hipkittens_exec_for_matching_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_auto_prefers_hipkittens_exec_for_matching_gfx950_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
     a, b, c = _make_bf16_micro_inputs()
 
@@ -186,13 +191,32 @@ def test_compile_auto_prefers_hipkittens_ref_without_hipkittens_root(tmp_path: P
 
 
 
-def test_compile_falls_back_to_hipkittens_ref_when_hipkittens_exec_is_unsupported(
+def test_compile_auto_prefers_hipkittens_exec_for_matching_gfx942_kernel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_root(tmp_path, monkeypatch)
     a, b, c = _make_bf16_micro_inputs()
 
     artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
+
+    if _exec_backend_available("gfx942"):
+        assert artifact.backend_name == "hipkittens_exec"
+        assert artifact.lowered_module is not None
+        assert artifact.lowered_module.dialect == "hipkittens_exec_cpp"
+    else:
+        assert artifact.backend_name == "hipkittens_ref"
+        assert artifact.lowered_module is not None
+        assert artifact.lowered_module.dialect == "hipkittens_cpp"
+
+
+
+def test_compile_falls_back_to_hipkittens_ref_when_hipkittens_exec_is_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    a, b, c = _make_bf16_micro_inputs()
+
+    artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx90a"))
 
     assert artifact.backend_name == "hipkittens_ref"
     assert artifact.lowered_module is not None
@@ -220,6 +244,8 @@ def test_hipkittens_exec_runs_supported_bf16_gemm(tmp_path: Path) -> None:
 
     a, b, c = _make_bf16_micro_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
     artifact = bb.compile(
         gemm_kernel,
         a,
@@ -249,6 +275,8 @@ def test_hipkittens_exec_runs_tiled_bf16_gemm(tmp_path: Path) -> None:
 
     a, b, c = _make_bf16_tiled_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
     artifact = bb.compile(
         gemm_kernel,
         a,
@@ -280,6 +308,8 @@ def test_hipkittens_exec_runs_supported_f16_gemm(tmp_path: Path) -> None:
 
     a, b, c = _make_f16_micro_inputs()
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
     artifact = bb.compile(
         gemm_kernel,
         a,

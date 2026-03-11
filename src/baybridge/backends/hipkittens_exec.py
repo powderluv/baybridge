@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+from glob import glob
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -157,8 +158,12 @@ class HipKittensExecBackend:
             return False
         return True
 
-    def available(self) -> bool:
-        return self._configured_root() is not None
+    def available(self, target: AMDTarget | None = None) -> bool:
+        if self._configured_root() is None:
+            return False
+        if target is None:
+            return True
+        return self._toolchain_ready(target)
 
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
         match = self._match(ir, target)
@@ -271,9 +276,9 @@ class HipKittensExecBackend:
         return argtypes
 
     def _match(self, ir: PortableKernelIR, target: AMDTarget) -> HipKittensExecMatch:
-        if target.arch != "gfx950":
+        if target.arch not in {"gfx950", "gfx942"}:
             raise BackendNotImplementedError(
-                f"hipkittens_exec currently supports gfx950 only, got target arch '{target.arch}'"
+                f"hipkittens_exec currently supports gfx950 and gfx942 only, got target arch '{target.arch}'"
             )
         mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
         if len(mma_ops) != 1:
@@ -357,9 +362,37 @@ class HipKittensExecBackend:
             )
         return root
 
+    def _toolchain_ready(self, target: AMDTarget) -> bool:
+        if target.arch != "gfx942":
+            return True
+        for include_dir in self._include_search_roots():
+            if (include_dir / "hip_bf16.h").exists():
+                return True
+        return False
+
+    def _include_search_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        rocm_env = os.environ.get("ROCM_PATH")
+        if rocm_env:
+            roots.append(Path(rocm_env).expanduser() / "include")
+        for candidate in ("/opt/rocm/include", "/usr/include", "/usr/local/include"):
+            roots.append(Path(candidate))
+        for candidate in sorted(glob("/opt/rocm-*")):
+            roots.append(Path(candidate) / "include")
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for root in roots:
+            if root in seen:
+                continue
+            seen.add(root)
+            deduped.append(root)
+        return tuple(deduped)
+
     def _arch_define(self, target: AMDTarget) -> str:
         if target.arch == "gfx950":
             return "-DKITTENS_CDNA4"
+        if target.arch == "gfx942":
+            return "-DKITTENS_CDNA3"
         raise BackendNotImplementedError(f"hipkittens_exec does not support target arch '{target.arch}'")
 
     def _render_cpp(
