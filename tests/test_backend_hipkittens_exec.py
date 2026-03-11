@@ -133,6 +133,7 @@ def test_hipkittens_exec_lowers_tiled_bf16_gemm(tmp_path: Path, monkeypatch: pyt
     assert artifact.lowered_module is not None
     text = artifact.lowered_module.text
     assert '// full shapes: A=(64, 32), B=(32, 64), C=(64, 64)' in text
+    assert '// family: bf16_gemm_32x16x32' in text
     assert '// tile grid: (2, 2, 1)' in text
     assert '// k_tiles: 2' in text
     assert 'for (int k_tile = 0; k_tile < 2; ++k_tile)' in text
@@ -170,6 +171,18 @@ def test_compile_auto_prefers_hipkittens_exec_for_matching_kernel(tmp_path: Path
     assert artifact.backend_name == "hipkittens_exec"
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.dialect == "hipkittens_exec_cpp"
+
+
+
+def test_compile_auto_prefers_hipkittens_ref_without_hipkittens_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BAYBRIDGE_HIPKITTENS_ROOT", raising=False)
+    a, b, c = _make_bf16_micro_inputs()
+
+    artifact = bb.compile(gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx950"))
+
+    assert artifact.backend_name == "hipkittens_ref"
+    assert artifact.lowered_module is not None
+    assert artifact.lowered_module.dialect == "hipkittens_cpp"
 
 
 

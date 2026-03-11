@@ -123,7 +123,7 @@ def _resolve_backend_for_ir(
         return _resolve_backend(backend)
     if ir is not None:
         hipkittens_backend = HipKittensExecBackend()
-        if hipkittens_backend.supports(ir, target):
+        if hipkittens_backend.available() and hipkittens_backend.supports(ir, target):
             return hipkittens_backend.name, hipkittens_backend
         hipkittens_ref_backend = HipKittensRefBackend()
         if hipkittens_ref_backend.supports(ir, target):

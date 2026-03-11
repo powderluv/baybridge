@@ -157,6 +157,9 @@ class HipKittensExecBackend:
             return False
         return True
 
+    def available(self) -> bool:
+        return self._configured_root() is not None
+
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
         match = self._match(ir, target)
         root = self._configured_root()
@@ -294,6 +297,7 @@ class HipKittensExecBackend:
             raise BackendNotImplementedError(
                 f"hipkittens_exec requires GEMM-compatible shapes, got {a_spec.shape} x {b_spec.shape} -> {c_spec.shape}"
             )
+        candidates: list[HipKittensExecMatch] = []
         for descriptor in _DESCRIPTORS:
             if a_spec.dtype != descriptor.operand_dtype or c_spec.dtype != descriptor.accumulator_dtype:
                 continue
@@ -307,16 +311,26 @@ class HipKittensExecBackend:
                 continue
             if a_spec.shape[1] % tile_k != 0:
                 continue
-            return HipKittensExecMatch(
-                descriptor=descriptor,
-                a_name=a_name,
-                b_name=b_name,
-                c_name=c_name,
-                a_shape=a_spec.shape,
-                b_shape=b_spec.shape,
-                c_shape=c_spec.shape,
-                grid=(b_spec.shape[1] // tile_n, a_spec.shape[0] // tile_m, 1),
-                k_tiles=a_spec.shape[1] // tile_k,
+            candidates.append(
+                HipKittensExecMatch(
+                    descriptor=descriptor,
+                    a_name=a_name,
+                    b_name=b_name,
+                    c_name=c_name,
+                    a_shape=a_spec.shape,
+                    b_shape=b_spec.shape,
+                    c_shape=c_spec.shape,
+                    grid=(b_spec.shape[1] // tile_n, a_spec.shape[0] // tile_m, 1),
+                    k_tiles=a_spec.shape[1] // tile_k,
+                )
+            )
+        if candidates:
+            return min(
+                candidates,
+                key=lambda match: (
+                    match.grid[0] * match.grid[1] * match.k_tiles,
+                    -(match.descriptor.a_tile_shape[0] * match.descriptor.b_tile_shape[1] * match.descriptor.a_tile_shape[1]),
+                ),
             )
         raise BackendNotImplementedError(
             "hipkittens_exec only supports GEMM shapes composed from supported HipKittens tiles "

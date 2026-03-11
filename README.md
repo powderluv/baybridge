@@ -221,7 +221,7 @@ Useful helpers:
   - requires `BAYBRIDGE_HIPKITTENS_ROOT` to point at a HipKittens checkout
 
 Default backend behavior:
-- if `compile(...)` is called without an explicit backend and the traced kernel matches `hipkittens_exec` on `gfx950`, Baybridge auto-prefers `hipkittens_exec`
+- if `compile(...)` is called without an explicit backend, the traced kernel matches `hipkittens_exec` on `gfx950`, and `BAYBRIDGE_HIPKITTENS_ROOT` points at a usable checkout, Baybridge auto-prefers `hipkittens_exec`
 - otherwise, if the traced kernel matches a HipKittens tensorop GEMM or attention family, Baybridge auto-prefers `hipkittens_ref`
 - otherwise it falls back to the normal default textual backend
 - if `BAYBRIDGE_EXEC_ARCH` is set, Baybridge uses that architecture as the default compile target
