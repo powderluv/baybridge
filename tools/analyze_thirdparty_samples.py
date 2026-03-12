@@ -174,7 +174,6 @@ UNSUPPORTED_NVIDIA_MARKERS = {
 }
 
 EXTERNAL_IMPORT_MARKERS = {
-    "cuda.bindings.driver": "cuda-python",
     "jax": "jax",
     "torch": "torch",
     "tvm": "tvm",

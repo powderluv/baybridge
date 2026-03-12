@@ -74,10 +74,51 @@ class TensorHandle:
             return int(self.source.data_ptr())
         return 0
 
+    def __dlpack__(self, stream: Any | None = None):
+        if self.source is not None and hasattr(self.source, "__dlpack__"):
+            try:
+                if stream is not None:
+                    return self.source.__dlpack__(stream=stream)
+            except TypeError:
+                pass
+            return self.source.__dlpack__()
+        if self.capsule is None:
+            raise TypeError("tensor handle does not carry a DLPack capsule")
+        return self.capsule
+
+    def __dlpack_device__(self) -> tuple[int, int]:
+        if self.source is not None and hasattr(self.source, "__dlpack_device__"):
+            return tuple(self.source.__dlpack_device__())
+        return int(self.device_type), int(self.device_id)
+
     def to_runtime_tensor(self) -> "RuntimeTensor":
         if self.source is not None and hasattr(self.source, "tolist"):
             return tensor(self.source.tolist(), dtype=self.dtype)
         raise TypeError("tensor handle cannot be converted to a baybridge runtime tensor")
+
+    def copy_from_runtime_tensor(self, value: "RuntimeTensor") -> None:
+        if self.source is None:
+            return
+        if value.shape != self.shape:
+            raise ValueError(f"runtime tensor shape mismatch for copy-back: expected {self.shape}, got {value.shape}")
+        if hasattr(self.source, "copy_from_runtime_tensor"):
+            self.source.copy_from_runtime_tensor(value)
+            return
+        try:
+            for index in _iter_indices(value.shape):
+                target_index: int | tuple[int, ...]
+                if len(index) == 1:
+                    target_index = index[0]
+                else:
+                    target_index = index
+                self.source[target_index] = value[index]
+            return
+        except Exception:
+            pass
+        if isinstance(self.source, list):
+            self.source[:] = value.tolist()
+            return
+        raise TypeError("tensor handle source does not support baybridge runtime copy-back")
 
 
 @dataclass(frozen=True)
@@ -116,6 +157,22 @@ class Pointer:
     @property
     def dtype(self) -> str:
         return self.value_type
+
+    @property
+    def _pointer(self) -> int | None:
+        if self.raw_address is not None:
+            return int(self.raw_address)
+        if self.tensor is not None and hasattr(self.tensor, "data_ptr"):
+            data_ptr = self.tensor.data_ptr()
+            if isinstance(data_ptr, Pointer):
+                return data_ptr.raw_address
+            if data_ptr is not None:
+                return int(data_ptr)
+        return None
+
+    @property
+    def memspace(self) -> Any:
+        return self.address_space
 
     def data_ptr(self) -> "Pointer":
         return self
@@ -640,6 +697,67 @@ def normalize_runtime_argument(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: normalize_runtime_argument(item) for key, item in value.items()}
     return value
+
+
+def materialize_runtime_argument(value: Any) -> Any:
+    if isinstance(value, TensorHandle):
+        return value.to_runtime_tensor()
+    if isinstance(value, Pointer):
+        if value.tensor is None:
+            return value
+        return Pointer(
+            value_type=value.value_type,
+            tensor=materialize_runtime_argument(value.tensor),
+            raw_address=value.raw_address,
+            address_space=value.address_space,
+            assumed_align=value.assumed_align,
+        )
+    if isinstance(value, list):
+        return [materialize_runtime_argument(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(materialize_runtime_argument(item) for item in value)
+    if isinstance(value, dict):
+        return {key: materialize_runtime_argument(item) for key, item in value.items()}
+    return value
+
+
+def sync_runtime_argument(original: Any, materialized: Any) -> None:
+    if isinstance(original, TensorHandle) and isinstance(materialized, RuntimeTensor):
+        original.copy_from_runtime_tensor(materialized)
+        return
+    if isinstance(original, Pointer) and isinstance(materialized, Pointer):
+        if original.tensor is not None and materialized.tensor is not None:
+            sync_runtime_argument(original.tensor, materialized.tensor)
+        return
+    if isinstance(original, list) and isinstance(materialized, list):
+        for original_item, materialized_item in zip(original, materialized):
+            sync_runtime_argument(original_item, materialized_item)
+        return
+    if isinstance(original, tuple) and isinstance(materialized, tuple):
+        for original_item, materialized_item in zip(original, materialized):
+            sync_runtime_argument(original_item, materialized_item)
+        return
+    if isinstance(original, dict) and isinstance(materialized, dict):
+        for key, original_item in original.items():
+            if key in materialized:
+                sync_runtime_argument(original_item, materialized[key])
+
+
+@contextmanager
+def materialized_runtime_call(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+):
+    materialized_args = tuple(materialize_runtime_argument(arg) for arg in args)
+    materialized_kwargs = {name: materialize_runtime_argument(value) for name, value in kwargs.items()}
+    try:
+        yield materialized_args, materialized_kwargs
+    finally:
+        for original, materialized in zip(args, materialized_args):
+            sync_runtime_argument(original, materialized)
+        for name, original in kwargs.items():
+            if name in materialized_kwargs:
+                sync_runtime_argument(original, materialized_kwargs[name])
 
 
 def _normalize_dim3(value: tuple[int, int, int], *, name: str) -> tuple[int, int, int]:

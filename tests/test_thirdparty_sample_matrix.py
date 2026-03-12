@@ -237,6 +237,7 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
 
     elementwise_apply = _entry(entries, "examples/python/CuTeDSL/ampere/elementwise_apply.py")
     assert elementwise_apply["status"] == "partially_covered_by_baybridge_tests"
+    assert "dep:cuda-python" not in elementwise_apply["blockers"]
     assert "unknown:GenerateLineInfo" not in elementwise_apply["blockers"]
     assert "unknown:runtime" not in elementwise_apply["blockers"]
     assert "unknown:testing" not in elementwise_apply["blockers"]
@@ -285,6 +286,7 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
 
     sgemm = _entry(entries, "examples/python/CuTeDSL/ampere/sgemm.py")
     assert sgemm["status"] == "blocked_external_dependency"
+    assert "dep:cuda-python" not in sgemm["blockers"]
     assert "unknown:ComposedLayout" not in sgemm["blockers"]
     assert "unknown:CopyAtom" not in sgemm["blockers"]
     assert "unknown:TiledCopy" not in sgemm["blockers"]
@@ -307,6 +309,7 @@ def test_thirdparty_sample_matrix_regenerates(tmp_path: Path) -> None:
 
     tensorop_gemm = _entry(entries, "examples/python/CuTeDSL/ampere/tensorop_gemm.py")
     assert tensorop_gemm["status"] == "blocked_external_dependency"
+    assert "dep:cuda-python" not in tensorop_gemm["blockers"]
     assert "nvidia:nvgpu" not in tensorop_gemm["blockers"]
 
     tour_to_sol = _entry(entries, "examples/python/CuTeDSL/notebooks/tour_to_sol_gemm.ipynb")

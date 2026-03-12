@@ -9,11 +9,27 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .backend import Backend, LoweredModule
-from .backends import GpuTextBackend, HipKittensExecBackend, HipKittensRefBackend, HipccExecBackend, MlirTextBackend
+from .backends import (
+    FlyDslExecBackend,
+    FlyDslRefBackend,
+    GpuTextBackend,
+    HipKittensExecBackend,
+    HipKittensRefBackend,
+    HipccExecBackend,
+    MlirTextBackend,
+)
 from .diagnostics import BackendNotImplementedError, CompilationError
 from .frontend import KernelDefinition, TraceKernelLaunch
 from .ir import PortableKernelIR, ScalarSpec, TensorSpec
-from .runtime import LaunchConfig, Pointer, RuntimeTensor, infer_runtime_spec, normalize_runtime_argument
+from .runtime import (
+    LaunchConfig,
+    Pointer,
+    RuntimeTensor,
+    TensorHandle,
+    infer_runtime_spec,
+    materialized_runtime_call,
+    normalize_runtime_argument,
+)
 from .target import AMDTarget
 from .tracing import IRBuilder, ScalarValue, TensorValue, tracing
 from .views import TiledTensorView
@@ -104,6 +120,10 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, MlirTextBackend()
         if backend == "gpu_text":
             return backend, GpuTextBackend()
+        if backend == "flydsl_exec":
+            return backend, FlyDslExecBackend()
+        if backend == "flydsl_ref":
+            return backend, FlyDslRefBackend()
         if backend == "hipkittens_exec":
             return backend, HipKittensExecBackend()
         if backend == "hipkittens_ref":
@@ -118,6 +138,7 @@ def _resolve_backend_for_ir(
     ir: PortableKernelIR | None,
     target: AMDTarget,
     backend: str | Backend | None,
+    sample_args: tuple[Any, ...] = (),
 ) -> tuple[str, Backend | None]:
     if backend is not None:
         return _resolve_backend(backend)
@@ -128,7 +149,38 @@ def _resolve_backend_for_ir(
         hipkittens_ref_backend = HipKittensRefBackend()
         if hipkittens_ref_backend.supports(ir, target):
             return hipkittens_ref_backend.name, hipkittens_ref_backend
+        flydsl_exec_backend = FlyDslExecBackend()
+        if (
+            _supports_flydsl_exec_inputs(sample_args)
+            and flydsl_exec_backend.available(target)
+            and flydsl_exec_backend.supports(ir, target)
+        ):
+            return flydsl_exec_backend.name, flydsl_exec_backend
     return _resolve_backend(_DEFAULT_BACKEND)
+
+
+def _supports_flydsl_exec_inputs(values: tuple[Any, ...]) -> bool:
+    if not values:
+        return False
+
+    def visit(value: Any) -> bool:
+        if isinstance(value, TensorHandle):
+            return True
+        if isinstance(value, RuntimeTensor):
+            return False
+        if isinstance(value, Pointer):
+            if value.tensor is None:
+                return True
+            return visit(value.tensor)
+        if isinstance(value, list):
+            return all(visit(item) for item in value)
+        if isinstance(value, tuple):
+            return all(visit(item) for item in value)
+        if isinstance(value, dict):
+            return all(visit(item) for item in value.values())
+        return True
+
+    return all(visit(value) for value in values)
 
 
 def _normalize_kernel(kernel: KernelDefinition | Any) -> KernelDefinition:
@@ -389,14 +441,22 @@ def _wrap_backend_launcher(
     signature = inspect.signature(definition.fn)
 
     def launcher(*args: Any, **kwargs: Any) -> Any:
-        bound = signature.bind_partial(*args, **kwargs).arguments
+        bind_kwargs = dict(kwargs)
+        launch_stream = None
+        if "stream" not in signature.parameters:
+            launch_stream = bind_kwargs.pop("stream", None)
+        bound = signature.bind_partial(*args, **bind_kwargs).arguments
+        if launch_stream is None and "stream" in bound:
+            launch_stream = bound["stream"]
         extracted_args = [
             normalize_runtime_argument(
                 _extract_bound_value(bound[binding["parameter"]], tuple(binding["path"]))
             )
             for binding in trace_bindings
         ]
-        return backend_launcher(*extracted_args)
+        if launch_stream is None:
+            return backend_launcher(*extracted_args)
+        return backend_launcher(*extracted_args, stream=launch_stream)
 
     return launcher
 
@@ -452,14 +512,15 @@ def _can_runtime_compile(definition: KernelDefinition, sample_args: tuple[Any, .
 
 
 def _execute_definition(definition: KernelDefinition, *args: Any, **kwargs: Any) -> Any:
-    if definition.kind == "kernel":
-        launch = definition(*args, **kwargs)
-        return launch.launch(
-            grid=definition.launch.grid,
-            block=definition.launch.block,
-            shared_mem_bytes=definition.launch.shared_mem_bytes,
-        )
-    return definition(*args, **kwargs)
+    with materialized_runtime_call(args, kwargs) as (call_args, call_kwargs):
+        if definition.kind == "kernel":
+            launch = definition(*call_args, **call_kwargs)
+            return launch.launch(
+                grid=definition.launch.grid,
+                block=definition.launch.block,
+                shared_mem_bytes=definition.launch.shared_mem_bytes,
+            )
+        return definition(*call_args, **call_kwargs)
 
 
 def _write_artifact(
@@ -523,7 +584,7 @@ def compile(
         if not _can_runtime_compile(definition, normalized_sample_args):
             raise
         runtime_metadata = {"mode": "runtime_only", "trace_error": str(exc)}
-    backend_name, resolved_backend = _resolve_backend_for_ir(ir, selected_target, backend)
+    backend_name, resolved_backend = _resolve_backend_for_ir(ir, selected_target, backend, normalized_sample_args)
     artifact_extension = getattr(resolved_backend, "artifact_extension", ".mlir")
     if ir is not None:
         cache_key = _cache_key(_trace_cache_payload(ir, selected_target, backend_name))

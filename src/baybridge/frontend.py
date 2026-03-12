@@ -20,6 +20,7 @@ from .runtime import (
     current_execution,
     execution_context,
     full as runtime_full,
+    materialized_runtime_call,
     normalize_runtime_argument,
     zeros,
 )
@@ -183,6 +184,17 @@ class TiledCopyTV:
     def get_slice(self, thread_index: ScalarValue | int) -> "ThreadCopySlice":
         return ThreadCopySlice(self, thread_index)
 
+    def get_thread_slice(self, thread_index: ScalarValue | int) -> "ThreadCopySlice":
+        return self.get_slice(thread_index)
+
+    def partition_shape_S(self, shape: Any | None = None) -> tuple[int, ...]:
+        del shape
+        return self.tiler
+
+    def partition_shape_D(self, shape: Any | None = None) -> tuple[int, ...]:
+        del shape
+        return self.tiler
+
 
 @dataclass(frozen=True)
 class ThreadCopySlice:
@@ -197,6 +209,17 @@ class ThreadCopySlice:
 
     def partition_D(self, tensor: Any) -> Any:
         return self._partition(tensor)
+
+    def partition_shape_S(self, shape: Any | None = None) -> tuple[int, ...]:
+        del shape
+        return self.tiled_copy.partition_shape_S()
+
+    def partition_shape_D(self, shape: Any | None = None) -> tuple[int, ...]:
+        del shape
+        return self.tiled_copy.partition_shape_D()
+
+    def retile(self, value: Any) -> Any:
+        return value
 
 
 TiledCopy = TiledCopyTV
@@ -220,6 +243,17 @@ class TiledMma:
     def get_slice(self, thread_index: ScalarValue | int) -> "TiledMmaSlice":
         return TiledMmaSlice(self, thread_index)
 
+    def get_thread_slice(self, thread_index: ScalarValue | int) -> "TiledMmaSlice":
+        return self.get_slice(thread_index)
+
+    def partition_shape_A(self, shape: Any | None = None) -> tuple[int, int]:
+        del shape
+        return self.descriptor.operand_shape("a")
+
+    def partition_shape_B(self, shape: Any | None = None) -> tuple[int, int]:
+        del shape
+        return self.descriptor.operand_shape("b")
+
     def make_fragment_A(self, tensor: TensorValue | RuntimeTensor) -> TensorValue | RuntimeTensor:
         dtype = tensor.spec.dtype if isinstance(tensor, TensorValue) else tensor.dtype
         return make_rmem_tensor(self.descriptor.operand_shape("a"), dtype)
@@ -232,8 +266,14 @@ class TiledMma:
         del shape
         return self.descriptor.operand_shape("acc")
 
-    def make_fragment_C(self, shape: tuple[int, ...]) -> TensorValue | RuntimeTensor:
-        return make_rmem_tensor(shape, self.descriptor.accumulator_dtype)
+    def make_fragment_C(self, shape: Any) -> TensorValue | RuntimeTensor:
+        if hasattr(shape, "shape"):
+            fragment_shape = tuple(getattr(shape, "shape"))
+        elif isinstance(shape, (tuple, list)):
+            fragment_shape = tuple(int(dim) for dim in shape)
+        else:
+            raise TypeError("make_fragment_C expects a shape tuple/list or a tensor-like value with a shape")
+        return make_rmem_tensor(fragment_shape, self.descriptor.accumulator_dtype)
 
     def set(self, field: Any, value: Any) -> "TiledMma":
         del field
@@ -290,6 +330,30 @@ class TiledMmaSlice:
             axes=self.tiled_mma.axes,
             wave_size=self.tiled_mma.descriptor.wave_size,
         )
+
+    def partition_shape_A(self, shape: Any | None = None) -> tuple[int, int]:
+        return self.tiled_mma.partition_shape_A(shape)
+
+    def partition_shape_B(self, shape: Any | None = None) -> tuple[int, int]:
+        return self.tiled_mma.partition_shape_B(shape)
+
+    def partition_shape_C(self, shape: Any | None = None) -> tuple[int, int]:
+        if shape is None:
+            resolved_shape = self.tiled_mma.descriptor.operand_shape("acc")
+        elif hasattr(shape, "shape"):
+            resolved_shape = tuple(getattr(shape, "shape"))
+        else:
+            resolved_shape = tuple(shape)
+        return self.tiled_mma.partition_shape_C(resolved_shape)
+
+    def make_fragment_A(self, tensor: TensorValue | RuntimeTensor) -> TensorValue | RuntimeTensor:
+        return self.tiled_mma.make_fragment_A(tensor)
+
+    def make_fragment_B(self, tensor: TensorValue | RuntimeTensor) -> TensorValue | RuntimeTensor:
+        return self.tiled_mma.make_fragment_B(tensor)
+
+    def make_fragment_C(self, shape: Any) -> TensorValue | RuntimeTensor:
+        return self.tiled_mma.make_fragment_C(shape)
 
 
 @dataclass(frozen=True)
@@ -439,20 +503,21 @@ class KernelLaunch:
             pass
         else:
             raise TraceKernelLaunch(self.definition, self.args, self.kwargs, launch)
-        for block_z in range(launch.grid[2]):
-            for block_y in range(launch.grid[1]):
-                for block_x in range(launch.grid[0]):
-                    block_idx_state = (block_x, block_y, block_z)
-                    for thread_z in range(launch.block[2]):
-                        for thread_y in range(launch.block[1]):
-                            for thread_x in range(launch.block[0]):
-                                state = ExecutionState(
-                                    launch=launch,
-                                    block_idx=block_idx_state,
-                                    thread_idx=(thread_x, thread_y, thread_z),
-                                )
-                                with _execution(state):
-                                    self.definition.fn(*self.args, **self.kwargs)
+        with materialized_runtime_call(self.args, self.kwargs) as (call_args, call_kwargs):
+            for block_z in range(launch.grid[2]):
+                for block_y in range(launch.grid[1]):
+                    for block_x in range(launch.grid[0]):
+                        block_idx_state = (block_x, block_y, block_z)
+                        for thread_z in range(launch.block[2]):
+                            for thread_y in range(launch.block[1]):
+                                for thread_x in range(launch.block[0]):
+                                    state = ExecutionState(
+                                        launch=launch,
+                                        block_idx=block_idx_state,
+                                        thread_idx=(thread_x, thread_y, thread_z),
+                                    )
+                                    with _execution(state):
+                                        self.definition.fn(*call_args, **call_kwargs)
 
     def smem_usage(self) -> int:
         from .compiler import _trace

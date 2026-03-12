@@ -488,8 +488,10 @@ class HipKittensExecBackend:
         state: dict[str, Any] = {}
 
         def launcher(*args: Any, **kwargs: Any) -> None:
+            stream = kwargs.pop("stream", None)
+            del stream
             if kwargs:
-                raise TypeError("hipkittens_exec launcher only supports positional arguments")
+                raise TypeError("hipkittens_exec launcher only supports positional arguments and an optional stream=")
             if len(args) != len(ir.arguments):
                 raise TypeError(f"{ir.name} expects {len(ir.arguments)} arguments, got {len(args)}")
             if not shared_path.exists():

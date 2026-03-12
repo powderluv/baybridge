@@ -158,6 +158,46 @@ def test_tiled_mma_and_gemm_helpers(tmp_path: Path) -> None:
     assert "amdgpu.mfma" in artifact.lowered_module.text
 
 
+def test_tiled_copy_and_mma_object_model_helpers() -> None:
+    atom = bb.make_copy_atom(bb.nvgpu.CopyUniversalOp(), "f32")
+    tiled_copy = bb.make_tiled_copy_tv(
+        atom,
+        bb.make_layout((1, 4), stride=(4, 1)),
+        bb.make_layout((2, 1), stride=(1, 1)),
+    )
+    thr_copy = tiled_copy.get_thread_slice(3)
+    assert tiled_copy.get_thread_slice(3) == thr_copy
+    assert tiled_copy.partition_shape_S((64, 64)) == (2, 4)
+    assert tiled_copy.partition_shape_D((64, 64)) == (2, 4)
+    assert thr_copy.partition_shape_S((64, 64)) == (2, 4)
+    assert thr_copy.partition_shape_D((64, 64)) == (2, 4)
+
+    fragment = bb.zeros((2, 4), dtype="f32")
+    assert thr_copy.retile(fragment) is fragment
+
+    tiled_mma = bb.make_tiled_mma(
+        SimpleNamespace(tile=(16, 16, 4), dtype="f32", accumulator_dtype="f32", wave_size=64)
+    )
+    thr_mma = tiled_mma.get_thread_slice(7)
+    assert tiled_mma.get_thread_slice(7) == thr_mma
+    assert tiled_mma.partition_shape_A((128, 64)) == (16, 4)
+    assert tiled_mma.partition_shape_B((128, 64)) == (4, 16)
+    assert tiled_mma.partition_shape_C((128, 64)) == (16, 16)
+    assert thr_mma.partition_shape_A((128, 64)) == (16, 4)
+    assert thr_mma.partition_shape_B((128, 64)) == (4, 16)
+    assert thr_mma.partition_shape_C((128, 64)) == (16, 16)
+
+    a = bb.zeros((16, 4), dtype="f32")
+    b = bb.zeros((4, 16), dtype="f32")
+    c = bb.zeros((16, 16), dtype="f32")
+    frag_a = thr_mma.make_fragment_A(a)
+    frag_b = thr_mma.make_fragment_B(b)
+    frag_c = thr_mma.make_fragment_C(c)
+    assert frag_a.shape == (16, 4)
+    assert frag_b.shape == (4, 16)
+    assert frag_c.shape == (16, 16)
+
+
 def test_warp_idx_kernel_runs_direct_and_compiled(tmp_path: Path) -> None:
     expected = [0] * 64 + [1] * 64
 

@@ -203,6 +203,16 @@ Useful helpers:
   - lowers portable IR to a baybridge-specific textual form
 - `backend="gpu_text"`
   - lowers portable IR to GPU/ROCDL-flavored textual IR
+- `backend="flydsl_ref"`
+  - lowers a supported Baybridge subset to a FlyDSL-oriented reference module
+  - this is a reference backend, not an executable backend
+  - if `BAYBRIDGE_FLYDSL_ROOT` points at a FlyDSL checkout, the artifact includes a direct root/build hint
+- `backend="flydsl_exec"`
+  - lowers a narrow pointwise Baybridge subset to a FlyDSL-flavored Python module and launcher scaffold
+  - current supported family: simple pointwise tensor kernels with scalar builtins and direct `load` / `store`
+  - requires a built and importable FlyDSL environment, not just a source checkout
+  - `BAYBRIDGE_FLYDSL_ROOT` should point at a checkout with `build-fly/python_packages` or `build/python_packages`
+  - intended as the first executable FlyDSL bridge, not full FlyDSL coverage yet
 - `backend="hipkittens_ref"`
   - lowers matched GEMM and attention-family kernels to a HipKittens-oriented C++ reference artifact
   - this is a reference backend, not an executable backend
