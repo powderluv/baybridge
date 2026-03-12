@@ -5,7 +5,7 @@
 Today it provides:
 - a Python frontend with an example-friendly `import baybridge as cute` surface
 - a portable kernel IR
-- textual lowering backends (`mlir_text`, `gpu_text`, and `hipkittens_ref`)
+- textual lowering backends (`mlir_text`, `gpu_text`, `gpu_mlir`, `waveasm_ref`, and `hipkittens_ref`)
 - executable HIP lowering for a narrow validated subset
 - an optional executable HipKittens backend for a narrow BF16 GEMM subset
 - a reference runtime for basic examples and `@jit` wrapper execution
@@ -203,6 +203,21 @@ Useful helpers:
   - lowers portable IR to a baybridge-specific textual form
 - `backend="gpu_text"`
   - lowers portable IR to GPU/ROCDL-flavored textual IR
+- `backend="gpu_mlir"`
+  - lowers portable IR to a stricter MLIR GPU/module form suitable for external backend consumption
+- `backend="waveasm_ref"`
+  - lowers supported kernels to WaveASM-oriented MLIR plus tool invocation hints
+  - this is a reference backend, not an executable backend
+  - `BAYBRIDGE_WAVEASM_ROOT` can point at a Wave checkout to improve tool discovery hints
+- `backend="waveasm_exec"`
+  - experimental backend behind `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`
+  - lowers a narrow standard-MLIR subset to WaveASM-consumable MLIR and launches the resulting HSACO through HIP's module API
+  - current experimental family:
+    - single-global-tensor pointwise kernels
+    - single-global-tensor shared-memory staging
+  - not enabled by default because current upstream WaveASM execution still has correctness issues for Baybridge kernels, including the scalar global `memref.load/store` SRD aliasing bug tracked in `iree-org/wave#1117`
+  - does not yet cover reductions, multi-buffer copy, GEMM, or Baybridge custom tensor-SSA ops
+  - requires `waveasm-translate`, `clang++` or `clang`, and prefers `ld.lld` for final HSACO linking
 - `backend="flydsl_ref"`
   - lowers a supported Baybridge subset to a FlyDSL-oriented reference module
   - this is a reference backend, not an executable backend

@@ -12,11 +12,14 @@ from .backend import Backend, LoweredModule
 from .backends import (
     FlyDslExecBackend,
     FlyDslRefBackend,
+    GpuMlirBackend,
     GpuTextBackend,
     HipKittensExecBackend,
     HipKittensRefBackend,
     HipccExecBackend,
     MlirTextBackend,
+    WaveAsmExecBackend,
+    WaveAsmRefBackend,
 )
 from .diagnostics import BackendNotImplementedError, CompilationError
 from .frontend import KernelDefinition, TraceKernelLaunch
@@ -118,8 +121,14 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, None
         if backend == "mlir_text":
             return backend, MlirTextBackend()
+        if backend == "gpu_mlir":
+            return backend, GpuMlirBackend()
         if backend == "gpu_text":
             return backend, GpuTextBackend()
+        if backend == "waveasm_exec":
+            return backend, WaveAsmExecBackend()
+        if backend == "waveasm_ref":
+            return backend, WaveAsmRefBackend()
         if backend == "flydsl_exec":
             return backend, FlyDslExecBackend()
         if backend == "flydsl_ref":
