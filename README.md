@@ -208,10 +208,19 @@ Useful helpers:
   - this is a reference backend, not an executable backend
   - if `BAYBRIDGE_FLYDSL_ROOT` points at a FlyDSL checkout, the artifact includes a direct root/build hint
 - `backend="flydsl_exec"`
-  - lowers a narrow pointwise Baybridge subset to a FlyDSL-flavored Python module and launcher scaffold
-  - current supported family: simple pointwise tensor kernels with scalar builtins and direct `load` / `store`
+  - lowers a validated Baybridge tensor subset to a FlyDSL-flavored Python module and launcher scaffold
+  - current supported family:
+    - pointwise tensor kernels
+    - broadcasted tensor binary ops
+    - tensor factories via `fill`
+    - simple reductions
+    - shared-memory staging and whole-tensor copy
   - requires a built and importable FlyDSL environment, not just a source checkout
   - `BAYBRIDGE_FLYDSL_ROOT` should point at a checkout with `build-fly/python_packages` or `build/python_packages`
+  - can launch with:
+    - `baybridge.from_dlpack(...)` tensor handles
+    - raw DLPack-capable tensors such as `torch.Tensor`
+    - plain `baybridge.RuntimeTensor` values when `torch` is importable
   - intended as the first executable FlyDSL bridge, not full FlyDSL coverage yet
 - `backend="hipkittens_ref"`
   - lowers matched GEMM and attention-family kernels to a HipKittens-oriented C++ reference artifact
@@ -236,6 +245,7 @@ Default backend behavior:
 - if `compile(...)` is called without an explicit backend, the traced kernel matches `hipkittens_exec` on `gfx950`, and `BAYBRIDGE_HIPKITTENS_ROOT` points at a usable checkout, Baybridge auto-prefers `hipkittens_exec`
 - the same auto-preference path can apply to `gfx942`, but only when the local ROCm toolchain satisfies the HipKittens `cdna3` header requirements
 - otherwise, if the traced kernel matches a HipKittens tensorop GEMM or attention family, Baybridge auto-prefers `hipkittens_ref`
+- otherwise, if the traced kernel matches the validated `flydsl_exec` subset and the active FlyDSL environment is ready, Baybridge auto-prefers `flydsl_exec` for DLPack-capable tensor inputs and for `baybridge.RuntimeTensor` inputs when `torch` is importable
 - otherwise it falls back to the normal default textual backend
 - if `BAYBRIDGE_EXEC_ARCH` is set, Baybridge uses that architecture as the default compile target
 

@@ -151,36 +151,12 @@ def _resolve_backend_for_ir(
             return hipkittens_ref_backend.name, hipkittens_ref_backend
         flydsl_exec_backend = FlyDslExecBackend()
         if (
-            _supports_flydsl_exec_inputs(sample_args)
+            flydsl_exec_backend.supports_inputs(sample_args)
             and flydsl_exec_backend.available(target)
             and flydsl_exec_backend.supports(ir, target)
         ):
             return flydsl_exec_backend.name, flydsl_exec_backend
     return _resolve_backend(_DEFAULT_BACKEND)
-
-
-def _supports_flydsl_exec_inputs(values: tuple[Any, ...]) -> bool:
-    if not values:
-        return False
-
-    def visit(value: Any) -> bool:
-        if isinstance(value, TensorHandle):
-            return True
-        if isinstance(value, RuntimeTensor):
-            return False
-        if isinstance(value, Pointer):
-            if value.tensor is None:
-                return True
-            return visit(value.tensor)
-        if isinstance(value, list):
-            return all(visit(item) for item in value)
-        if isinstance(value, tuple):
-            return all(visit(item) for item in value)
-        if isinstance(value, dict):
-            return all(visit(item) for item in value.values())
-        return True
-
-    return all(visit(value) for value in values)
 
 
 def _normalize_kernel(kernel: KernelDefinition | Any) -> KernelDefinition:

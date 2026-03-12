@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterator
 from ..backend import LoweredModule
 from ..diagnostics import BackendNotImplementedError
 from ..ir import PortableKernelIR
-from ..runtime import RuntimeTensor, tensor as make_runtime_tensor
+from ..runtime import Pointer, RuntimeTensor, TensorHandle, tensor as make_runtime_tensor
 from ..target import AMDTarget
 from .flydsl_bridge import FlyDslBridge
 
@@ -18,6 +18,7 @@ from .flydsl_bridge import FlyDslBridge
 class FlyDslExecBackend:
     name = "flydsl_exec"
     artifact_extension = ".fly.py"
+    _SUPPORTED_RUNTIME_DTYPES = frozenset({"i1", "i8", "i32", "i64", "f16", "bf16", "f32"})
 
     def __init__(self) -> None:
         self._bridge = FlyDslBridge()
@@ -28,6 +29,30 @@ class FlyDslExecBackend:
 
     def supports(self, ir: PortableKernelIR, target: AMDTarget) -> bool:
         return self._bridge.supports_exec(ir, target)
+
+    def supports_inputs(self, values: tuple[Any, ...]) -> bool:
+        if not values:
+            return False
+        environment = self._bridge.exec_environment()
+
+        def visit(value: Any) -> bool:
+            if isinstance(value, TensorHandle):
+                return True
+            if isinstance(value, RuntimeTensor):
+                return environment.torch_available and value.dtype in self._SUPPORTED_RUNTIME_DTYPES
+            if isinstance(value, Pointer):
+                return False
+            if hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__"):
+                return True
+            if isinstance(value, list):
+                return all(visit(item) for item in value)
+            if isinstance(value, tuple):
+                return all(visit(item) for item in value)
+            if isinstance(value, dict):
+                return all(visit(item) for item in value.values())
+            return True
+
+        return all(visit(value) for value in values)
 
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
         if not self.supports(ir, target):

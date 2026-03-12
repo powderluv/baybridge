@@ -87,10 +87,22 @@ _EXEC_SUPPORTED_OPS = {
     "constant",
     "copy",
     "div",
+    "fill",
     "floordiv",
     "grid_dim",
     "load",
     "make_tensor",
+    "math_atan2",
+    "math_cos",
+    "math_erf",
+    "math_exp",
+    "math_exp2",
+    "math_log",
+    "math_log10",
+    "math_log2",
+    "math_rsqrt",
+    "math_sin",
+    "math_sqrt",
     "masked_load",
     "masked_store",
     "mod",
@@ -105,6 +117,11 @@ _EXEC_SUPPORTED_OPS = {
     "select",
     "store",
     "sub",
+    "broadcast_to",
+    "tensor_add",
+    "tensor_div",
+    "tensor_mul",
+    "tensor_sub",
     "thread_idx",
 }
 
@@ -414,6 +431,7 @@ class FlyDslBridge:
             f"{root_hint}"
             "import flydsl.compiler as flyc\n"
             "import flydsl.expr as fx\n\n"
+            "import math\n\n"
             "gpu = getattr(fx, 'gpu', fx)\n\n"
             "def _baybridge_adapt_tensor_arg(value):\n"
             "    if hasattr(value, '__fly_types__') or hasattr(value, '__fly_ptrs__'):\n"
@@ -518,6 +536,42 @@ class FlyDslBridge:
                 f"{type_name} = fx.MemRefType.get({dtype_expr}, fx.LayoutType.get({shape_expr}, {stride_expr}), {address_space})",
                 f"{operation.outputs[0]} = fx.memref_alloca({type_name}, {layout_name})",
             ]
+        if operation.op in {
+            "math_sqrt",
+            "math_rsqrt",
+            "math_sin",
+            "math_cos",
+            "math_exp",
+            "math_exp2",
+            "math_log",
+            "math_log2",
+            "math_log10",
+            "math_erf",
+        }:
+            source_name = operation.inputs[0]
+            if operation.outputs[0] in tensor_specs:
+                return self._render_exec_tensor_unary_math(
+                    operation.op,
+                    source_name,
+                    tensor_specs[source_name],
+                    operation.outputs[0],
+                    tensor_specs[operation.outputs[0]],
+                    memref_names=memref_names,
+                )
+            return [f"{operation.outputs[0]} = {self._render_exec_scalar_unary_math_expr(operation.op, source_name)}"]
+        if operation.op == "math_atan2":
+            lhs_name, rhs_name = operation.inputs
+            if operation.outputs[0] in tensor_specs:
+                return self._render_exec_tensor_binary_math(
+                    operation.op,
+                    lhs_name,
+                    rhs_name,
+                    tensor_specs=tensor_specs,
+                    output_name=operation.outputs[0],
+                    output_spec=tensor_specs[operation.outputs[0]],
+                    memref_names=memref_names,
+                )
+            return [f"{operation.outputs[0]} = math.atan2({lhs_name}, {rhs_name})"]
         if operation.op in {"add", "sub", "mul", "div", "floordiv", "mod", "and", "or"}:
             lhs, rhs = operation.inputs
             symbol = {
@@ -531,6 +585,26 @@ class FlyDslBridge:
                 "or": "|",
             }[operation.op]
             return [f"{operation.outputs[0]} = {lhs} {symbol} {rhs}"]
+        if operation.op == "broadcast_to":
+            source_name = operation.inputs[0]
+            return self._render_exec_broadcast_to(
+                source_name,
+                tensor_specs[source_name],
+                operation.outputs[0],
+                tensor_specs[operation.outputs[0]],
+                memref_names=memref_names,
+            )
+        if operation.op in {"tensor_add", "tensor_sub", "tensor_mul", "tensor_div"}:
+            lhs_name, rhs_name = operation.inputs
+            return self._render_exec_tensor_binary(
+                operation.op,
+                lhs_name,
+                rhs_name,
+                tensor_specs=tensor_specs,
+                output_name=operation.outputs[0],
+                output_spec=tensor_specs[operation.outputs[0]],
+                memref_names=memref_names,
+            )
         if operation.op == "neg":
             return [f"{operation.outputs[0]} = -{operation.inputs[0]}"]
         if operation.op == "bitnot":
@@ -538,6 +612,14 @@ class FlyDslBridge:
         if operation.op == "copy":
             src, dst = operation.inputs
             return self._render_exec_copy(src, dst, tensor_specs=tensor_specs, memref_names=memref_names)
+        if operation.op == "fill":
+            tensor_name, value_name = operation.inputs
+            return self._render_exec_fill(
+                tensor_name,
+                tensor_specs[tensor_name],
+                value_name,
+                memref_names=memref_names,
+            )
         if operation.op in {"reduce_add", "reduce_mul", "reduce_max", "reduce_min"}:
             source_name, init_name = operation.inputs
             if operation.outputs[0] in tensor_specs:
@@ -684,6 +766,182 @@ class FlyDslBridge:
                 )
             ],
         )
+
+    def _render_exec_fill(
+        self,
+        tensor_name: str,
+        tensor_spec: TensorSpec,
+        value_name: str,
+        *,
+        memref_names: set[str],
+    ) -> list[str]:
+        return self._render_exec_loop_nest(
+            tensor_spec.shape,
+            prefix=f"_{tensor_name}_fill_i",
+            body_fn=lambda index_names: [
+                self._render_exec_store(tensor_name, value_name, index_names, memref_names)
+            ],
+        )
+
+    def _render_exec_tensor_unary_math(
+        self,
+        op_name: str,
+        source_name: str,
+        source_spec: TensorSpec,
+        output_name: str,
+        output_spec: TensorSpec,
+        *,
+        memref_names: set[str],
+    ) -> list[str]:
+        lines = self._render_exec_memref_alloca(output_name, output_spec)
+        lines.extend(
+            self._render_exec_loop_nest(
+                source_spec.shape,
+                prefix=f"_{output_name}_math_i",
+                body_fn=lambda index_names: [
+                    self._render_exec_store(
+                        output_name,
+                        self._render_exec_scalar_unary_math_expr(
+                            op_name,
+                            self._render_exec_load(source_name, index_names, memref_names),
+                        ),
+                        index_names,
+                        memref_names,
+                    )
+                ],
+            )
+        )
+        return lines
+
+    def _render_exec_tensor_binary_math(
+        self,
+        op_name: str,
+        lhs_name: str,
+        rhs_name: str,
+        *,
+        tensor_specs: dict[str, TensorSpec],
+        output_name: str,
+        output_spec: TensorSpec,
+        memref_names: set[str],
+    ) -> list[str]:
+        lines = self._render_exec_memref_alloca(output_name, output_spec)
+
+        def operand_expr(name: str, index_names: list[str]) -> str:
+            if name in tensor_specs:
+                return self._render_exec_load(name, index_names, memref_names)
+            return name
+
+        lines.extend(
+            self._render_exec_loop_nest(
+                output_spec.shape,
+                prefix=f"_{output_name}_math_i",
+                body_fn=lambda index_names: [
+                    self._render_exec_store(
+                        output_name,
+                        self._render_exec_scalar_binary_math_expr(
+                            op_name,
+                            operand_expr(lhs_name, index_names),
+                            operand_expr(rhs_name, index_names),
+                        ),
+                        index_names,
+                        memref_names,
+                    )
+                ],
+            )
+        )
+        return lines
+
+    def _render_exec_scalar_unary_math_expr(self, op_name: str, value: str) -> str:
+        mapping = {
+            "math_sqrt": f"math.sqrt({value})",
+            "math_rsqrt": f"(1.0 / math.sqrt({value}))",
+            "math_sin": f"math.sin({value})",
+            "math_cos": f"math.cos({value})",
+            "math_exp": f"math.exp({value})",
+            "math_exp2": f"(2.0 ** ({value}))",
+            "math_log": f"math.log({value})",
+            "math_log2": f"math.log2({value})",
+            "math_log10": f"math.log10({value})",
+            "math_erf": f"math.erf({value})",
+        }
+        try:
+            return mapping[op_name]
+        except KeyError as exc:
+            raise ValueError(f"flydsl_exec does not support unary math op '{op_name}'") from exc
+
+    def _render_exec_scalar_binary_math_expr(self, op_name: str, lhs: str, rhs: str) -> str:
+        if op_name == "math_atan2":
+            return f"math.atan2({lhs}, {rhs})"
+        raise ValueError(f"flydsl_exec does not support binary math op '{op_name}'")
+
+    def _render_exec_broadcast_to(
+        self,
+        source_name: str,
+        source_spec: TensorSpec,
+        output_name: str,
+        output_spec: TensorSpec,
+        *,
+        memref_names: set[str],
+    ) -> list[str]:
+        lines = self._render_exec_memref_alloca(output_name, output_spec)
+        rank_delta = len(output_spec.shape) - len(source_spec.shape)
+
+        def body(index_names: list[str]) -> list[str]:
+            source_indices: list[str] = []
+            for axis, extent in enumerate(source_spec.shape):
+                output_axis = axis + rank_delta
+                source_indices.append("0" if extent == 1 else index_names[output_axis])
+            return [
+                self._render_exec_store(
+                    output_name,
+                    self._render_exec_load(source_name, source_indices, memref_names),
+                    index_names,
+                    memref_names,
+                )
+            ]
+
+        lines.extend(self._render_exec_loop_nest(output_spec.shape, prefix=f"_{output_name}_bcast_i", body_fn=body))
+        return lines
+
+    def _render_exec_tensor_binary(
+        self,
+        op_name: str,
+        lhs_name: str,
+        rhs_name: str,
+        *,
+        tensor_specs: dict[str, TensorSpec],
+        output_name: str,
+        output_spec: TensorSpec,
+        memref_names: set[str],
+    ) -> list[str]:
+        symbol = {
+            "tensor_add": "+",
+            "tensor_sub": "-",
+            "tensor_mul": "*",
+            "tensor_div": "/",
+        }[op_name]
+        lines = self._render_exec_memref_alloca(output_name, output_spec)
+
+        def operand_expr(name: str, index_names: list[str]) -> str:
+            if name in tensor_specs:
+                return self._render_exec_load(name, index_names, memref_names)
+            return name
+
+        lines.extend(
+            self._render_exec_loop_nest(
+                output_spec.shape,
+                prefix=f"_{output_name}_bin_i",
+                body_fn=lambda index_names: [
+                    self._render_exec_store(
+                        output_name,
+                        f"{operand_expr(lhs_name, index_names)} {symbol} {operand_expr(rhs_name, index_names)}",
+                        index_names,
+                        memref_names,
+                    )
+                ],
+            )
+        )
+        return lines
 
     def _render_exec_reduce_scalar(
         self,

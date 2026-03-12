@@ -654,6 +654,15 @@ def infer_runtime_spec(value: Any) -> tuple[str, tuple[int, ...] | None]:
         return value.dtype, value.shape
     if isinstance(value, TensorHandle):
         return value.dtype, value.shape
+    if hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__"):
+        dtype = getattr(value, "dtype", None)
+        shape = getattr(value, "shape", None)
+        if dtype is not None and shape is not None:
+            try:
+                normalized_shape = tuple(int(dim) for dim in tuple(shape))
+                return normalize_dtype_name(str(dtype)), normalized_shape
+            except (TypeError, ValueError):
+                pass
     if isinstance(value, Pointer) and isinstance(value.tensor, RuntimeTensor):
         return "python_object", None
     if _looks_like_nested_tensor(value):
