@@ -51,6 +51,7 @@ class CompiledKernel:
     artifact_path: Path
     lowered_path: Path | None
     lowered_module: LoweredModule | None
+    debug_bundle_dir: Path | None
     from_cache: bool
     runtime_callable: Callable[..., Any] | None = None
 
@@ -70,6 +71,7 @@ class CompiledKernel:
             "target": self.target.to_dict(),
             "ir": self.ir.to_dict() if self.ir else None,
             "lowered_module": self.lowered_module.to_dict() if self.lowered_module else None,
+            "debug_bundle_dir": str(self.debug_bundle_dir) if self.debug_bundle_dir else None,
         }
 
 
@@ -563,6 +565,7 @@ def compile(
     ir: PortableKernelIR | None = None
     lowered_module: LoweredModule | None = None
     runtime_metadata: dict[str, Any] | None = None
+    debug_bundle_dir: Path | None = None
     try:
         ir = _trace(definition, normalized_sample_args)
     except CompilationError as exc:
@@ -604,7 +607,7 @@ def compile(
         and resolved_backend is not None
         and hasattr(resolved_backend, "emit_bundle")
     ):
-        resolved_backend.emit_bundle(ir, selected_target, lowered_module, lowered_path)
+        debug_bundle_dir = resolved_backend.emit_bundle(ir, selected_target, lowered_module, lowered_path)
     launcher_callable = lambda *args, **kwargs: _execute_definition(definition, *args, **kwargs)
     if ir is not None and lowered_module is not None and lowered_path is not None and hasattr(resolved_backend, "build_launcher"):
         backend_launcher = resolved_backend.build_launcher(ir, selected_target, lowered_module, lowered_path)
@@ -621,6 +624,7 @@ def compile(
         artifact_path=artifact_path,
         lowered_path=lowered_path,
         lowered_module=lowered_module,
+        debug_bundle_dir=debug_bundle_dir,
         from_cache=from_cache,
         runtime_callable=launcher_callable,
     )
@@ -654,3 +658,26 @@ class _CompileDispatcher:
 
 
 compile = _CompileDispatcher(compile)
+
+
+def emit_waveasm_repro(
+    kernel: KernelDefinition | Any,
+    *sample_args: Any,
+    target: AMDTarget | None = None,
+    backend: str | Backend = "waveasm_ref",
+    cache_dir: str | os.PathLike[str] | None = None,
+    use_cache: bool = True,
+) -> Path:
+    artifact = compile(
+        kernel,
+        *sample_args,
+        target=target,
+        backend=backend,
+        cache_dir=cache_dir,
+        use_cache=use_cache,
+    )
+    if artifact.debug_bundle_dir is None:
+        raise CompilationError(
+            f"backend '{artifact.backend_name}' did not emit a WaveASM repro bundle"
+        )
+    return artifact.debug_bundle_dir

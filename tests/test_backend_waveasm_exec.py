@@ -150,7 +150,8 @@ def test_waveasm_exec_builds_hsaco_and_launches(monkeypatch: pytest.MonkeyPatch,
     assert artifact.lowered_path.with_suffix(".s").exists()
     assert artifact.lowered_path.with_suffix(".o").exists()
     assert artifact.lowered_path.with_suffix(".hsaco").exists()
-    repro_dir = artifact.lowered_path.parent / f"{artifact.cache_key}.waveasm_repro"
+    assert artifact.debug_bundle_dir is not None
+    repro_dir = artifact.debug_bundle_dir
     assert (repro_dir / "kernel.mlir").exists()
     assert (repro_dir / "manifest.json").exists()
     assert (repro_dir / "repro.sh").exists()

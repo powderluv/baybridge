@@ -80,8 +80,8 @@ class WaveAsmRefBackend:
         target: AMDTarget,
         lowered_module: LoweredModule,
         lowered_path: Path,
-    ) -> None:
-        self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
+    ) -> Path:
+        return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
     def _annotate_module(self, text: str, target: AMDTarget) -> str:
         attrs = f'waveasm.target = "{target.arch}", waveasm.wave_size = {target.wave_size}, '

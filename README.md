@@ -209,6 +209,11 @@ Useful helpers:
   - lowers supported kernels to WaveASM-oriented MLIR plus tool invocation hints
   - this is a reference backend, not an executable backend
   - emits a `*.waveasm_repro/` bundle next to the lowered artifact with `kernel.mlir`, `repro.sh`, and `manifest.json`
+  - the bundle path is exposed on the compiled artifact as `artifact.debug_bundle_dir`
+  - you can also generate it directly with `baybridge.emit_waveasm_repro(...)` or `tools/emit_waveasm_repro.py`
+  - `tools/compare_backends.py` can compile the same kernel through multiple backends, optionally execute supported ones, and report bundle/debug paths in JSON
+  - pass `--include-env` to `tools/compare_backends.py` to include Python/platform/tool/version metadata for cross-machine diffs
+  - sample factories used with `tools/compare_backends.py` may optionally accept `backend_name` and `target_arch` so they can return backend-specific compile/run args
   - `BAYBRIDGE_WAVEASM_ROOT` can point at a Wave checkout to improve tool discovery hints
 - `backend="waveasm_exec"`
   - experimental backend behind `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`
@@ -219,6 +224,7 @@ Useful helpers:
   - not enabled by default because current upstream WaveASM execution still has correctness issues for Baybridge kernels, including the scalar global `memref.load/store` SRD aliasing bug tracked in `iree-org/wave#1117`
   - does not yet cover reductions, multi-buffer copy, GEMM, or Baybridge custom tensor-SSA ops
   - also emits a `*.waveasm_repro/` bundle so the exact MLIR/toolchain path can be reproduced outside Baybridge
+  - the bundle path is exposed on the compiled artifact as `artifact.debug_bundle_dir`
   - requires `waveasm-translate`, `clang++` or `clang`, and prefers `ld.lld` for final HSACO linking
 - `backend="flydsl_ref"`
   - lowers a supported Baybridge subset to a FlyDSL-oriented reference module
@@ -238,6 +244,7 @@ Useful helpers:
     - `baybridge.from_dlpack(...)` tensor handles
     - raw DLPack-capable tensors such as `torch.Tensor`
     - plain `baybridge.RuntimeTensor` values when `torch` is importable
+  - `tools/compare_backends.py --execute` can exercise the same `RuntimeTensor` path when `torch` is importable
   - intended as the first executable FlyDSL bridge, not full FlyDSL coverage yet
 - `backend="hipkittens_ref"`
   - lowers matched GEMM and attention-family kernels to a HipKittens-oriented C++ reference artifact

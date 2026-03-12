@@ -39,7 +39,11 @@ class FlyDslExecBackend:
             if isinstance(value, TensorHandle):
                 return True
             if isinstance(value, RuntimeTensor):
-                return environment.torch_available and value.dtype in self._SUPPORTED_RUNTIME_DTYPES
+                return (
+                    environment.torch_available
+                    and self._runtime_tensor_device_available()
+                    and value.dtype in self._SUPPORTED_RUNTIME_DTYPES
+                )
             if isinstance(value, Pointer):
                 return False
             if hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__"):
@@ -121,7 +125,15 @@ class FlyDslExecBackend:
         if not isinstance(value, RuntimeTensor):
             return value, None
         torch = self._import_torch()
-        torch_tensor = torch.tensor(value.tolist(), dtype=self._torch_dtype(torch, value.dtype))
+        if not self._torch_device_available(torch):
+            raise BackendNotImplementedError(
+                "flydsl_exec requires a GPU-capable torch build to adapt baybridge RuntimeTensor inputs; "
+                "use device-backed DLPack inputs instead"
+            )
+        try:
+            torch_tensor = torch.tensor(value.tolist(), dtype=self._torch_dtype(torch, value.dtype), device="cuda")
+        except TypeError:
+            torch_tensor = torch.tensor(value.tolist(), dtype=self._torch_dtype(torch, value.dtype))
 
         def sync() -> None:
             copied = torch_tensor.detach().cpu().tolist() if hasattr(torch_tensor, "detach") else torch_tensor.tolist()
@@ -157,6 +169,25 @@ class FlyDslExecBackend:
             raise BackendNotImplementedError(
                 f"flydsl_exec does not support RuntimeTensor adaptation for dtype '{dtype}'"
             ) from exc
+
+    def _runtime_tensor_device_available(self) -> bool:
+        try:
+            torch = self._import_torch()
+        except BackendNotImplementedError:
+            return False
+        return self._torch_device_available(torch)
+
+    def _torch_device_available(self, torch: Any) -> bool:
+        cuda = getattr(torch, "cuda", None)
+        if cuda is None:
+            return True
+        is_available = getattr(cuda, "is_available", None)
+        if callable(is_available):
+            try:
+                return bool(is_available())
+            except Exception:
+                return False
+        return True
 
     @contextmanager
     def _pythonpath(self) -> Iterator[None]:

@@ -442,18 +442,19 @@ class FlyDslBridge:
             f"@flyc.kernel\n"
             f"def {ir.name}_kernel({kernel_args}):\n"
             f"{kernel_body}\n\n"
+            f"@flyc.jit\n"
+            f"def {ir.name}_jit({kernel_args}, stream: fx.Stream = fx.Stream(None)):\n"
+            f"    return {ir.name}_kernel({args}).launch({', '.join(launch_kwargs)})\n\n"
             f"def launch_{ir.name}({args}, stream=None):\n"
             + "".join(f"    {argument.name} = _baybridge_adapt_tensor_arg({argument.name})\n" for argument in ir.arguments)
-            + f"    return {ir.name}_kernel({args}).launch({', '.join(launch_kwargs)})\n"
+            + "    if stream is not None and not isinstance(stream, fx.Stream):\n"
+            + "        stream = fx.Stream(stream)\n"
+            + f"    return {ir.name}_jit({args}, stream=stream if stream is not None else fx.Stream(None))\n"
         )
 
     def _render_exec_body(self, ir: PortableKernelIR) -> list[str]:
         tensor_specs = self._collect_exec_tensor_specs(ir)
-        memref_names = {
-            name
-            for name, spec in tensor_specs.items()
-            if spec.address_space.value in {"shared", "register"} and name not in {argument.name for argument in ir.arguments}
-        }
+        memref_names = set(tensor_specs)
         lines: list[str] = []
         for operation in ir.operations:
             lines.extend(self._render_exec_operation(operation, tensor_specs=tensor_specs, memref_names=memref_names))

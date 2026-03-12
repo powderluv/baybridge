@@ -224,9 +224,22 @@ def _install_fake_flydsl(root: Path, *, built: bool = False, build_dir_name: str
         "    del layout\n"
         "    return _MemRef(memref_type['shape'])\n"
         "def memref_load(memref, indices):\n"
-        "    return memref.load(indices)\n"
+        "    if hasattr(memref, 'load'):\n"
+        "        return memref.load(indices)\n"
+        "    indices = _normalize_indices(indices)\n"
+        "    ref = memref\n"
+        "    for index in indices:\n"
+        "        ref = ref[index]\n"
+        "    return ref\n"
         "def memref_store(value, memref, indices):\n"
-        "    memref.store(value, indices)\n"
+        "    if hasattr(memref, 'store'):\n"
+        "        memref.store(value, indices)\n"
+        "        return\n"
+        "    indices = _normalize_indices(indices)\n"
+        "    ref = memref\n"
+        "    for index in indices[:-1]:\n"
+        "        ref = ref[index]\n"
+        "    ref[indices[-1]] = value\n"
         "class Tensor: pass\n"
         "Int32 = int\n"
         "class Stream:\n"
@@ -286,7 +299,7 @@ def _install_broken_source_checkout(root: Path) -> None:
     (package / "compiler.py").write_text("import torch\n", encoding="utf-8")
 
 
-def _install_fake_torch(root: Path) -> Path:
+def _install_fake_torch(root: Path, *, device_available: bool = True) -> Path:
     package = root / "torch"
     package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text(
@@ -317,7 +330,12 @@ def _install_fake_torch(root: Path) -> Path:
         "        return self\n"
         "    def tolist(self):\n"
         "        return list(self._data)\n"
-        "def tensor(data, dtype=None):\n"
+        f"class cuda:\n"
+        f"    @staticmethod\n"
+        f"    def is_available():\n"
+        f"        return {str(device_available)}\n"
+        "def tensor(data, dtype=None, device=None):\n"
+        "    del device\n"
         "    return Tensor(data, dtype=dtype)\n",
         encoding="utf-8",
     )
@@ -333,6 +351,11 @@ def _load_real_torch():
     return pytest.importorskip("torch")
 
 
+def _skip_if_real_runtime_tensor_exec_unavailable(backend: FlyDslExecBackend) -> None:
+    if not backend._runtime_tensor_device_available():
+        pytest.skip("real FlyDSL RuntimeTensor execution requires a GPU-capable torch build")
+
+
 def test_flydsl_exec_lowers_python_module(tmp_path: Path) -> None:
     src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
     other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
@@ -344,9 +367,10 @@ def test_flydsl_exec_lowers_python_module(tmp_path: Path) -> None:
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.dialect == "flydsl_python"
     assert "@flyc.kernel" in artifact.lowered_module.text
-    assert "@flyc.jit" not in artifact.lowered_module.text
+    assert "@flyc.jit" in artifact.lowered_module.text
     assert "fx.thread_idx.x" in artifact.lowered_module.text
-    assert "dst[" in artifact.lowered_module.text
+    assert "fx.memref_load(src" in artifact.lowered_module.text
+    assert "fx.memref_store(" in artifact.lowered_module.text
     assert " + " in artifact.lowered_module.text
 
 
@@ -502,6 +526,37 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unsupported_runtime_tensor
     src = bb.tensor([1, 2, 3, 4], dtype="index")
     other = bb.tensor([10, 20, 30, 40], dtype="index")
     dst = bb.zeros((4,), dtype="index")
+
+    artifact = bb.compile(
+        flydsl_exec_add_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name != "flydsl_exec"
+    sys.modules.pop("torch", None)
+
+
+def test_compile_does_not_auto_prefer_flydsl_exec_for_runtime_tensors_with_cpu_only_torch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl"
+    fake_torch_root = tmp_path / "fake_torch_cpu"
+    _install_fake_flydsl(fake_root, built=True)
+    _install_fake_torch(fake_torch_root, device_available=False)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = str(fake_torch_root) if not existing_pythonpath else f"{fake_torch_root}{os.pathsep}{existing_pythonpath}"
+    monkeypatch.setenv("PYTHONPATH", pythonpath)
+    monkeypatch.syspath_prepend(str(fake_torch_root))
+    sys.modules.pop("torch", None)
+
+    src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
+    other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
+    dst = bb.zeros((4,), dtype="f32")
 
     artifact = bb.compile(
         flydsl_exec_add_kernel,
@@ -882,6 +937,7 @@ def test_flydsl_exec_runtime_tensors_run_with_real_flydsl_if_enabled(tmp_path: P
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
     other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
@@ -937,6 +993,7 @@ def test_compile_auto_prefers_flydsl_exec_for_real_runtime_tensors_if_enabled(tm
         pytest.skip("real FlyDSL environment is not importable")
     if not environment.torch_available:
         pytest.skip("real FlyDSL runtime-tensor adaptation requires torch")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
     other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
@@ -963,6 +1020,7 @@ def test_flydsl_exec_reduce_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> 
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     src = bb.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype="f32")
     dst_scalar = bb.zeros((1,), dtype="f32")
@@ -990,6 +1048,7 @@ def test_flydsl_exec_broadcast_add_runs_with_real_flydsl_if_enabled(tmp_path: Pa
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     lhs = bb.tensor([[1.0], [2.0]], dtype="f32")
     rhs = bb.tensor([[10.0, 20.0, 30.0]], dtype="f32")
@@ -1016,6 +1075,7 @@ def test_flydsl_exec_tensor_factory_runs_with_real_flydsl_if_enabled(tmp_path: P
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     dst_zero = bb.tensor([[9.0, 9.0], [9.0, 9.0]], dtype="f32")
     dst_one = bb.zeros((2, 2), dtype="f32")
@@ -1044,6 +1104,7 @@ def test_flydsl_exec_math_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> No
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     src = bb.tensor([1.0, 2.0, 4.0], dtype="f32")
     other = bb.tensor([1.0, 2.0, 8.0], dtype="f32")

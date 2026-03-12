@@ -1,5 +1,5 @@
 from .backend import LoweredModule
-from .compiler import CompiledKernel, GenerateLineInfo, compile
+from .compiler import CompiledKernel, GenerateLineInfo, compile, emit_waveasm_repro
 from .diagnostics import BackendNotImplementedError, CompilationError, BaybridgeError, UnsupportedOperationError
 from .dtypes import ElementType
 from .math import math
@@ -230,6 +230,7 @@ __all__ = [
     "range_constexpr",
     "empty_like",
     "elect_one",
+    "emit_waveasm_repro",
     "elem_less",
     "flat_product",
     "flat_divide",
