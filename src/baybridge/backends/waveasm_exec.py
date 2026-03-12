@@ -208,6 +208,15 @@ class WaveAsmExecBackend:
 
         return launcher
 
+    def emit_bundle(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        lowered_module: LoweredModule,
+        lowered_path: Path,
+    ) -> None:
+        self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
+
     def _make_module_runtime(self) -> _HipModuleRuntime:
         return _HipModuleRuntime()
 

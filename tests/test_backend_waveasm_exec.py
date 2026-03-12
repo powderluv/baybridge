@@ -150,6 +150,10 @@ def test_waveasm_exec_builds_hsaco_and_launches(monkeypatch: pytest.MonkeyPatch,
     assert artifact.lowered_path.with_suffix(".s").exists()
     assert artifact.lowered_path.with_suffix(".o").exists()
     assert artifact.lowered_path.with_suffix(".hsaco").exists()
+    repro_dir = artifact.lowered_path.parent / f"{artifact.cache_key}.waveasm_repro"
+    assert (repro_dir / "kernel.mlir").exists()
+    assert (repro_dir / "manifest.json").exists()
+    assert (repro_dir / "repro.sh").exists()
     assert fake_runtime.loaded_modules == [artifact.lowered_path.with_suffix(".hsaco")]
     assert fake_runtime.queried_functions == ["waveasm_exec_inplace_scale_kernel"]
     assert launch_record["runtime"] is fake_runtime

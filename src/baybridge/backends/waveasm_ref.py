@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ..backend import LoweredModule
 from ..ir import PortableKernelIR
 from ..target import AMDTarget
@@ -71,6 +73,15 @@ class WaveAsmRefBackend:
             dialect="waveasm_mlir",
             text=text,
         )
+
+    def emit_bundle(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        lowered_module: LoweredModule,
+        lowered_path: Path,
+    ) -> None:
+        self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
     def _annotate_module(self, text: str, target: AMDTarget) -> str:
         attrs = f'waveasm.target = "{target.arch}", waveasm.wave_size = {target.wave_size}, '

@@ -62,6 +62,15 @@ def test_waveasm_ref_backend_emits_waveasm_tool_hints(monkeypatch: pytest.Monkey
     assert "// suggested_pipeline:" in text
     assert 'module attributes {waveasm.target = "gfx942", waveasm.wave_size = 64,' in text
     assert "memref<64xf32, #gpu.address_space<workgroup>>" in text
+    assert artifact.lowered_path is not None
+    repro_dir = artifact.lowered_path.parent / f"{artifact.lowered_path.stem}.waveasm_repro"
+    assert (repro_dir / "kernel.mlir").exists()
+    assert (repro_dir / "manifest.json").exists()
+    repro_script = repro_dir / "repro.sh"
+    assert repro_script.exists()
+    repro_text = repro_script.read_text(encoding="utf-8")
+    assert f"--target=gfx942" in repro_text
+    assert "kernel.waveasm.mlir" in repro_text
 
 
 def test_waveasm_ref_backend_detects_tool_on_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

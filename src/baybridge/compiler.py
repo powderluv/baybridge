@@ -597,6 +597,14 @@ def compile(
             lowered_path=lowered_path,
             metadata=runtime_metadata,
         )
+    if (
+        ir is not None
+        and lowered_module is not None
+        and lowered_path is not None
+        and resolved_backend is not None
+        and hasattr(resolved_backend, "emit_bundle")
+    ):
+        resolved_backend.emit_bundle(ir, selected_target, lowered_module, lowered_path)
     launcher_callable = lambda *args, **kwargs: _execute_definition(definition, *args, **kwargs)
     if ir is not None and lowered_module is not None and lowered_path is not None and hasattr(resolved_backend, "build_launcher"):
         backend_launcher = resolved_backend.build_launcher(ir, selected_target, lowered_module, lowered_path)

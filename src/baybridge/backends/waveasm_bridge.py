@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -230,6 +231,86 @@ class WaveAsmBridge:
                 extra_env=self._command_env(environment),
             )
         return waveasm_ir_path, asm_path, object_path, hsaco_path
+
+    def write_repro_bundle(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        lowered_module: LoweredModule,
+        lowered_path: Path,
+    ) -> Path:
+        environment = self.environment()
+        bundle_dir = self._bundle_root(lowered_path)
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        kernel_mlir_path = bundle_dir / "kernel.mlir"
+        run_script_path = bundle_dir / "repro.sh"
+        manifest_path = bundle_dir / "manifest.json"
+
+        kernel_mlir_path.write_text(lowered_module.text, encoding="utf-8")
+        run_script_path.write_text(
+            self._render_repro_script(ir, target, environment),
+            encoding="utf-8",
+        )
+        run_script_path.chmod(0o755)
+        manifest = {
+            "issue": "https://github.com/iree-org/wave/issues/1117",
+            "entry_point": ir.name,
+            "target": target.to_dict(),
+            "configured_root": environment.configured_root,
+            "waveasm_translate": environment.waveasm_translate,
+            "clang_driver": environment.clang_driver,
+            "ld_lld": environment.ld_lld,
+            "notes": list(environment.notes),
+            "kernel_mlir": str(kernel_mlir_path),
+            "repro_script": str(run_script_path),
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return bundle_dir
+
+    def _bundle_root(self, lowered_path: Path) -> Path:
+        stem = lowered_path.name
+        while "." in stem:
+            stem = stem.rsplit(".", 1)[0]
+        return lowered_path.parent / f"{stem}.waveasm_repro"
+
+    def _render_repro_script(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        environment: WaveAsmEnvironment,
+    ) -> str:
+        waveasm_translate = environment.waveasm_translate or "waveasm-translate"
+        clang_driver = environment.clang_driver or "clang++"
+        ld_lld = environment.ld_lld or "ld.lld"
+        return f"""#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+WAVEASM_TRANSLATE="${{WAVEASM_TRANSLATE:-{waveasm_translate}}}"
+CLANG_DRIVER="${{CLANG_DRIVER:-{clang_driver}}}"
+LD_LLD="${{LD_LLD:-{ld_lld}}}"
+
+"$WAVEASM_TRANSLATE" --target={target.arch} "$ROOT/kernel.mlir" > "$ROOT/kernel.waveasm.mlir"
+"$WAVEASM_TRANSLATE" --target={target.arch} \\
+  --mlir-cse \\
+  --waveasm-scoped-cse \\
+  --waveasm-peephole \\
+  --waveasm-scale-pack-elimination \\
+  --loop-invariant-code-motion \\
+  --waveasm-m0-redundancy-elim \\
+  --waveasm-buffer-load-strength-reduction \\
+  --waveasm-memory-offset-opt \\
+  --canonicalize \\
+  --waveasm-scoped-cse \\
+  --waveasm-loop-address-promotion \\
+  '--waveasm-linear-scan=max-vgprs=512 max-agprs=512' \\
+  --waveasm-insert-waitcnt=ticketed-waitcnt=true \\
+  --waveasm-hazard-mitigation=target={target.arch} \\
+  --emit-assembly \\
+  "$ROOT/kernel.waveasm.mlir" > "$ROOT/kernel.s"
+"$CLANG_DRIVER" -x assembler -target amdgcn-amd-amdhsa -mcode-object-version=5 -mcpu={target.arch} -mwavefrontsize{target.wave_size} -c "$ROOT/kernel.s" -o "$ROOT/kernel.o"
+"$LD_LLD" --no-undefined -shared -o "$ROOT/kernel.hsaco" "$ROOT/kernel.o"
+"""
 
     def _command_env(self, environment: WaveAsmEnvironment) -> dict[str, str] | None:
         if environment.ld_lld is None:

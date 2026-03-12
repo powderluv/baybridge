@@ -208,6 +208,7 @@ Useful helpers:
 - `backend="waveasm_ref"`
   - lowers supported kernels to WaveASM-oriented MLIR plus tool invocation hints
   - this is a reference backend, not an executable backend
+  - emits a `*.waveasm_repro/` bundle next to the lowered artifact with `kernel.mlir`, `repro.sh`, and `manifest.json`
   - `BAYBRIDGE_WAVEASM_ROOT` can point at a Wave checkout to improve tool discovery hints
 - `backend="waveasm_exec"`
   - experimental backend behind `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`
@@ -217,6 +218,7 @@ Useful helpers:
     - single-global-tensor shared-memory staging
   - not enabled by default because current upstream WaveASM execution still has correctness issues for Baybridge kernels, including the scalar global `memref.load/store` SRD aliasing bug tracked in `iree-org/wave#1117`
   - does not yet cover reductions, multi-buffer copy, GEMM, or Baybridge custom tensor-SSA ops
+  - also emits a `*.waveasm_repro/` bundle so the exact MLIR/toolchain path can be reproduced outside Baybridge
   - requires `waveasm-translate`, `clang++` or `clang`, and prefers `ld.lld` for final HSACO linking
 - `backend="flydsl_ref"`
   - lowers a supported Baybridge subset to a FlyDSL-oriented reference module
