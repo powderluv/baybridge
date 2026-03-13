@@ -99,7 +99,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
-_BINARY_1D_F32_TEMPLATE = """// baybridge.aster_exec
+_BINARY_1D_TEMPLATE = """// baybridge.aster_exec
 !sx2 = !amdgcn.sgpr<[? + 2]>
 !vx4 = !amdgcn.vgpr<[? + 4]>
 !tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
@@ -152,10 +152,10 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %tmp1 = amdgcn.alloca : !amdgcn.vgpr
     %tmp2 = amdgcn.alloca : !amdgcn.vgpr
     %tmp3 = amdgcn.alloca : !amdgcn.vgpr
-    %result0 = lsir.{lsir_op} f32 %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result1 = lsir.{lsir_op} f32 %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result2 = lsir.{lsir_op} f32 %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result3 = lsir.{lsir_op} f32 %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result0 = lsir.{lsir_op} {value_type} %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result1 = lsir.{lsir_op} {value_type} %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result2 = lsir.{lsir_op} {value_type} %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result3 = lsir.{lsir_op} {value_type} %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
     %result = amdgcn.make_register_range %result0, %result1, %result2, %result3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
     memref.store %result, %dst_memref[%idx] : memref<?x!vx4>
     return
@@ -232,15 +232,17 @@ class _Copy1DMatch:
 
 
 @dataclass(frozen=True)
-class _Binary1DF32Match:
+class _Binary1DMatch:
     lhs_name: str
     rhs_name: str
     dst_name: str
+    dtype: str
     shape: tuple[int, ...]
     vector_chunks: int
     op: str
     binary_name: str
     lsir_op: str
+    value_type: str
 
 
 class AsterExecBackend:
@@ -279,7 +281,7 @@ class AsterExecBackend:
         if isinstance(match, _Copy1DMatch):
             text = self._render_copy_1d(match, ir.name, target)
         else:
-            text = self._render_binary_1d_f32(match, ir.name, target)
+            text = self._render_binary_1d(match, ir.name, target)
         return LoweredModule(
             backend_name=self.name,
             entry_point=ir.name,
@@ -332,12 +334,12 @@ class AsterExecBackend:
                 )
             else:
                 input_values = [
-                    self._as_runtime_tensor(args[0], expected_dtype="f32", argument_name=match.lhs_name),
-                    self._as_runtime_tensor(args[1], expected_dtype="f32", argument_name=match.rhs_name),
+                    self._as_runtime_tensor(args[0], expected_dtype=match.dtype, argument_name=match.lhs_name),
+                    self._as_runtime_tensor(args[1], expected_dtype=match.dtype, argument_name=match.rhs_name),
                 ]
                 dst_owner, dst_value = self._prepare_output(
                     args[2],
-                    expected_dtype="f32",
+                    expected_dtype=match.dtype,
                     argument_name=match.dst_name,
                 )
             try:
@@ -348,7 +350,7 @@ class AsterExecBackend:
                 dst_array = dst_value.tolist()
                 input_arrays = [input_value.tolist() for input_value in input_values]
             else:
-                dtype = match.dtype if isinstance(match, _Copy1DMatch) else "f32"
+                dtype = match.dtype
                 input_arrays = [
                     numpy.array(input_value.tolist(), dtype=self._numpy_dtype(dtype)) for input_value in input_values
                 ]
@@ -363,7 +365,7 @@ class AsterExecBackend:
                 num_iterations=1,
             )
             copied_data = dst_array.tolist() if hasattr(dst_array, "tolist") else dst_array
-            dtype = match.dtype if isinstance(match, _Copy1DMatch) else "f32"
+            dtype = match.dtype
             copied = tensor(copied_data, dtype=dtype)
             self._copy_back(dst_owner, copied)
 
@@ -378,15 +380,15 @@ class AsterExecBackend:
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
-    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Binary1DF32Match:
+    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Binary1DMatch:
         if len(ir.arguments) == 2:
             return self._match_copy_1d(ir, target)
         if len(ir.arguments) == 3:
-            return self._match_binary_1d_f32(ir, target)
+            return self._match_binary_1d(ir, target)
         try:
             return self._match_copy_1d(ir, target)
         except BackendNotImplementedError:
-            return self._match_binary_1d_f32(ir, target)
+            return self._match_binary_1d(ir, target)
 
     def _match_copy_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
@@ -435,7 +437,7 @@ class AsterExecBackend:
             vector_chunks=match.vector_chunks,
         )
 
-    def _match_binary_1d_f32(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DF32Match:
+    def _match_binary_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
             raise BackendNotImplementedError(f"aster_exec does not support target arch '{target.arch}'")
         if target.wave_size != 64:
@@ -468,8 +470,8 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec add currently requires global-memory tensors")
         if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
             raise BackendNotImplementedError("aster_exec add requires matching tensor shapes")
-        if lhs_spec.dtype != "f32" or rhs_spec.dtype != "f32" or dst_spec.dtype != "f32":
-            raise BackendNotImplementedError("aster_exec add currently supports f32 tensors only")
+        if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
+            raise BackendNotImplementedError("aster_exec pointwise binary ops require matching tensor dtypes")
         if len(lhs_spec.shape) != 1:
             raise BackendNotImplementedError("aster_exec add currently supports 1D tensors only")
         if (
@@ -481,26 +483,45 @@ class AsterExecBackend:
         element_count = lhs_spec.shape[0]
         if element_count <= 0 or element_count % 4 != 0:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require a 1D element count that is a positive multiple of 4")
-        binary_name, lsir_op = supported_ops[binary_op]
-        return _Binary1DF32Match(
+        dtype_support = {
+            "f32": {
+                "tensor_add": ("add", "addf", "f32"),
+                "tensor_sub": ("sub", "subf", "f32"),
+                "tensor_mul": ("mul", "mulf", "f32"),
+                "tensor_div": ("div", "divf", "f32"),
+            },
+            "i32": {
+                "tensor_add": ("add", "addi", "i32"),
+            },
+        }
+        supported_for_dtype = dtype_support.get(lhs_spec.dtype)
+        if supported_for_dtype is None or binary_op not in supported_for_dtype:
+            raise BackendNotImplementedError(
+                "aster_exec currently supports f32 add/sub/mul/div and i32 add only"
+            )
+        binary_name, lsir_op, value_type = supported_for_dtype[binary_op]
+        return _Binary1DMatch(
             lhs_name=lhs_arg.name,
             rhs_name=rhs_arg.name,
             dst_name=dst_arg.name,
+            dtype=lhs_spec.dtype,
             shape=lhs_spec.shape,
             vector_chunks=element_count // 4,
             op=binary_op,
             binary_name=binary_name,
             lsir_op=lsir_op,
+            value_type=value_type,
         )
 
-    def _render_binary_1d_f32(self, match: _Binary1DF32Match, kernel_name: str, target: AMDTarget) -> str:
-        return _BINARY_1D_F32_TEMPLATE.format(
+    def _render_binary_1d(self, match: _Binary1DMatch, kernel_name: str, target: AMDTarget) -> str:
+        return _BINARY_1D_TEMPLATE.format(
             target=target.arch,
             isa=self._target_isa(target),
             kernel_name=kernel_name,
             vector_chunks=match.vector_chunks,
             binary_name=match.binary_name,
             lsir_op=match.lsir_op,
+            value_type=match.value_type,
         )
 
     def _target_isa(self, target: AMDTarget) -> str:
