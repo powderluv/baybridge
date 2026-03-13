@@ -121,6 +121,18 @@ class AsterExecBackend:
         environment = self._bridge.environment()
         return environment.python_package_root is not None and self._bridge.configured_root() is not None
 
+    def supports_inputs(self, values: tuple[Any, ...]) -> bool:
+        if not values:
+            return False
+        return all(isinstance(value, (RuntimeTensor, TensorHandle)) for value in values)
+
+    def supports_auto_selection(self, ir: PortableKernelIR, target: AMDTarget, values: tuple[Any, ...]) -> bool:
+        if not self.available(target):
+            return False
+        if not self.supports_inputs(values):
+            return False
+        return self.supports(ir, target)
+
     def supports(self, ir: PortableKernelIR, target: AMDTarget) -> bool:
         try:
             self._match_copy_1d(ir, target)
@@ -197,6 +209,15 @@ class AsterExecBackend:
             self._copy_back(dst_owner, copied)
 
         return launcher
+
+    def emit_bundle(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        lowered_module: LoweredModule,
+        lowered_path: Path,
+    ) -> Path:
+        return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
     def _match_copy_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
