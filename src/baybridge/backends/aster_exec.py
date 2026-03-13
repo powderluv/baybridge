@@ -107,6 +107,7 @@ class _Copy1DMatch:
     dtype: str
     shape: tuple[int, ...]
     vector_chunks: int
+    elements_per_chunk: int
 
 
 class AsterExecBackend:
@@ -239,19 +240,23 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec requires matching source and destination tensor specs")
         if len(src_spec.shape) != 1:
             raise BackendNotImplementedError("aster_exec currently supports 1D tensors only")
-        if src_spec.dtype not in {"f32", "i32"}:
-            raise BackendNotImplementedError("aster_exec currently supports f32 and i32 copies only")
+        if src_spec.dtype not in {"f32", "i32", "f16"}:
+            raise BackendNotImplementedError("aster_exec currently supports f32, i32, and f16 copies only")
         if src_spec.resolved_layout().stride != (1,) or dst_spec.resolved_layout().stride != (1,):
             raise BackendNotImplementedError("aster_exec currently requires contiguous 1D tensors")
         element_count = src_spec.shape[0]
-        if element_count <= 0 or element_count % 4 != 0:
-            raise BackendNotImplementedError("aster_exec requires a 1D element count that is a positive multiple of 4")
+        elements_per_chunk = 16 // self._dtype_size_bytes(src_spec.dtype)
+        if element_count <= 0 or element_count % elements_per_chunk != 0:
+            raise BackendNotImplementedError(
+                "aster_exec requires a 1D element count aligned to a 16-byte transfer chunk"
+            )
         return _Copy1DMatch(
             src_name=src_arg.name,
             dst_name=dst_arg.name,
             dtype=src_spec.dtype,
             shape=src_spec.shape,
-            vector_chunks=element_count // 4,
+            vector_chunks=element_count // elements_per_chunk,
+            elements_per_chunk=elements_per_chunk,
         )
 
     def _render_copy_1d(self, match: _Copy1DMatch, kernel_name: str, target: AMDTarget) -> str:
@@ -357,6 +362,15 @@ class AsterExecBackend:
     def _numpy_dtype(self, dtype: str) -> str:
         if dtype == "f32":
             return "float32"
+        if dtype == "f16":
+            return "float16"
         if dtype == "i32":
             return "int32"
+        raise BackendNotImplementedError(f"aster_exec does not support dtype '{dtype}'")
+
+    def _dtype_size_bytes(self, dtype: str) -> int:
+        if dtype in {"f32", "i32"}:
+            return 4
+        if dtype == "f16":
+            return 2
         raise BackendNotImplementedError(f"aster_exec does not support dtype '{dtype}'")
