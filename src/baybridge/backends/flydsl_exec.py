@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ class FlyDslExecBackend:
     name = "flydsl_exec"
     artifact_extension = ".fly.py"
     _SUPPORTED_RUNTIME_DTYPES = frozenset({"i1", "i8", "i32", "i64", "f16", "bf16", "f32"})
+    _EXPERIMENTAL_REAL_EXEC_ENV = "BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC"
 
     def __init__(self) -> None:
         self._bridge = FlyDslBridge()
@@ -58,6 +60,36 @@ class FlyDslExecBackend:
 
         return all(visit(value) for value in values)
 
+    def supports_auto_selection(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        values: tuple[Any, ...],
+    ) -> bool:
+        if not self.available(target):
+            return False
+        if not self.supports(ir, target):
+            return False
+        if not self.supports_inputs(values):
+            return False
+        environment = self._bridge.exec_environment()
+        if self._requires_real_exec_gate(environment, ir) and not self.real_exec_enabled():
+            return False
+        return True
+
+    def real_exec_enabled(self) -> bool:
+        environment = self._bridge.exec_environment()
+        if not self._requires_real_exec_gate(environment):
+            return True
+        return os.environ.get(self._EXPERIMENTAL_REAL_EXEC_ENV) == "1"
+
+    def real_exec_note(self) -> str:
+        return (
+            "real upstream FlyDSL execution is disabled by default because Baybridge's current lowering "
+            "does not yet match FlyDSL's buffer/tile access model; "
+            f"set {self._EXPERIMENTAL_REAL_EXEC_ENV}=1 to override"
+        )
+
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
         if not self.supports(ir, target):
             raise BackendNotImplementedError("flydsl_exec currently supports a narrow pointwise tensor subset only")
@@ -82,6 +114,8 @@ class FlyDslExecBackend:
                     "flydsl_exec requires a built and importable FlyDSL environment; "
                     f"{details}"
                 )
+            if self._requires_real_exec_gate(environment, ir) and not self.real_exec_enabled():
+                raise BackendNotImplementedError(self.real_exec_note())
             stream = kwargs.pop("stream", None)
             if kwargs:
                 raise TypeError("flydsl_exec launcher only supports positional arguments and an optional stream=")
@@ -187,6 +221,13 @@ class FlyDslExecBackend:
                 return bool(is_available())
             except Exception:
                 return False
+        return True
+
+    def _requires_real_exec_gate(self, environment, ir: PortableKernelIR | None = None) -> bool:
+        if not (environment.ready and environment.built_package_available):
+            return False
+        if ir is not None and self._bridge.has_validated_real_exec(ir):
+            return False
         return True
 
     @contextmanager

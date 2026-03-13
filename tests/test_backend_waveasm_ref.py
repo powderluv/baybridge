@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import baybridge as bb
+from baybridge.backends.flydsl_exec import FlyDslExecBackend
 from baybridge.backends.waveasm_ref import WaveAsmRefBackend
 from test_backend_flydsl_exec import _install_fake_flydsl, _install_fake_torch
 
@@ -677,3 +678,166 @@ def test_compare_backends_script_skips_flydsl_runtime_tensor_execution_with_cpu_
     payload = json.loads(result.stdout)
     assert payload["environment"]["modules"]["torch_device_available"] is False
     assert payload["results"][0]["execute_status"] == "skipped_incompatible_runtime_tensors"
+
+
+def test_compare_backends_script_skips_unvalidated_real_flydsl_exec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    module_path = tmp_path / "compare_realish_flydsl_kernel.py"
+    module_path.write_text(
+        "import baybridge as bb\n"
+        "class FakeDLPackTensor:\n"
+        "    def __init__(self, data):\n"
+        "        self._data = list(data)\n"
+        "        self.shape = (len(self._data),)\n"
+        "        self.dtype = 'f32'\n"
+        "    def __dlpack__(self, stream=None):\n"
+        "        del stream\n"
+        "        return object()\n"
+        "    def __dlpack_device__(self):\n"
+        "        return (10, 0)\n"
+        "    def data_ptr(self):\n"
+        "        return 0\n"
+        "    def stride(self):\n"
+        "        return (1,)\n"
+        "    def __getitem__(self, index):\n"
+        "        return self._data[index]\n"
+        "    def __setitem__(self, index, value):\n"
+        "        self._data[index] = value\n"
+        "    def tolist(self):\n"
+        "        return list(self._data)\n"
+        "@bb.kernel(launch=bb.LaunchConfig(grid=(1,1,1), block=(4,1,1)))\n"
+        "def sample_kernel(src, dst):\n"
+        "    tidx, _, _ = bb.arch.thread_idx()\n"
+        "    smem = bb.make_tensor('smem', shape=(4,), dtype='f32', address_space=bb.AddressSpace.SHARED)\n"
+        "    smem[tidx] = src[tidx]\n"
+        "    bb.barrier()\n"
+        "    dst[tidx] = smem[tidx]\n"
+        "def sample_args():\n"
+        "    return {\n"
+        "        'args': (\n"
+        "            FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]),\n"
+        "            FakeDLPackTensor([0.0, 0.0, 0.0, 0.0]),\n"
+        "        ),\n"
+        "        'result_indices': (1,),\n"
+        "    }\n",
+        encoding="utf-8",
+    )
+    script_path = Path(__file__).resolve().parents[1] / "tools" / "compare_backends.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            str(module_path),
+            "sample_kernel",
+            "--sample-factory",
+            "sample_args",
+            "--backends",
+            "flydsl_exec",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--execute",
+            "--include-env",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            "BAYBRIDGE_FLYDSL_ROOT": str(fake_root),
+        },
+    )
+    payload = json.loads(result.stdout)
+    assert payload["results"][0]["execute_status"] == "skipped_unvalidated_real_flydsl_exec"
+    assert "BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1" in payload["results"][0]["execute_note"]
+
+
+def test_compare_backends_script_executes_with_real_flydsl_device_tensors_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+
+    if not environment.torch_available:
+        pytest.skip("real compare_backends execution requires device-backed torch tensors")
+
+    target_arch = bb.AMDTarget().arch
+    module_path = tmp_path / "compare_real_backend_aware.py"
+    module_path.write_text(
+        "import baybridge as bb\n"
+        "import torch\n"
+        "@bb.kernel(launch=bb.LaunchConfig(grid=(1,1,1), block=(4,1,1)))\n"
+        "def sample_kernel(src, other, dst):\n"
+        "    tidx, _, _ = bb.arch.thread_idx()\n"
+        "    dst[tidx] = src[tidx] + other[tidx]\n"
+        "def sample_args(backend_name, target_arch):\n"
+        f"    if target_arch != '{target_arch}':\n"
+        "        raise RuntimeError(f'unexpected target: {target_arch}')\n"
+        "    if backend_name == 'flydsl_exec':\n"
+        "        return {\n"
+        "            'compile_args': (\n"
+        "                torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device='cuda'),\n"
+        "                torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32, device='cuda'),\n"
+        "                torch.zeros(4, dtype=torch.float32, device='cuda'),\n"
+        "            ),\n"
+        "            'run_args': (\n"
+        "                torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device='cuda'),\n"
+        "                torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32, device='cuda'),\n"
+        "                torch.zeros(4, dtype=torch.float32, device='cuda'),\n"
+        "            ),\n"
+        "            'result_indices': (2,),\n"
+        "        }\n"
+        "    if backend_name == 'gpu_mlir':\n"
+        "        return {\n"
+        "            'args': (\n"
+        "                bb.tensor([1.0, 2.0, 3.0, 4.0], dtype='f32'),\n"
+        "                bb.tensor([10.0, 20.0, 30.0, 40.0], dtype='f32'),\n"
+        "                bb.zeros((4,), dtype='f32'),\n"
+        "            ),\n"
+        "            'result_indices': (2,),\n"
+        "        }\n"
+        "    raise RuntimeError(f'unexpected backend: {backend_name}')\n",
+        encoding="utf-8",
+    )
+    script_path = Path(__file__).resolve().parents[1] / "tools" / "compare_backends.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            str(module_path),
+            "sample_kernel",
+            "--sample-factory",
+            "sample_args",
+            "--backends",
+            "flydsl_exec,gpu_mlir",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--execute",
+            "--include-env",
+            "--target",
+            target_arch,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+        },
+    )
+    payload = json.loads(result.stdout)
+    assert payload["environment"]["modules"]["torch_device_available"] is True
+    assert payload["results"][0]["backend"] == "flydsl_exec"
+    assert payload["results"][0]["execute_status"] == "ok"
+    assert payload["results"][0]["result_summaries"]["2"]["value"] == [11.0, 22.0, 33.0, 44.0]
+    assert payload["results"][1]["backend"] == "gpu_mlir"
+    assert payload["results"][1]["execute_status"] == "skipped_non_exec_backend"

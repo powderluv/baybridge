@@ -161,11 +161,7 @@ def _resolve_backend_for_ir(
         if hipkittens_ref_backend.supports(ir, target):
             return hipkittens_ref_backend.name, hipkittens_ref_backend
         flydsl_exec_backend = FlyDslExecBackend()
-        if (
-            flydsl_exec_backend.supports_inputs(sample_args)
-            and flydsl_exec_backend.available(target)
-            and flydsl_exec_backend.supports(ir, target)
-        ):
+        if flydsl_exec_backend.supports_auto_selection(ir, target, sample_args):
             return flydsl_exec_backend.name, flydsl_exec_backend
     return _resolve_backend(_DEFAULT_BACKEND)
 

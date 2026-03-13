@@ -416,7 +416,19 @@ class FlyDslBridge:
         kernel_args = ", ".join(f"{argument.name}: fx.Tensor" for argument in ir.arguments)
         launch_grid = tuple(ir.launch.grid)
         launch_block = tuple(ir.launch.block)
-        kernel_body = "\n".join(f"    {line}" for line in self._render_exec_body(ir))
+        real_exec_enabled = os.environ.get("BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC") == "1"
+        validated_real_exec = self.has_validated_real_exec(ir)
+        if environment.built_package_available and (validated_real_exec or real_exec_enabled):
+            special = self._render_real_exec_python_specialized(ir)
+            if special is not None:
+                kernel_body, prologue_lines = special
+            else:
+                kernel_body = "\n".join(f"    {line}" for line in self._render_exec_body(ir))
+                prologue_lines = []
+        else:
+            kernel_body = "\n".join(f"    {line}" for line in self._render_exec_body(ir))
+            prologue_lines = []
+        bufferize_lines = "".join(f"    {line}\n" for line in prologue_lines)
         launch_kwargs = [f"grid={launch_grid}", f"block={launch_block}"]
         if ir.launch.shared_mem_bytes > 0:
             launch_kwargs.append(f"smem={ir.launch.shared_mem_bytes}")
@@ -441,6 +453,7 @@ class FlyDslBridge:
             "    raise TypeError('flydsl_exec currently requires FlyDSL JIT arguments or DLPack-capable tensor inputs')\n\n"
             f"@flyc.kernel\n"
             f"def {ir.name}_kernel({kernel_args}):\n"
+            f"{bufferize_lines}"
             f"{kernel_body}\n\n"
             f"@flyc.jit\n"
             f"def {ir.name}_jit({kernel_args}, stream: fx.Stream = fx.Stream(None)):\n"
@@ -452,15 +465,157 @@ class FlyDslBridge:
             + f"    return {ir.name}_jit({args}, stream=stream if stream is not None else fx.Stream(None))\n"
         )
 
+    def has_validated_real_exec(self, ir: PortableKernelIR) -> bool:
+        return self._match_real_exec_pointwise_add_1d(ir) is not None or self._match_real_exec_copy_1d(ir) is not None
+
+    def _render_real_exec_python_specialized(self, ir: PortableKernelIR) -> tuple[str, list[str]] | None:
+        matched = self._match_real_exec_pointwise_add_1d(ir)
+        if matched is not None:
+            return self._render_real_exec_pointwise_add_1d(ir, *matched)
+        matched_copy = self._match_real_exec_copy_1d(ir)
+        if matched_copy is not None:
+            return self._render_real_exec_copy_1d(ir, *matched_copy)
+        return None
+
+    def _match_real_exec_pointwise_add_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str] | None:
+        if len(ir.arguments) != 3:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, other_arg, dst_arg = ir.arguments
+        for argument in (src_arg, other_arg, dst_arg):
+            spec = argument.spec
+            if spec.shape != (4,) and len(spec.shape) != 1:
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 7:
+            return None
+        if [op.op for op in ops[:3]] != ["thread_idx", "thread_idx", "thread_idx"]:
+            return None
+        thread_x = ops[0]
+        if thread_x.attrs.get("axis") != "x" or len(thread_x.outputs) != 1:
+            return None
+        thread_index_name = thread_x.outputs[0]
+        load_a, load_b, add_op, store_op = ops[3:]
+        if load_a.op != "load" or load_b.op != "load" or add_op.op != "add" or store_op.op != "store":
+            return None
+        if tuple(load_a.inputs) != (src_arg.name, thread_index_name):
+            return None
+        if tuple(load_b.inputs) != (other_arg.name, thread_index_name):
+            return None
+        if tuple(add_op.inputs) != (load_a.outputs[0], load_b.outputs[0]):
+            return None
+        if tuple(store_op.inputs) != (add_op.outputs[0], dst_arg.name, thread_index_name):
+            return None
+        return src_arg.name, other_arg.name, dst_arg.name, thread_index_name
+
+    def _render_real_exec_pointwise_add_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+        other_name: str,
+        dst_name: str,
+        thread_index_name: str,
+    ) -> tuple[str, list[str]]:
+        del thread_index_name
+        block_dim = ir.launch.block[0]
+        prologue = [
+            "bid = fx.block_idx.x",
+            "tid = fx.thread_idx.x",
+            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout({block_dim}, 1))",
+            f"t_{other_name} = fx.logical_divide({other_name}, fx.make_layout({block_dim}, 1))",
+            f"t_{dst_name} = fx.logical_divide({dst_name}, fx.make_layout({block_dim}, 1))",
+            f"t_{src_name} = fx.slice(t_{src_name}, (None, bid))",
+            f"t_{other_name} = fx.slice(t_{other_name}, (None, bid))",
+            f"t_{dst_name} = fx.slice(t_{dst_name}, (None, bid))",
+            f"t_{src_name} = fx.logical_divide(t_{src_name}, fx.make_layout(1, 1))",
+            f"t_{other_name} = fx.logical_divide(t_{other_name}, fx.make_layout(1, 1))",
+            f"t_{dst_name} = fx.logical_divide(t_{dst_name}, fx.make_layout(1, 1))",
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{other_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+        ]
+        body_lines = [
+            f"fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, tid)), r_{src_name})",
+            f"fx.copy_atom_call(copyAtom, fx.slice(t_{other_name}, (None, tid)), r_{other_name})",
+            f"val_{dst_name} = fx.arith.addf(fx.memref_load_vec(r_{src_name}), fx.memref_load_vec(r_{other_name}))",
+            f"fx.memref_store_vec(val_{dst_name}, r_{dst_name})",
+            f"fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, tid)))",
+        ]
+        return "\n".join(f"    {line}" for line in body_lines), prologue
+
+    def _match_real_exec_copy_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
+        if len(ir.arguments) != 2:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, dst_arg = ir.arguments
+        for argument in (src_arg, dst_arg):
+            spec = argument.spec
+            if len(spec.shape) != 1:
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        if len(ir.operations) != 1 or ir.operations[0].op != "copy":
+            return None
+        copy_op = ir.operations[0]
+        if tuple(copy_op.inputs) != (src_arg.name, dst_arg.name):
+            return None
+        return src_arg.name, dst_arg.name
+
+    def _render_real_exec_copy_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+        dst_name: str,
+    ) -> tuple[str, list[str]]:
+        extent = ir.arguments[0].spec.shape[0] if isinstance(ir.arguments[0].spec, TensorSpec) else 0
+        prologue = [
+            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout(1, 1))",
+            f"t_{dst_name} = fx.logical_divide({dst_name}, fx.make_layout(1, 1))",
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+        ]
+        body_lines = [
+            f"for copy_i0 in range({extent}):",
+            f"    fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, fx.Int32(copy_i0))), r_{src_name})",
+            f"    fx.copy_atom_call(copyAtom, r_{src_name}, fx.slice(t_{dst_name}, (None, fx.Int32(copy_i0))))",
+        ]
+        return "\n".join(f"    {line}" for line in body_lines), prologue
+
     def _render_exec_body(self, ir: PortableKernelIR) -> list[str]:
         tensor_specs = self._collect_exec_tensor_specs(ir)
-        memref_names = set(tensor_specs)
+        memref_names: set[str] = set()
         lines: list[str] = []
         for operation in ir.operations:
+            if self._operation_allocates_exec_memref(operation):
+                memref_names.update(operation.outputs)
             lines.extend(self._render_exec_operation(operation, tensor_specs=tensor_specs, memref_names=memref_names))
         if not lines:
             lines.append("pass")
         return lines
+
+    def _operation_allocates_exec_memref(self, operation: Operation) -> bool:
+        if operation.op == "make_tensor":
+            return True
+        if operation.op in {"broadcast_to", "tensor_add", "tensor_sub", "tensor_mul", "tensor_div"}:
+            return True
+        if operation.op.startswith("math_"):
+            result = operation.attrs.get("result")
+            return isinstance(result, dict) and result.get("kind") == "tensor"
+        if operation.op.startswith("reduce_"):
+            result = operation.attrs.get("result")
+            return isinstance(result, dict) and result.get("kind") == "tensor"
+        return False
 
     def _collect_exec_tensor_specs(self, ir: PortableKernelIR) -> dict[str, TensorSpec]:
         specs = {
@@ -686,6 +841,11 @@ class FlyDslBridge:
             return indices[0]
         return ", ".join(indices)
 
+    def _render_exec_index_tuple(self, indices: list[str] | tuple[str, ...]) -> str:
+        if len(indices) == 1:
+            return f"({indices[0]},)"
+        return f"({self._render_exec_index(indices)})"
+
     def _render_exec_shape_tuple(self, values: tuple[int, ...]) -> str:
         if len(values) == 1:
             return str(values[0])
@@ -707,7 +867,7 @@ class FlyDslBridge:
 
     def _render_exec_address_space(self, spec: TensorSpec) -> str:
         if spec.address_space.value == "shared":
-            return "fx.AddressSpace.Workgroup"
+            return "fx.AddressSpace.Shared"
         if spec.address_space.value == "register":
             return "fx.AddressSpace.Register"
         raise ValueError(f"flydsl_exec does not support address_space '{spec.address_space.value}' for make_tensor")
@@ -727,7 +887,7 @@ class FlyDslBridge:
 
     def _render_exec_load(self, tensor: str, indices: list[str] | tuple[str, ...], memref_names: set[str]) -> str:
         if tensor in memref_names:
-            return f"fx.memref_load({tensor}, [{self._render_exec_index(indices)}])"
+            return f"fx.memref_load({tensor}, {self._render_exec_index_tuple(indices)})"
         return f"{tensor}[{self._render_exec_index(indices)}]"
 
     def _render_exec_store(
@@ -738,7 +898,7 @@ class FlyDslBridge:
         memref_names: set[str],
     ) -> str:
         if tensor in memref_names:
-            return f"fx.memref_store({value}, {tensor}, [{self._render_exec_index(indices)}])"
+            return f"fx.memref_store({value}, {tensor}, {self._render_exec_index_tuple(indices)})"
         return f"{tensor}[{self._render_exec_index(indices)}] = {value}"
 
     def _render_exec_copy(

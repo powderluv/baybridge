@@ -321,6 +321,12 @@ def main() -> int:
                 str(index): _summarize_value(run_args[index]) for index in indices
             }
         except Exception as exc:  # pragma: no cover - exercised via subprocess tests
+            if artifact.backend_name == "flydsl_exec" and type(exc).__name__ == "BackendNotImplementedError":
+                message = str(exc)
+                if "BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC" in message:
+                    entry["execute_status"] = "skipped_unvalidated_real_flydsl_exec"
+                    entry["execute_note"] = message
+                    continue
             entry["execute_status"] = "error"
             entry["execute_error_type"] = type(exc).__name__
             entry["execute_error"] = str(exc)

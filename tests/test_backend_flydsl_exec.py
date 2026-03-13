@@ -130,12 +130,20 @@ def flydsl_exec_unsupported_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst[0] = tile[0, 0, 0]
 
 
-def _install_fake_flydsl(root: Path, *, built: bool = False, build_dir_name: str = "build-fly") -> Path:
+def _install_fake_flydsl(
+    root: Path,
+    *,
+    built: bool = False,
+    build_dir_name: str = "build-fly",
+    with_mlir: bool = False,
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "README.md").write_text("# Fake FlyDSL\n", encoding="utf-8")
     package_root = root / build_dir_name / "python_packages" if built else root
     package = package_root / "flydsl"
     package.mkdir(parents=True, exist_ok=True)
+    if with_mlir:
+        (package / "_mlir").mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "expr.py").write_text(
         "def _normalize_shape(shape):\n"
@@ -186,9 +194,32 @@ def _install_fake_flydsl(root: Path, *, built: bool = False, build_dir_name: str
         "block_dim = gpu.block_dim\n"
         "grid_dim = gpu.grid_dim\n"
         "barrier = gpu.barrier\n"
+        "class _Rocdl:\n"
+        "    @staticmethod\n"
+        "    def make_buffer_tensor(value):\n"
+        "        return value\n"
+        "rocdl = _Rocdl()\n"
+        "class _LogicalView:\n"
+        "    def __init__(self, base, tile):\n"
+        "        self.base = base\n"
+        "        self.tile = tile\n"
+        "class _TileView:\n"
+        "    def __init__(self, base, start, tile):\n"
+        "        self.base = base\n"
+        "        self.start = start\n"
+        "        self.tile = tile\n"
+        "class _ElementView:\n"
+        "    def __init__(self, base, index):\n"
+        "        self.base = base\n"
+        "        self.index = index\n"
+        "    def load(self):\n"
+        "        return self.base[self.index]\n"
+        "    def store(self, value):\n"
+        "        self.base[self.index] = value\n"
         "class AddressSpace:\n"
         "    Register = 'register'\n"
-        "    Workgroup = 'workgroup'\n"
+        "    Shared = 'shared'\n"
+        "    Workgroup = Shared\n"
         "class LayoutType:\n"
         "    @staticmethod\n"
         "    def get(shape, stride):\n"
@@ -218,8 +249,34 @@ def _install_fake_flydsl(root: Path, *, built: bool = False, build_dir_name: str
         "    def i64():\n"
         "        return 'i64'\n"
         "T = _T()\n"
+        "Float32 = 'f32'\n"
         "def make_layout(shape, stride):\n"
         "    return (_normalize_shape(shape), _normalize_shape(stride))\n"
+        "def _tile_from_layout(layout):\n"
+        "    shape = layout[0] if isinstance(layout, tuple) else layout\n"
+        "    if isinstance(shape, tuple):\n"
+        "        return shape[0]\n"
+        "    if isinstance(shape, list):\n"
+        "        return shape[0]\n"
+        "    return shape\n"
+        "def logical_divide(value, layout):\n"
+        "    return _LogicalView(value, _tile_from_layout(layout))\n"
+        "def slice(value, selector):\n"
+        "    selector = _normalize_indices(selector)\n"
+        "    index = selector[-1]\n"
+        "    if isinstance(value, _LogicalView):\n"
+        "        if isinstance(value.base, _ElementView):\n"
+        "            return value.base\n"
+        "        if isinstance(value.base, _TileView):\n"
+        "            if value.tile == 1:\n"
+        "                return _ElementView(value.base.base, value.base.start + index)\n"
+        "            return _TileView(value.base.base, value.base.start + index * value.tile, value.tile)\n"
+        "        if value.tile == 1:\n"
+        "            return _ElementView(value.base, index)\n"
+        "        return _TileView(value.base, index * value.tile, value.tile)\n"
+        "    if isinstance(value, _TileView):\n"
+        "        return _ElementView(value.base, value.start + index)\n"
+        "    return _ElementView(value, index)\n"
         "def memref_alloca(memref_type, layout):\n"
         "    del layout\n"
         "    return _MemRef(memref_type['shape'])\n"
@@ -240,6 +297,37 @@ def _install_fake_flydsl(root: Path, *, built: bool = False, build_dir_name: str
         "    for index in indices[:-1]:\n"
         "        ref = ref[index]\n"
         "    ref[indices[-1]] = value\n"
+        "def memref_load_vec(memref):\n"
+        "    return memref_load(memref, (0,))\n"
+        "def memref_store_vec(value, memref):\n"
+        "    memref_store(value, memref, (0,))\n"
+        "class UniversalCopy32b:\n"
+        "    pass\n"
+        "def make_copy_atom(copy_op, dtype):\n"
+        "    return (copy_op, dtype)\n"
+        "def copy_atom_call(copy_atom, src, dst):\n"
+        "    del copy_atom\n"
+        "    if isinstance(src, _ElementView):\n"
+        "        value = src.load()\n"
+        "    elif isinstance(src, _TileView):\n"
+        "        value = src.base[src.start]\n"
+        "    elif hasattr(src, 'load'):\n"
+        "        value = memref_load_vec(src)\n"
+        "    else:\n"
+        "        value = src\n"
+        "    if isinstance(dst, _ElementView):\n"
+        "        dst.store(value)\n"
+        "    elif isinstance(dst, _TileView):\n"
+        "        dst.base[dst.start] = value\n"
+        "    elif hasattr(dst, 'store'):\n"
+        "        memref_store_vec(value, dst)\n"
+        "    else:\n"
+        "        raise TypeError('unsupported destination for copy_atom_call')\n"
+        "class _Arith:\n"
+        "    @staticmethod\n"
+        "    def addf(lhs, rhs):\n"
+        "        return lhs + rhs\n"
+        "arith = _Arith()\n"
         "class Tensor: pass\n"
         "Int32 = int\n"
         "class Stream:\n"
@@ -352,8 +440,21 @@ def _load_real_torch():
 
 
 def _skip_if_real_runtime_tensor_exec_unavailable(backend: FlyDslExecBackend) -> None:
+    if not backend.real_exec_enabled():
+        pytest.skip(backend.real_exec_note())
     if not backend._runtime_tensor_device_available():
         pytest.skip("real FlyDSL RuntimeTensor execution requires a GPU-capable torch build")
+
+
+def _skip_if_real_exec_unavailable(backend: FlyDslExecBackend) -> None:
+    if not backend.real_exec_enabled():
+        pytest.skip(backend.real_exec_note())
+
+
+def _skip_if_real_torch_device_unavailable(torch) -> None:
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not callable(getattr(cuda, "is_available", None)) or not cuda.is_available():
+        pytest.skip("real FlyDSL torch-backed execution requires device-backed torch tensors")
 
 
 def test_flydsl_exec_lowers_python_module(tmp_path: Path) -> None:
@@ -368,10 +469,15 @@ def test_flydsl_exec_lowers_python_module(tmp_path: Path) -> None:
     assert artifact.lowered_module.dialect == "flydsl_python"
     assert "@flyc.kernel" in artifact.lowered_module.text
     assert "@flyc.jit" in artifact.lowered_module.text
-    assert "fx.thread_idx.x" in artifact.lowered_module.text
-    assert "fx.memref_load(src" in artifact.lowered_module.text
-    assert "fx.memref_store(" in artifact.lowered_module.text
-    assert " + " in artifact.lowered_module.text
+    text = artifact.lowered_module.text
+    assert "fx.thread_idx.x" in text
+    if "src[thread_idx_x_1]" in text:
+        assert "dst[thread_idx_x_1] =" in text
+        assert " + " in text
+    else:
+        assert "fx.logical_divide(src, fx.make_layout(4, 1))" in text
+        assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, tid)), r_src)" in text
+        assert "fx.arith.addf(" in text
 
 
 def test_flydsl_exec_available_is_false_for_source_only_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -570,6 +676,138 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_runtime_tensors_with_cpu_o
     sys.modules.pop("torch", None)
 
 
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_built_root_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    fake_torch_root = tmp_path / "fake_torch"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    _install_fake_torch(fake_torch_root)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = str(fake_torch_root) if not existing_pythonpath else f"{fake_torch_root}{os.pathsep}{existing_pythonpath}"
+    monkeypatch.setenv("PYTHONPATH", pythonpath)
+    monkeypatch.syspath_prepend(str(fake_torch_root))
+    sys.modules.pop("torch", None)
+
+    src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
+    other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
+    dst = bb.zeros((4,), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_add_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == [11.0, 22.0, 33.0, 44.0]
+    sys.modules.pop("torch", None)
+
+
+def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_built_root_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]))
+    dst = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0, 0.0]))
+
+    artifact = bb.compile(
+        flydsl_exec_shared_stage_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name != "flydsl_exec"
+    sys.modules.pop("torch", None)
+
+
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_copy_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src_obj = FakeDLPackTensor([5.0, 6.0, 7.0, 8.0])
+    dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    src = bb.from_dlpack(src_obj)
+    dst = bb.from_dlpack(dst_obj)
+
+    artifact = bb.compile(
+        flydsl_exec_copy_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst)
+    assert dst_obj.tolist() == [5.0, 6.0, 7.0, 8.0]
+
+
+def test_flydsl_exec_realish_built_root_requires_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]))
+    dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    dst = bb.from_dlpack(dst_obj)
+
+    artifact = bb.compile(
+        flydsl_exec_shared_stage_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    with pytest.raises(bb.BackendNotImplementedError, match="BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1"):
+        artifact(src, dst)
+
+
+def test_flydsl_exec_realish_built_root_emits_upstream_pointwise_pattern_when_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+    monkeypatch.setenv("BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC", "1")
+
+    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]))
+    other = bb.from_dlpack(FakeDLPackTensor([10.0, 20.0, 30.0, 40.0]))
+    dst = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0, 0.0]))
+
+    artifact = bb.compile(
+        flydsl_exec_add_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    text = artifact.lowered_module.text
+    assert "fx.logical_divide(src, fx.make_layout(4, 1))" in text
+    assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, tid)), r_src)" in text
+    assert "fx.arith.addf(" in text
+
+
 def test_flydsl_exec_adapts_tensor_handles_via_from_dlpack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_root = tmp_path / "fake_flydsl"
     _install_fake_flydsl(fake_root, built=True)
@@ -655,7 +893,7 @@ def test_flydsl_exec_shared_stage_kernel_uses_memref_alloca(monkeypatch: pytest.
 
     assert "fx.memref_alloca" in artifact.lowered_module.text
     assert "gpu.barrier()" in artifact.lowered_module.text
-    assert "fx.AddressSpace.Workgroup" in artifact.lowered_module.text
+    assert "fx.AddressSpace.Shared" in artifact.lowered_module.text
 
     src_obj = FakeDLPackTensor([1.0, 2.0, 3.0, 4.0])
     dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
@@ -882,14 +1120,15 @@ def test_flydsl_exec_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
     torch = _load_real_torch()
+    _skip_if_real_torch_device_unavailable(torch)
     backend = FlyDslExecBackend()
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
 
-    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-    other = torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32)
-    dst = torch.zeros(4, dtype=torch.float32)
+    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device="cuda")
+    other = torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32, device="cuda")
+    dst = torch.zeros(4, dtype=torch.float32, device="cuda")
 
     artifact = bb.compile(
         flydsl_exec_add_kernel,
@@ -909,13 +1148,14 @@ def test_flydsl_exec_copy_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> No
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
     torch = _load_real_torch()
+    _skip_if_real_torch_device_unavailable(torch)
     backend = FlyDslExecBackend()
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
 
-    src = torch.tensor([5.0, 6.0, 7.0, 8.0], dtype=torch.float32)
-    dst = torch.zeros(4, dtype=torch.float32)
+    src = torch.tensor([5.0, 6.0, 7.0, 8.0], dtype=torch.float32, device="cuda")
+    dst = torch.zeros(4, dtype=torch.float32, device="cuda")
 
     artifact = bb.compile(
         flydsl_exec_copy_kernel,
@@ -937,7 +1177,8 @@ def test_flydsl_exec_runtime_tensors_run_with_real_flydsl_if_enabled(tmp_path: P
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
-    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+    if not backend._runtime_tensor_device_available():
+        pytest.skip("real FlyDSL RuntimeTensor execution requires a GPU-capable torch build")
 
     src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
     other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
@@ -961,14 +1202,15 @@ def test_compile_auto_prefers_flydsl_exec_for_real_torch_inputs_if_enabled(tmp_p
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
     torch = _load_real_torch()
+    _skip_if_real_torch_device_unavailable(torch)
     backend = FlyDslExecBackend()
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
 
-    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-    other = torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32)
-    dst = torch.zeros(4, dtype=torch.float32)
+    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device="cuda")
+    other = torch.tensor([10.0, 20.0, 30.0, 40.0], dtype=torch.float32, device="cuda")
+    dst = torch.zeros(4, dtype=torch.float32, device="cuda")
 
     artifact = bb.compile(
         flydsl_exec_add_kernel,
@@ -993,7 +1235,8 @@ def test_compile_auto_prefers_flydsl_exec_for_real_runtime_tensors_if_enabled(tm
         pytest.skip("real FlyDSL environment is not importable")
     if not environment.torch_available:
         pytest.skip("real FlyDSL runtime-tensor adaptation requires torch")
-    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+    if not backend._runtime_tensor_device_available():
+        pytest.skip("real FlyDSL RuntimeTensor execution requires a GPU-capable torch build")
 
     src = bb.tensor([1.0, 2.0, 3.0, 4.0], dtype="f32")
     other = bb.tensor([10.0, 20.0, 30.0, 40.0], dtype="f32")
@@ -1144,13 +1387,15 @@ def test_flydsl_exec_shared_stage_runs_with_real_flydsl_if_enabled(tmp_path: Pat
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
     torch = _load_real_torch()
+    _skip_if_real_torch_device_unavailable(torch)
     backend = FlyDslExecBackend()
     environment = backend._bridge.exec_environment()
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_exec_unavailable(backend)
 
-    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-    dst = torch.zeros(4, dtype=torch.float32)
+    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device="cuda")
+    dst = torch.zeros(4, dtype=torch.float32, device="cuda")
 
     artifact = bb.compile(
         flydsl_exec_shared_stage_kernel,
