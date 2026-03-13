@@ -5,7 +5,7 @@
 Today it provides:
 - a Python frontend with an example-friendly `import baybridge as cute` surface
 - a portable kernel IR
-- textual lowering backends (`mlir_text`, `gpu_text`, `gpu_mlir`, `waveasm_ref`, and `hipkittens_ref`)
+- textual lowering backends (`mlir_text`, `gpu_text`, `gpu_mlir`, `waveasm_ref`, `aster_ref`, and `hipkittens_ref`)
 - executable HIP lowering for a narrow validated subset
 - an optional executable HipKittens backend for a narrow BF16 GEMM subset
 - a reference runtime for basic examples and `@jit` wrapper execution
@@ -218,6 +218,11 @@ Useful helpers:
 - `backend="waveasm_exec"`
   - experimental backend behind `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`
   - lowers a narrow standard-MLIR subset to WaveASM-consumable MLIR and launches the resulting HSACO through HIP's module API
+- `backend="aster_ref"`
+  - lowers supported kernels to ASTER-oriented reference MLIR plus tool/runtime hints
+  - this is a reference backend, not an executable backend
+  - emits a `*.aster_repro/` bundle next to the lowered artifact with `kernel.mlir`, `repro.sh`, and `manifest.json`
+  - `BAYBRIDGE_ASTER_ROOT` can point at an ASTER checkout or install root to improve tool and package discovery
   - current experimental family:
     - single-global-tensor pointwise kernels
     - single-global-tensor shared-memory staging
