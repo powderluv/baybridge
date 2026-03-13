@@ -245,7 +245,8 @@ Useful helpers:
     - raw DLPack-capable tensors such as `torch.Tensor`
     - plain `baybridge.RuntimeTensor` values when `torch` is importable
   - real upstream FlyDSL execution is currently validated for a narrow subset:
-    - 1D `f32` pointwise add
+    - 1D `f32` pointwise binary ops through the copy-atom/register path
+      - hardware-validated today: add, sub, mul, div
     - 1D `f32` copy
   - broader real upstream FlyDSL execution is still gated behind:
     - `BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1`

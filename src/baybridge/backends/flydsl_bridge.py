@@ -466,18 +466,18 @@ class FlyDslBridge:
         )
 
     def has_validated_real_exec(self, ir: PortableKernelIR) -> bool:
-        return self._match_real_exec_pointwise_add_1d(ir) is not None or self._match_real_exec_copy_1d(ir) is not None
+        return self._match_real_exec_pointwise_binary_1d(ir) is not None or self._match_real_exec_copy_1d(ir) is not None
 
     def _render_real_exec_python_specialized(self, ir: PortableKernelIR) -> tuple[str, list[str]] | None:
-        matched = self._match_real_exec_pointwise_add_1d(ir)
+        matched = self._match_real_exec_pointwise_binary_1d(ir)
         if matched is not None:
-            return self._render_real_exec_pointwise_add_1d(ir, *matched)
+            return self._render_real_exec_pointwise_binary_1d(ir, *matched)
         matched_copy = self._match_real_exec_copy_1d(ir)
         if matched_copy is not None:
             return self._render_real_exec_copy_1d(ir, *matched_copy)
         return None
 
-    def _match_real_exec_pointwise_add_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str] | None:
+    def _match_real_exec_pointwise_binary_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str, str] | None:
         if len(ir.arguments) != 3:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
@@ -501,7 +501,9 @@ class FlyDslBridge:
             return None
         thread_index_name = thread_x.outputs[0]
         load_a, load_b, add_op, store_op = ops[3:]
-        if load_a.op != "load" or load_b.op != "load" or add_op.op != "add" or store_op.op != "store":
+        if load_a.op != "load" or load_b.op != "load" or store_op.op != "store":
+            return None
+        if add_op.op not in {"add", "sub", "mul", "div"}:
             return None
         if tuple(load_a.inputs) != (src_arg.name, thread_index_name):
             return None
@@ -511,18 +513,25 @@ class FlyDslBridge:
             return None
         if tuple(store_op.inputs) != (add_op.outputs[0], dst_arg.name, thread_index_name):
             return None
-        return src_arg.name, other_arg.name, dst_arg.name, thread_index_name
+        return src_arg.name, other_arg.name, dst_arg.name, thread_index_name, add_op.op
 
-    def _render_real_exec_pointwise_add_1d(
+    def _render_real_exec_pointwise_binary_1d(
         self,
         ir: PortableKernelIR,
         src_name: str,
         other_name: str,
         dst_name: str,
         thread_index_name: str,
+        op_name: str,
     ) -> tuple[str, list[str]]:
         del thread_index_name
         block_dim = ir.launch.block[0]
+        arith_op = {
+            "add": "addf",
+            "sub": "subf",
+            "mul": "mulf",
+            "div": "divf",
+        }[op_name]
         prologue = [
             "bid = fx.block_idx.x",
             "tid = fx.thread_idx.x",
@@ -544,7 +553,7 @@ class FlyDslBridge:
         body_lines = [
             f"fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, tid)), r_{src_name})",
             f"fx.copy_atom_call(copyAtom, fx.slice(t_{other_name}, (None, tid)), r_{other_name})",
-            f"val_{dst_name} = fx.arith.addf(fx.memref_load_vec(r_{src_name}), fx.memref_load_vec(r_{other_name}))",
+            f"val_{dst_name} = fx.arith.{arith_op}(fx.memref_load_vec(r_{src_name}), fx.memref_load_vec(r_{other_name}))",
             f"fx.memref_store_vec(val_{dst_name}, r_{dst_name})",
             f"fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, tid)))",
         ]
