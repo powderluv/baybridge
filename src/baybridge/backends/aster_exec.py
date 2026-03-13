@@ -408,17 +408,15 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec currently requires global-memory tensors")
         if src_spec.shape != dst_spec.shape or src_spec.dtype != dst_spec.dtype:
             raise BackendNotImplementedError("aster_exec requires matching source and destination tensor specs")
-        if len(src_spec.shape) != 1:
-            raise BackendNotImplementedError("aster_exec currently supports 1D tensors only")
         if src_spec.dtype not in {"f32", "i32", "f16"}:
             raise BackendNotImplementedError("aster_exec currently supports f32, i32, and f16 copies only")
-        if src_spec.resolved_layout().stride != (1,) or dst_spec.resolved_layout().stride != (1,):
-            raise BackendNotImplementedError("aster_exec currently requires contiguous 1D tensors")
-        element_count = src_spec.shape[0]
+        if not self._is_dense_contiguous(src_spec) or not self._is_dense_contiguous(dst_spec):
+            raise BackendNotImplementedError("aster_exec currently requires dense contiguous tensors")
+        element_count = self._total_elements(src_spec.shape)
         elements_per_chunk = 16 // self._dtype_size_bytes(src_spec.dtype)
         if element_count <= 0 or element_count % elements_per_chunk != 0:
             raise BackendNotImplementedError(
-                "aster_exec requires a 1D element count aligned to a 16-byte transfer chunk"
+                "aster_exec requires a contiguous element count aligned to a 16-byte transfer chunk"
             )
         return _Copy1DMatch(
             src_name=src_arg.name,
@@ -472,17 +470,17 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec add requires matching tensor shapes")
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require matching tensor dtypes")
-        if len(lhs_spec.shape) != 1:
-            raise BackendNotImplementedError("aster_exec add currently supports 1D tensors only")
         if (
-            lhs_spec.resolved_layout().stride != (1,)
-            or rhs_spec.resolved_layout().stride != (1,)
-            or dst_spec.resolved_layout().stride != (1,)
+            not self._is_dense_contiguous(lhs_spec)
+            or not self._is_dense_contiguous(rhs_spec)
+            or not self._is_dense_contiguous(dst_spec)
         ):
-            raise BackendNotImplementedError("aster_exec add currently requires contiguous 1D tensors")
-        element_count = lhs_spec.shape[0]
+            raise BackendNotImplementedError("aster_exec pointwise binary ops currently require dense contiguous tensors")
+        element_count = self._total_elements(lhs_spec.shape)
         if element_count <= 0 or element_count % 4 != 0:
-            raise BackendNotImplementedError("aster_exec pointwise binary ops require a 1D element count that is a positive multiple of 4")
+            raise BackendNotImplementedError(
+                "aster_exec pointwise binary ops require a contiguous element count that is a positive multiple of 4"
+            )
         dtype_support = {
             "f32": {
                 "tensor_add": ("add", "addf", "f32"),
@@ -634,3 +632,20 @@ class AsterExecBackend:
         if dtype == "f16":
             return 2
         raise BackendNotImplementedError(f"aster_exec does not support dtype '{dtype}'")
+
+    def _total_elements(self, shape: tuple[int, ...]) -> int:
+        total = 1
+        for extent in shape:
+            total *= extent
+        return total
+
+    def _is_dense_contiguous(self, spec: TensorSpec) -> bool:
+        layout = spec.resolved_layout()
+        if len(layout.stride) != len(spec.shape):
+            return False
+        expected: list[int] = [0] * len(spec.shape)
+        running = 1
+        for index in range(len(spec.shape) - 1, -1, -1):
+            expected[index] = running
+            running *= spec.shape[index]
+        return tuple(expected) == tuple(layout.stride)
