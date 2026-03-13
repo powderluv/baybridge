@@ -492,12 +492,15 @@ class AsterExecBackend:
             },
             "i32": {
                 "tensor_add": ("add", "addi", "i32"),
+                "tensor_sub": ("sub", "subi", "i32"),
+                "tensor_mul": ("mul", "muli", "i32"),
+                "tensor_div": ("div", "divsi", "i32"),
             },
         }
         supported_for_dtype = dtype_support.get(lhs_spec.dtype)
         if supported_for_dtype is None or binary_op not in supported_for_dtype:
             raise BackendNotImplementedError(
-                "aster_exec currently supports f32 add/sub/mul/div and i32 add only"
+                "aster_exec currently supports f32 and i32 add/sub/mul/div only"
             )
         binary_name, lsir_op, value_type = supported_for_dtype[binary_op]
         return _Binary1DMatch(
