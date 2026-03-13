@@ -99,7 +99,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
-_ADD_1D_F32_TEMPLATE = """// baybridge.aster_exec
+_BINARY_1D_F32_TEMPLATE = """// baybridge.aster_exec
 !sx2 = !amdgcn.sgpr<[? + 2]>
 !vx4 = !amdgcn.vgpr<[? + 4]>
 !tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
@@ -138,7 +138,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     return
   }}
 
-  func.func private @vector_add_body(
+  func.func private @vector_{binary_name}_body(
     %idx: index,
     %lhs_memref: memref<?x!vx4>,
     %rhs_memref: memref<?x!vx4>,
@@ -152,16 +152,16 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %tmp1 = amdgcn.alloca : !amdgcn.vgpr
     %tmp2 = amdgcn.alloca : !amdgcn.vgpr
     %tmp3 = amdgcn.alloca : !amdgcn.vgpr
-    %sum0 = lsir.addf f32 %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %sum1 = lsir.addf f32 %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %sum2 = lsir.addf f32 %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %sum3 = lsir.addf f32 %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %sum = amdgcn.make_register_range %sum0, %sum1, %sum2, %sum3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    memref.store %sum, %dst_memref[%idx] : memref<?x!vx4>
+    %result0 = lsir.{lsir_op} f32 %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result1 = lsir.{lsir_op} f32 %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result2 = lsir.{lsir_op} f32 %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result3 = lsir.{lsir_op} f32 %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %result = amdgcn.make_register_range %result0, %result1, %result2, %result3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    memref.store %result, %dst_memref[%idx] : memref<?x!vx4>
     return
   }}
 
-  func.func private @add_loop(
+  func.func private @{binary_name}_loop(
     %num_elements: index,
     %lhs_global: !sx2,
     %rhs_global: !sx2,
@@ -192,7 +192,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
       func.call @global_load_body(%rhs_pos_desc, %rhs_param)
         {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
         : (!tensor_position_descriptor_1d, !m2reg_param_1d_vx4) -> ()
-      func.call @vector_add_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
+      func.call @vector_{binary_name}_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
         {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
         : (index, memref<?x!vx4>, memref<?x!vx4>, memref<?x!vx4>) -> ()
       func.call @global_store_body(%dst_pos_desc, %dst_param)
@@ -214,7 +214,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %lhs_ptr, %rhs_ptr, %dst_ptr = lsir.assume_noalias %lhs_ptr_s, %rhs_ptr_s, %dst_ptr_s : (!sx2, !sx2, !sx2) -> (!sx2, !sx2, !sx2)
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
     %num_elements = arith.constant {vector_chunks} : index
-    func.call @add_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
+    func.call @{binary_name}_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
     amdgcn.end_kernel
   }}
 }}
@@ -232,12 +232,15 @@ class _Copy1DMatch:
 
 
 @dataclass(frozen=True)
-class _Add1DF32Match:
+class _Binary1DF32Match:
     lhs_name: str
     rhs_name: str
     dst_name: str
     shape: tuple[int, ...]
     vector_chunks: int
+    op: str
+    binary_name: str
+    lsir_op: str
 
 
 class AsterExecBackend:
@@ -276,7 +279,7 @@ class AsterExecBackend:
         if isinstance(match, _Copy1DMatch):
             text = self._render_copy_1d(match, ir.name, target)
         else:
-            text = self._render_add_1d_f32(match, ir.name, target)
+            text = self._render_binary_1d_f32(match, ir.name, target)
         return LoweredModule(
             backend_name=self.name,
             entry_point=ir.name,
@@ -375,15 +378,15 @@ class AsterExecBackend:
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
-    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Add1DF32Match:
+    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Binary1DF32Match:
         if len(ir.arguments) == 2:
             return self._match_copy_1d(ir, target)
         if len(ir.arguments) == 3:
-            return self._match_add_1d_f32(ir, target)
+            return self._match_binary_1d_f32(ir, target)
         try:
             return self._match_copy_1d(ir, target)
         except BackendNotImplementedError:
-            return self._match_add_1d_f32(ir, target)
+            return self._match_binary_1d_f32(ir, target)
 
     def _match_copy_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
@@ -432,22 +435,29 @@ class AsterExecBackend:
             vector_chunks=match.vector_chunks,
         )
 
-    def _match_add_1d_f32(self, ir: PortableKernelIR, target: AMDTarget) -> _Add1DF32Match:
+    def _match_binary_1d_f32(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DF32Match:
         if target.arch not in {"gfx942", "gfx950"}:
             raise BackendNotImplementedError(f"aster_exec does not support target arch '{target.arch}'")
         if target.wave_size != 64:
             raise BackendNotImplementedError("aster_exec currently requires wave_size=64")
         if len(ir.arguments) != 3:
-            raise BackendNotImplementedError("aster_exec currently supports exactly three tensor arguments for add")
-        if [operation.op for operation in ir.operations] != [
-            "make_tensor",
-            "copy",
-            "make_tensor",
-            "copy",
-            "tensor_add",
-            "copy",
-        ]:
-            raise BackendNotImplementedError("aster_exec currently supports a single tensor_add pipeline only")
+            raise BackendNotImplementedError("aster_exec currently supports exactly three tensor arguments for pointwise binary ops")
+        op_names = [operation.op for operation in ir.operations]
+        supported_ops = {
+            "tensor_add": ("add", "addf"),
+            "tensor_sub": ("sub", "subf"),
+            "tensor_mul": ("mul", "mulf"),
+            "tensor_div": ("div", "divf"),
+        }
+        if op_names[:4] != ["make_tensor", "copy", "make_tensor", "copy"] or op_names[-1:] != ["copy"]:
+            raise BackendNotImplementedError(
+                "aster_exec currently supports a single supported tensor binary pipeline only"
+            )
+        binary_op = op_names[4] if len(op_names) == 6 else None
+        if binary_op not in supported_ops:
+            raise BackendNotImplementedError(
+                "aster_exec currently supports a single supported tensor binary pipeline only"
+            )
         lhs_arg, rhs_arg, dst_arg = ir.arguments
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             raise BackendNotImplementedError("aster_exec currently supports tensor arguments only")
@@ -470,21 +480,27 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec add currently requires contiguous 1D tensors")
         element_count = lhs_spec.shape[0]
         if element_count <= 0 or element_count % 4 != 0:
-            raise BackendNotImplementedError("aster_exec add requires a 1D element count that is a positive multiple of 4")
-        return _Add1DF32Match(
+            raise BackendNotImplementedError("aster_exec pointwise binary ops require a 1D element count that is a positive multiple of 4")
+        binary_name, lsir_op = supported_ops[binary_op]
+        return _Binary1DF32Match(
             lhs_name=lhs_arg.name,
             rhs_name=rhs_arg.name,
             dst_name=dst_arg.name,
             shape=lhs_spec.shape,
             vector_chunks=element_count // 4,
+            op=binary_op,
+            binary_name=binary_name,
+            lsir_op=lsir_op,
         )
 
-    def _render_add_1d_f32(self, match: _Add1DF32Match, kernel_name: str, target: AMDTarget) -> str:
-        return _ADD_1D_F32_TEMPLATE.format(
+    def _render_binary_1d_f32(self, match: _Binary1DF32Match, kernel_name: str, target: AMDTarget) -> str:
+        return _BINARY_1D_F32_TEMPLATE.format(
             target=target.arch,
             isa=self._target_isa(target),
             kernel_name=kernel_name,
             vector_chunks=match.vector_chunks,
+            binary_name=match.binary_name,
+            lsir_op=match.lsir_op,
         )
 
     def _target_isa(self, target: AMDTarget) -> str:
