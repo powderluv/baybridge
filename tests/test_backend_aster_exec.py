@@ -32,12 +32,21 @@ def aster_exec_copy_f16_kernel(
 
 
 @bb.kernel
-def aster_exec_unsupported_add_kernel(
+def aster_exec_add_kernel(
     src: bb.TensorSpec(shape=(16,), dtype="f32"),
     other: bb.TensorSpec(shape=(16,), dtype="f32"),
     dst: bb.TensorSpec(shape=(16,), dtype="f32"),
 ):
     dst.store(src.load() + other.load())
+
+
+@bb.kernel
+def aster_exec_unsupported_sub_kernel(
+    src: bb.TensorSpec(shape=(16,), dtype="f32"),
+    other: bb.TensorSpec(shape=(16,), dtype="f32"),
+    dst: bb.TensorSpec(shape=(16,), dtype="f32"),
+):
+    dst.store(src.load() - other.load())
 
 
 def _install_fake_aster(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -84,7 +93,13 @@ def _install_fake_aster(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
     )
     (package_dir / "hip.py").write_text(
         "def execute_hsaco(hsaco_path, kernel_name, input_arrays, output_arrays, grid_dim=(1,1,1), block_dim=(1,1,1), num_iterations=1):\n"
-        "    output_arrays[0][:] = input_arrays[0]\n"
+        "    if len(input_arrays) == 2:\n"
+        "        if all(hasattr(value, 'shape') or hasattr(value, 'tolist') for value in input_arrays):\n"
+        "            output_arrays[0][:] = input_arrays[0] + input_arrays[1]\n"
+        "        else:\n"
+        "            output_arrays[0][:] = [left + right for left, right in zip(input_arrays[0], input_arrays[1])]\n"
+        "    else:\n"
+        "        output_arrays[0][:] = input_arrays[0]\n"
         "    return [1234]\n",
         encoding="utf-8",
     )
@@ -176,7 +191,7 @@ def test_compile_does_not_auto_prefer_aster_exec_for_unsupported_ir(
     dst = bb.zeros((16,), dtype="f32")
 
     artifact = bb.compile(
-        aster_exec_unsupported_add_kernel,
+        aster_exec_unsupported_sub_kernel,
         src,
         other,
         dst,
@@ -192,15 +207,37 @@ def test_aster_exec_rejects_unsupported_ir(monkeypatch: pytest.MonkeyPatch, tmp_
     other = bb.tensor([1.0 for _ in range(16)], dtype="f32")
     dst = bb.zeros((16,), dtype="f32")
 
-    with pytest.raises(bb.BackendNotImplementedError, match="exactly two tensor arguments"):
+    with pytest.raises(bb.BackendNotImplementedError, match="single tensor_add pipeline"):
         bb.compile(
-            aster_exec_unsupported_add_kernel,
+            aster_exec_unsupported_sub_kernel,
             src,
             other,
             dst,
             cache_dir=tmp_path / "cache",
             backend="aster_exec",
         )
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_add_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor([float(index) for index in range(16)], dtype="f32")
+    other = bb.tensor([1.0 for _ in range(16)], dtype="f32")
+    dst = bb.zeros((16,), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_add_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
 
 
 def test_compile_auto_prefers_aster_exec_for_matching_i32_copy_kernel(
@@ -268,6 +305,34 @@ def test_aster_exec_runs_copy_on_amd_hardware(tmp_path: Path) -> None:
     artifact(src, dst)
 
     assert dst.tolist() == src.tolist()
+
+
+def test_aster_exec_runs_add_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([float(index) for index in range(16)], dtype="f32")
+    other = bb.tensor([1.0 for _ in range(16)], dtype="f32")
+    dst = bb.zeros((16,), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_add_kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(src, other, dst)
+    assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
 
 
 def test_aster_exec_runs_i32_copy_on_amd_hardware(tmp_path: Path) -> None:
@@ -346,6 +411,34 @@ def test_compile_auto_prefers_aster_exec_on_amd_hardware(tmp_path: Path) -> None
     assert artifact.backend_name == "aster_exec"
     artifact(src, dst)
     assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_add_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([float(index) for index in range(16)], dtype="f32")
+    other = bb.tensor([1.0 for _ in range(16)], dtype="f32")
+    dst = bb.zeros((16,), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_add_kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
 
 
 def test_compile_auto_prefers_aster_exec_for_f16_copy_on_amd_hardware(tmp_path: Path) -> None:

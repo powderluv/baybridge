@@ -99,6 +99,127 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
+_ADD_1D_F32_TEMPLATE = """// baybridge.aster_exec
+!sx2 = !amdgcn.sgpr<[? + 2]>
+!vx4 = !amdgcn.vgpr<[? + 4]>
+!tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
+!tensor_position_descriptor_2d = !aster_utils.struct<ptr: !sx2, m_pos: index, n_pos: index, global_stride_in_bytes: index, elt_size: index>
+!m2reg_param_1d_vx4 = !aster_utils.struct<i: index, memref: memref<?x!vx4>>
+
+amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
+  func.func private @distributed_index_1d() -> index
+  func.func private @grid_stride_1d() -> index
+  func.func private @store_to_global_dwordx4_wait(!vx4, !tensor_position_descriptor_2d) -> ()
+  func.func private @load_from_global_dwordx4_wait(!tensor_position_descriptor_2d) -> !vx4
+
+  func.func private @global_load_body(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %m2reg_param: !m2reg_param_1d_vx4
+  ) {{
+    %idx, %memref = aster_utils.struct_extract %m2reg_param["i", "memref"] : !m2reg_param_1d_vx4 -> index, memref<?x!vx4>
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    %loaded = func.call @load_from_global_dwordx4_wait(%pos_desc_2d) : (!tensor_position_descriptor_2d) -> !vx4
+    memref.store %loaded, %memref[%idx] : memref<?x!vx4>
+    return
+  }}
+
+  func.func private @global_store_body(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %m2reg_param: !m2reg_param_1d_vx4
+  ) {{
+    %idx, %memref = aster_utils.struct_extract %m2reg_param["i", "memref"] : !m2reg_param_1d_vx4 -> index, memref<?x!vx4>
+    %value = memref.load %memref[%idx] : memref<?x!vx4>
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    func.call @store_to_global_dwordx4_wait(%value, %pos_desc_2d) : (!vx4, !tensor_position_descriptor_2d) -> ()
+    return
+  }}
+
+  func.func private @vector_add_body(
+    %idx: index,
+    %lhs_memref: memref<?x!vx4>,
+    %rhs_memref: memref<?x!vx4>,
+    %dst_memref: memref<?x!vx4>
+  ) {{
+    %lhs = memref.load %lhs_memref[%idx] : memref<?x!vx4>
+    %rhs = memref.load %rhs_memref[%idx] : memref<?x!vx4>
+    %lhs0, %lhs1, %lhs2, %lhs3 = amdgcn.split_register_range %lhs : !vx4
+    %rhs0, %rhs1, %rhs2, %rhs3 = amdgcn.split_register_range %rhs : !vx4
+    %tmp0 = amdgcn.alloca : !amdgcn.vgpr
+    %tmp1 = amdgcn.alloca : !amdgcn.vgpr
+    %tmp2 = amdgcn.alloca : !amdgcn.vgpr
+    %tmp3 = amdgcn.alloca : !amdgcn.vgpr
+    %sum0 = lsir.addf f32 %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %sum1 = lsir.addf f32 %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %sum2 = lsir.addf f32 %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %sum3 = lsir.addf f32 %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    %sum = amdgcn.make_register_range %sum0, %sum1, %sum2, %sum3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    memref.store %sum, %dst_memref[%idx] : memref<?x!vx4>
+    return
+  }}
+
+  func.func private @add_loop(
+    %num_elements: index,
+    %lhs_global: !sx2,
+    %rhs_global: !sx2,
+    %dst_global: !sx2
+  ) {{
+    %lhs_memref = memref.alloca(%num_elements) : memref<?x!vx4>
+    %rhs_memref = memref.alloca(%num_elements) : memref<?x!vx4>
+    %dst_memref = memref.alloca(%num_elements) : memref<?x!vx4>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %base_index = func.call @distributed_index_1d() : () -> index
+    %grid_stride = func.call @grid_stride_1d() : () -> index
+    %grid_stride_bytes = affine.apply affine_map<(s)[elt] -> (s * elt)>(%grid_stride)[%c16]
+
+    scf.for %i = %c0 to %num_elements step %c1 {{
+      %elem_index = affine.apply affine_map<(base, i)[stride] -> (base + i * stride)>
+        (%base_index, %i)[%grid_stride]
+      %lhs_pos_desc = aster_utils.struct_create(%lhs_global, %elem_index, %grid_stride_bytes, %c16) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %rhs_pos_desc = aster_utils.struct_create(%rhs_global, %elem_index, %grid_stride_bytes, %c16) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %dst_pos_desc = aster_utils.struct_create(%dst_global, %elem_index, %grid_stride_bytes, %c16) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %lhs_param = aster_utils.struct_create(%i, %lhs_memref) : (index, memref<?x!vx4>) -> !m2reg_param_1d_vx4
+      %rhs_param = aster_utils.struct_create(%i, %rhs_memref) : (index, memref<?x!vx4>) -> !m2reg_param_1d_vx4
+      %dst_param = aster_utils.struct_create(%i, %dst_memref) : (index, memref<?x!vx4>) -> !m2reg_param_1d_vx4
+      func.call @global_load_body(%lhs_pos_desc, %lhs_param)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, !m2reg_param_1d_vx4) -> ()
+      func.call @global_load_body(%rhs_pos_desc, %rhs_param)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, !m2reg_param_1d_vx4) -> ()
+      func.call @vector_add_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (index, memref<?x!vx4>, memref<?x!vx4>, memref<?x!vx4>) -> ()
+      func.call @global_store_body(%dst_pos_desc, %dst_param)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, !m2reg_param_1d_vx4) -> ()
+    }} {{sched.dims = array<i64: {vector_chunks}>}}
+
+    return
+  }}
+
+  amdgcn.kernel @{kernel_name} arguments <[
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_write>
+  ]> attributes {{shared_memory_size = 0 : i32}} {{
+    %lhs_ptr_s = amdgcn.load_arg 0 : !sx2
+    %rhs_ptr_s = amdgcn.load_arg 1 : !sx2
+    %dst_ptr_s = amdgcn.load_arg 2 : !sx2
+    %lhs_ptr, %rhs_ptr, %dst_ptr = lsir.assume_noalias %lhs_ptr_s, %rhs_ptr_s, %dst_ptr_s : (!sx2, !sx2, !sx2) -> (!sx2, !sx2, !sx2)
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+    %num_elements = arith.constant {vector_chunks} : index
+    func.call @add_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
+    amdgcn.end_kernel
+  }}
+}}
+"""
+
 
 @dataclass(frozen=True)
 class _Copy1DMatch:
@@ -108,6 +229,15 @@ class _Copy1DMatch:
     shape: tuple[int, ...]
     vector_chunks: int
     elements_per_chunk: int
+
+
+@dataclass(frozen=True)
+class _Add1DF32Match:
+    lhs_name: str
+    rhs_name: str
+    dst_name: str
+    shape: tuple[int, ...]
+    vector_chunks: int
 
 
 class AsterExecBackend:
@@ -136,18 +266,22 @@ class AsterExecBackend:
 
     def supports(self, ir: PortableKernelIR, target: AMDTarget) -> bool:
         try:
-            self._match_copy_1d(ir, target)
+            self._match_kernel(ir, target)
         except BackendNotImplementedError:
             return False
         return True
 
     def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule:
-        match = self._match_copy_1d(ir, target)
+        match = self._match_kernel(ir, target)
+        if isinstance(match, _Copy1DMatch):
+            text = self._render_copy_1d(match, ir.name, target)
+        else:
+            text = self._render_add_1d_f32(match, ir.name, target)
         return LoweredModule(
             backend_name=self.name,
             entry_point=ir.name,
             dialect="aster_exec_mlir",
-            text=self._render_copy_1d(match, ir.name, target),
+            text=text,
         )
 
     def build_launcher(
@@ -157,7 +291,7 @@ class AsterExecBackend:
         lowered_module: LoweredModule,
         source_path: Path,
     ):
-        match = self._match_copy_1d(ir, target)
+        match = self._match_kernel(ir, target)
         configured_root = self._bridge.configured_root()
         if configured_root is None:
             raise BackendNotImplementedError(
@@ -184,29 +318,50 @@ class AsterExecBackend:
                     configured_root,
                     ir.name,
                 )
-            src_value = self._as_runtime_tensor(args[0], expected_dtype=match.dtype, argument_name=match.src_name)
-            dst_owner, dst_value = self._prepare_output(args[1], expected_dtype=match.dtype, argument_name=match.dst_name)
+            if isinstance(match, _Copy1DMatch):
+                input_values = [
+                    self._as_runtime_tensor(args[0], expected_dtype=match.dtype, argument_name=match.src_name),
+                ]
+                dst_owner, dst_value = self._prepare_output(
+                    args[1],
+                    expected_dtype=match.dtype,
+                    argument_name=match.dst_name,
+                )
+            else:
+                input_values = [
+                    self._as_runtime_tensor(args[0], expected_dtype="f32", argument_name=match.lhs_name),
+                    self._as_runtime_tensor(args[1], expected_dtype="f32", argument_name=match.rhs_name),
+                ]
+                dst_owner, dst_value = self._prepare_output(
+                    args[2],
+                    expected_dtype="f32",
+                    argument_name=match.dst_name,
+                )
             try:
                 numpy = importlib.import_module("numpy")
             except ModuleNotFoundError:
                 numpy = None
             if numpy is None:
-                src_array = src_value.tolist()
                 dst_array = dst_value.tolist()
+                input_arrays = [input_value.tolist() for input_value in input_values]
             else:
-                src_array = numpy.array(src_value.tolist(), dtype=self._numpy_dtype(match.dtype))
-                dst_array = numpy.array(dst_value.tolist(), dtype=self._numpy_dtype(match.dtype))
+                dtype = match.dtype if isinstance(match, _Copy1DMatch) else "f32"
+                input_arrays = [
+                    numpy.array(input_value.tolist(), dtype=self._numpy_dtype(dtype)) for input_value in input_values
+                ]
+                dst_array = numpy.array(dst_value.tolist(), dtype=self._numpy_dtype(dtype))
             modules["hip"].execute_hsaco(
                 str(hsaco_path),
                 ir.name,
-                [src_array],
+                input_arrays,
                 [dst_array],
                 grid_dim=(1, 1, 1),
                 block_dim=(1, 1, 1),
                 num_iterations=1,
             )
             copied_data = dst_array.tolist() if hasattr(dst_array, "tolist") else dst_array
-            copied = tensor(copied_data, dtype=match.dtype)
+            dtype = match.dtype if isinstance(match, _Copy1DMatch) else "f32"
+            copied = tensor(copied_data, dtype=dtype)
             self._copy_back(dst_owner, copied)
 
         return launcher
@@ -219,6 +374,16 @@ class AsterExecBackend:
         lowered_path: Path,
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
+
+    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Add1DF32Match:
+        if len(ir.arguments) == 2:
+            return self._match_copy_1d(ir, target)
+        if len(ir.arguments) == 3:
+            return self._match_add_1d_f32(ir, target)
+        try:
+            return self._match_copy_1d(ir, target)
+        except BackendNotImplementedError:
+            return self._match_add_1d_f32(ir, target)
 
     def _match_copy_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
@@ -261,6 +426,61 @@ class AsterExecBackend:
 
     def _render_copy_1d(self, match: _Copy1DMatch, kernel_name: str, target: AMDTarget) -> str:
         return _COPY_1D_TEMPLATE.format(
+            target=target.arch,
+            isa=self._target_isa(target),
+            kernel_name=kernel_name,
+            vector_chunks=match.vector_chunks,
+        )
+
+    def _match_add_1d_f32(self, ir: PortableKernelIR, target: AMDTarget) -> _Add1DF32Match:
+        if target.arch not in {"gfx942", "gfx950"}:
+            raise BackendNotImplementedError(f"aster_exec does not support target arch '{target.arch}'")
+        if target.wave_size != 64:
+            raise BackendNotImplementedError("aster_exec currently requires wave_size=64")
+        if len(ir.arguments) != 3:
+            raise BackendNotImplementedError("aster_exec currently supports exactly three tensor arguments for add")
+        if [operation.op for operation in ir.operations] != [
+            "make_tensor",
+            "copy",
+            "make_tensor",
+            "copy",
+            "tensor_add",
+            "copy",
+        ]:
+            raise BackendNotImplementedError("aster_exec currently supports a single tensor_add pipeline only")
+        lhs_arg, rhs_arg, dst_arg = ir.arguments
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            raise BackendNotImplementedError("aster_exec currently supports tensor arguments only")
+        lhs_spec = lhs_arg.spec
+        rhs_spec = rhs_arg.spec
+        dst_spec = dst_arg.spec
+        if lhs_spec.address_space.value != "global" or rhs_spec.address_space.value != "global" or dst_spec.address_space.value != "global":
+            raise BackendNotImplementedError("aster_exec add currently requires global-memory tensors")
+        if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
+            raise BackendNotImplementedError("aster_exec add requires matching tensor shapes")
+        if lhs_spec.dtype != "f32" or rhs_spec.dtype != "f32" or dst_spec.dtype != "f32":
+            raise BackendNotImplementedError("aster_exec add currently supports f32 tensors only")
+        if len(lhs_spec.shape) != 1:
+            raise BackendNotImplementedError("aster_exec add currently supports 1D tensors only")
+        if (
+            lhs_spec.resolved_layout().stride != (1,)
+            or rhs_spec.resolved_layout().stride != (1,)
+            or dst_spec.resolved_layout().stride != (1,)
+        ):
+            raise BackendNotImplementedError("aster_exec add currently requires contiguous 1D tensors")
+        element_count = lhs_spec.shape[0]
+        if element_count <= 0 or element_count % 4 != 0:
+            raise BackendNotImplementedError("aster_exec add requires a 1D element count that is a positive multiple of 4")
+        return _Add1DF32Match(
+            lhs_name=lhs_arg.name,
+            rhs_name=rhs_arg.name,
+            dst_name=dst_arg.name,
+            shape=lhs_spec.shape,
+            vector_chunks=element_count // 4,
+        )
+
+    def _render_add_1d_f32(self, match: _Add1DF32Match, kernel_name: str, target: AMDTarget) -> str:
+        return _ADD_1D_F32_TEMPLATE.format(
             target=target.arch,
             isa=self._target_isa(target),
             kernel_name=kernel_name,
