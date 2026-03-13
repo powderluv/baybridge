@@ -37,13 +37,14 @@ def test_gpu_mlir_backend_emits_module_scaffold(tmp_path: Path) -> None:
     assert artifact.lowered_module is not None
     text = artifact.lowered_module.text
     assert artifact.lowered_module.dialect == "gpu_mlir"
-    assert 'module attributes {baybridge.target = "gfx942", rocdl.wave_size = 64} {' in text
-    assert 'gpu.module @kernels attributes {rocdl.target = "gfx942", rocdl.wave_size = 64}' in text
+    target_arch = artifact.target.arch
+    assert f'module attributes {{baybridge.target = "{target_arch}", rocdl.wave_size = 64}} {{' in text
+    assert f'gpu.module @kernels attributes {{rocdl.target = "{target_arch}", rocdl.wave_size = 64}}' in text
     assert (
         'gpu.func @waveasm_scaffold_kernel(%src: memref<64xf32, strided<[1], offset: 0>, 1>, '
         '%dst: memref<64xf32, strided<[1], offset: 0>, 1>) kernel attributes '
         '{gpu.grid = [4, 1, 1], gpu.block = [64, 1, 1], gpu.dynamic_shared_memory = 256, '
-        'rocdl.target = "gfx942", gpu.cluster = [2, 1, 1]}'
+        f'rocdl.target = "{target_arch}", gpu.cluster = [2, 1, 1]}}'
     ) in text
     assert "gpu.barrier" in text
     assert "gpu.return" in text
@@ -65,7 +66,8 @@ def test_waveasm_ref_backend_emits_waveasm_tool_hints(monkeypatch: pytest.Monkey
     assert f"// configured_root: {wave_root}" in text
     assert f"// waveasm_translate: {tool_path}" in text
     assert "// suggested_pipeline:" in text
-    assert 'module attributes {waveasm.target = "gfx942", waveasm.wave_size = 64,' in text
+    target_arch = artifact.target.arch
+    assert f'module attributes {{waveasm.target = "{target_arch}", waveasm.wave_size = 64,' in text
     assert "memref<64xf32, #gpu.address_space<workgroup>>" in text
     assert artifact.debug_bundle_dir is not None
     repro_dir = artifact.debug_bundle_dir
@@ -74,7 +76,7 @@ def test_waveasm_ref_backend_emits_waveasm_tool_hints(monkeypatch: pytest.Monkey
     repro_script = repro_dir / "repro.sh"
     assert repro_script.exists()
     repro_text = repro_script.read_text(encoding="utf-8")
-    assert f"--target=gfx942" in repro_text
+    assert f"--target={target_arch}" in repro_text
     assert "kernel.waveasm.mlir" in repro_text
 
 

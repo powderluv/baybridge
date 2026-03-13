@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .backend import Backend, LoweredModule
 from .backends import (
     AsterRefBackend,
+    AsterExecBackend,
     FlyDslExecBackend,
     FlyDslRefBackend,
     GpuMlirBackend,
@@ -124,6 +125,8 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, None
         if backend == "aster_ref":
             return backend, AsterRefBackend()
+        if backend == "aster_exec":
+            return backend, AsterExecBackend()
         if backend == "mlir_text":
             return backend, MlirTextBackend()
         if backend == "gpu_mlir":

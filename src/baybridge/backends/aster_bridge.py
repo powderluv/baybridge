@@ -139,6 +139,7 @@ class AsterBridge:
         configured_root = self.configured_root()
         if configured_root is not None:
             for relative in (
+                (".aster-baybridge", "python_packages", "aster"),
                 (".aster", "python_packages", "aster"),
                 ("build", "python_packages", "aster"),
                 ("python", "aster"),
@@ -160,6 +161,7 @@ class AsterBridge:
         configured_root = self.configured_root()
         if configured_root is not None:
             for relative in (
+                (".aster-baybridge", "bin", name),
                 ("build", "bin", name),
                 (".aster", "bin", name),
                 ("bin", name),
@@ -173,6 +175,22 @@ class AsterBridge:
             if candidate.exists():
                 return str(candidate)
         return shutil.which(name)
+
+    def install_root(self) -> Path | None:
+        configured_root = self.configured_root()
+        if configured_root is not None:
+            for relative in (
+                (".aster-baybridge",),
+                (".aster",),
+                ("build",),
+            ):
+                candidate = configured_root.joinpath(*relative)
+                if candidate.exists():
+                    return candidate
+        python_package_root = self.python_package_root()
+        if python_package_root is None:
+            return None
+        return python_package_root.parent.parent
 
     def _find_spec(self, name: str):
         try:

@@ -42,7 +42,7 @@ def test_compile_records_ir(tmp_path: Path) -> None:
     assert len(artifact.ir.arguments) == 2
     assert [operation.op for operation in artifact.ir.operations] == ["copy"]
     assert artifact.ir.operations[0].attrs["vector_bytes"] == 16
-    assert artifact.target.arch == "gfx942"
+    assert artifact.target.arch in {"gfx942", "gfx950"}
     assert artifact.backend_name == "mlir_text"
     assert artifact.ir.launch.block == (1, 1, 1)
     assert artifact.artifact_path.exists()

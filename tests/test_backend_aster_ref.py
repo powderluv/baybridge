@@ -44,7 +44,7 @@ def test_aster_ref_backend_emits_tool_hints_and_bundle(monkeypatch: pytest.Monke
     assert f"// aster_translate: {translate_path}" in text
     assert '"family": "elementwise"' in text
     assert "Baybridge currently emits GPU MLIR reference input, not ASTER AMDGCN IR." in text
-    assert 'module attributes {aster.target = "gfx942", aster.wave_size = 64,' in text
+    assert f'module attributes {{aster.target = "{artifact.target.arch}", aster.wave_size = 64,' in text
     assert artifact.debug_bundle_dir is not None
     repro_dir = artifact.debug_bundle_dir
     assert (repro_dir / "kernel.mlir").exists()

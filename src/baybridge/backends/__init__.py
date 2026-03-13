@@ -1,4 +1,5 @@
 from .aster_bridge import AsterBridge
+from .aster_exec import AsterExecBackend
 from .aster_ref import AsterRefBackend
 from .flydsl_exec import FlyDslExecBackend
 from .flydsl_ref import FlyDslRefBackend
@@ -14,6 +15,7 @@ from .waveasm_ref import WaveAsmRefBackend
 
 __all__ = [
     "AsterBridge",
+    "AsterExecBackend",
     "AsterRefBackend",
     "FlyDslExecBackend",
     "FlyDslRefBackend",

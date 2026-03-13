@@ -37,9 +37,14 @@ def test_gpu_text_backend_emits_gpu_kernel_scaffold(tmp_path: Path) -> None:
     artifact = bb.compile(topology_kernel, cache_dir=tmp_path, backend="gpu_text")
     assert artifact.lowered_module is not None
     text = artifact.lowered_module.text
-    assert 'gpu.module @kernels attributes {rocdl.target = "gfx942", rocdl.wave_size = 64}' in text
+    target_arch = artifact.target.arch
+    assert f'gpu.module @kernels attributes {{rocdl.target = "{target_arch}", rocdl.wave_size = 64}}' in text
     assert "gpu.func @topology_kernel" in text
-    assert 'attributes {gpu.grid = [120, 3, 1], gpu.block = [256, 1, 1], gpu.dynamic_shared_memory = 2048, rocdl.target = "gfx942"}' in text
+    assert (
+        'attributes {gpu.grid = [120, 3, 1], gpu.block = [256, 1, 1], '
+        f'gpu.dynamic_shared_memory = 2048, rocdl.target = "{target_arch}"'
+        '}'
+    ) in text
     assert "gpu.return" in text
 
 

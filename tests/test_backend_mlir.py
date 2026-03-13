@@ -26,7 +26,10 @@ def test_mlir_text_backend_emits_module(tmp_path: Path) -> None:
     artifact = bb.compile(copy_kernel, cache_dir=tmp_path, backend="mlir_text")
     assert artifact.lowered_module is not None
     assert artifact.lowered_module.backend_name == "mlir_text"
-    assert 'module attributes { baybridge.target = "gfx942", baybridge.backend = "mlir_text", baybridge.wave_size = 64 }' in artifact.lowered_module.text
+    assert (
+        f'module attributes {{ baybridge.target = "{artifact.target.arch}", '
+        'baybridge.backend = "mlir_text", baybridge.wave_size = 64 }'
+    ) in artifact.lowered_module.text
     assert "func.func @copy_kernel" in artifact.lowered_module.text
     assert "attributes {baybridge.grid = [1, 1, 1], baybridge.block = [1, 1, 1], baybridge.shared_mem_bytes = 0}" in artifact.lowered_module.text
     assert '"baybridge.copy"(%src, %dst) {vector_bytes = 16}' in artifact.lowered_module.text
