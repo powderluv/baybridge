@@ -303,7 +303,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
-_SCALAR_ADD_TEMPLATE = """// baybridge.aster_exec
+_SCALAR_BINARY_TEMPLATE = """// baybridge.aster_exec
 !sx2 = !amdgcn.sgpr<[? + 2]>
 !v = !amdgcn.vgpr
 !tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
@@ -341,7 +341,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     return
   }}
 
-  func.func private @scalar_add_body(
+  func.func private @scalar_binary_body(
     %idx: index,
     %lhs_memref: memref<?x!v>,
     %rhs_memref: memref<?x!v>,
@@ -355,7 +355,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     return
   }}
 
-  func.func private @add_scalar_loop(
+  func.func private @binary_scalar_loop(
     %num_elements: index,
     %lhs_global: !sx2,
     %rhs_global: !sx2,
@@ -383,7 +383,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
       func.call @global_load_body_scalar(%rhs_pos_desc, %i, %rhs_memref)
         {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
         : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
-      func.call @scalar_add_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
+      func.call @scalar_binary_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
         {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
         : (index, memref<?x!v>, memref<?x!v>, memref<?x!v>) -> ()
       func.call @global_store_body_scalar(%dst_pos_desc, %i, %dst_memref)
@@ -405,7 +405,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %lhs_ptr, %rhs_ptr, %dst_ptr = lsir.assume_noalias %lhs_ptr_s, %rhs_ptr_s, %dst_ptr_s : (!sx2, !sx2, !sx2) -> (!sx2, !sx2, !sx2)
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
     %num_elements = arith.constant {element_count} : index
-    func.call @add_scalar_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
+    func.call @binary_scalar_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
     amdgcn.end_kernel
   }}
 }}
@@ -446,7 +446,7 @@ class _Binary1DMatch:
 
 
 @dataclass(frozen=True)
-class _AddScalarMatch:
+class _BinaryScalarMatch:
     lhs_name: str
     rhs_name: str
     dst_name: str
@@ -497,7 +497,7 @@ class AsterExecBackend:
         elif isinstance(match, _Binary1DMatch):
             text = self._render_binary_1d(match, ir.name, target)
         else:
-            text = self._render_add_scalar(match, ir.name, target)
+            text = self._render_binary_scalar(match, ir.name, target)
         return LoweredModule(
             backend_name=self.name,
             entry_point=ir.name,
@@ -596,7 +596,7 @@ class AsterExecBackend:
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
-    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _CopyScalarMatch | _Binary1DMatch | _AddScalarMatch:
+    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _CopyScalarMatch | _Binary1DMatch | _BinaryScalarMatch:
         if len(ir.arguments) == 2:
             return self._match_copy_1d(ir, target)
         if len(ir.arguments) == 3:
@@ -669,7 +669,7 @@ class AsterExecBackend:
             element_count=match.element_count,
         )
 
-    def _match_binary_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DMatch:
+    def _match_binary_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DMatch | _BinaryScalarMatch:
         if target.arch not in {"gfx942", "gfx950"}:
             raise BackendNotImplementedError(f"aster_exec does not support target arch '{target.arch}'")
         if target.wave_size != 64:
@@ -699,9 +699,9 @@ class AsterExecBackend:
         rhs_spec = rhs_arg.spec
         dst_spec = dst_arg.spec
         if lhs_spec.address_space.value != "global" or rhs_spec.address_space.value != "global" or dst_spec.address_space.value != "global":
-            raise BackendNotImplementedError("aster_exec add currently requires global-memory tensors")
+            raise BackendNotImplementedError("aster_exec pointwise binary ops currently require global-memory tensors")
         if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
-            raise BackendNotImplementedError("aster_exec add requires matching tensor shapes")
+            raise BackendNotImplementedError("aster_exec pointwise binary ops require matching tensor shapes")
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require matching tensor dtypes")
         if (
@@ -733,8 +733,8 @@ class AsterExecBackend:
                 "aster_exec currently supports f32 and i32 add/sub/mul/div only"
             )
         binary_name, lsir_op, value_type = supported_for_dtype[binary_op]
-        if binary_op == "tensor_add" and lhs_spec.dtype in {"f32", "i32"} and element_count % 4 != 0:
-            return _AddScalarMatch(
+        if lhs_spec.dtype in {"f32", "i32"} and element_count % 4 != 0:
+            return _BinaryScalarMatch(
                 lhs_name=lhs_arg.name,
                 rhs_name=rhs_arg.name,
                 dst_name=dst_arg.name,
@@ -746,7 +746,7 @@ class AsterExecBackend:
             )
         if element_count % 4 != 0:
             raise BackendNotImplementedError(
-                "aster_exec pointwise binary ops require a contiguous element count that is a positive multiple of 4 unless scalar add fallback applies"
+                "aster_exec pointwise binary ops require a contiguous element count aligned to the vector path for this dtype"
             )
         return _Binary1DMatch(
             lhs_name=lhs_arg.name,
@@ -772,8 +772,8 @@ class AsterExecBackend:
             value_type=match.value_type,
         )
 
-    def _render_add_scalar(self, match: _AddScalarMatch, kernel_name: str, target: AMDTarget) -> str:
-        return _SCALAR_ADD_TEMPLATE.format(
+    def _render_binary_scalar(self, match: _BinaryScalarMatch, kernel_name: str, target: AMDTarget) -> str:
+        return _SCALAR_BINARY_TEMPLATE.format(
             target=target.arch,
             isa=self._target_isa(target),
             kernel_name=kernel_name,

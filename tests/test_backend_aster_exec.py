@@ -41,6 +41,33 @@ def aster_exec_add_tail_kernel(
 
 
 @bb.kernel
+def aster_exec_sub_tail_kernel(
+    src: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    other: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    dst: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+):
+    dst.store(src.load() - other.load())
+
+
+@bb.kernel
+def aster_exec_mul_tail_kernel(
+    src: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    other: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    dst: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+):
+    dst.store(src.load() * other.load())
+
+
+@bb.kernel
+def aster_exec_div_tail_kernel(
+    src: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    other: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+    dst: bb.TensorSpec(shape=(2, 5), dtype="f32"),
+):
+    dst.store(src.load() / other.load())
+
+
+@bb.kernel
 def aster_exec_add_i32_kernel(
     src: bb.TensorSpec(shape=(16,), dtype="i32"),
     other: bb.TensorSpec(shape=(16,), dtype="i32"),
@@ -56,6 +83,33 @@ def aster_exec_add_i32_tail_kernel(
     dst: bb.TensorSpec(shape=(10,), dtype="i32"),
 ):
     dst.store(src.load() + other.load())
+
+
+@bb.kernel
+def aster_exec_sub_i32_tail_kernel(
+    src: bb.TensorSpec(shape=(10,), dtype="i32"),
+    other: bb.TensorSpec(shape=(10,), dtype="i32"),
+    dst: bb.TensorSpec(shape=(10,), dtype="i32"),
+):
+    dst.store(src.load() - other.load())
+
+
+@bb.kernel
+def aster_exec_mul_i32_tail_kernel(
+    src: bb.TensorSpec(shape=(10,), dtype="i32"),
+    other: bb.TensorSpec(shape=(10,), dtype="i32"),
+    dst: bb.TensorSpec(shape=(10,), dtype="i32"),
+):
+    dst.store(src.load() * other.load())
+
+
+@bb.kernel
+def aster_exec_div_i32_tail_kernel(
+    src: bb.TensorSpec(shape=(10,), dtype="i32"),
+    other: bb.TensorSpec(shape=(10,), dtype="i32"),
+    dst: bb.TensorSpec(shape=(10,), dtype="i32"),
+):
+    dst.store(src.load() / other.load())
 
 
 @bb.kernel
@@ -345,6 +399,14 @@ def _matrix_const_i32(value: int) -> list[list[int]]:
     return [[value for _ in range(4)] for _ in range(4)]
 
 
+def _tail_matrix_f32() -> list[list[float]]:
+    return [[float(5 * row + col) for col in range(5)] for row in range(2)]
+
+
+def _tail_matrix_const_f32(value: float) -> list[list[float]]:
+    return [[value for _ in range(5)] for _ in range(2)]
+
+
 def _binary_nested(lhs: list[list[float | int]], rhs: list[list[float | int]], op: str) -> list[list[float | int]]:
     if op == "add":
         return [[left + right for left, right in zip(lhs_row, rhs_row, strict=True)] for lhs_row, rhs_row in zip(lhs, rhs, strict=True)]
@@ -369,6 +431,18 @@ I32_2D_BINARY_CASES = [
     ("sub", aster_exec_sub_2d_i32_kernel, _matrix_const_i32(2)),
     ("mul", aster_exec_mul_2d_i32_kernel, _matrix_const_i32(3)),
     ("div", aster_exec_div_2d_i32_kernel, _matrix_const_i32(2)),
+]
+
+F32_TAIL_BINARY_CASES = [
+    ("sub", aster_exec_sub_tail_kernel, _tail_matrix_const_f32(1.0)),
+    ("mul", aster_exec_mul_tail_kernel, _tail_matrix_const_f32(1.5)),
+    ("div", aster_exec_div_tail_kernel, _tail_matrix_const_f32(2.0)),
+]
+
+I32_TAIL_BINARY_CASES = [
+    ("sub", aster_exec_sub_i32_tail_kernel, [2 for _ in range(10)]),
+    ("mul", aster_exec_mul_i32_tail_kernel, [3 for _ in range(10)]),
+    ("div", aster_exec_div_i32_tail_kernel, [2 for _ in range(10)]),
 ]
 
 
@@ -680,6 +754,64 @@ def test_compile_auto_prefers_aster_exec_for_matching_i32_add_tail_kernel(
     assert artifact.backend_name == "aster_exec"
     artifact(src, other, dst)
     assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+
+
+@pytest.mark.parametrize("op_name,kernel,other_values", F32_TAIL_BINARY_CASES)
+def test_compile_auto_prefers_aster_exec_for_matching_other_tail_f32_binary_kernels(
+    op_name: str,
+    kernel,
+    other_values: list[list[float]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor(_tail_matrix_f32(), dtype="f32")
+    other = bb.tensor(other_values, dtype="f32")
+    dst = bb.zeros((2, 5), dtype="f32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == _binary_nested(src.tolist(), other.tolist(), op_name)
+
+
+@pytest.mark.parametrize("op_name,kernel,other_values", I32_TAIL_BINARY_CASES)
+def test_compile_auto_prefers_aster_exec_for_matching_other_tail_i32_binary_kernels(
+    op_name: str,
+    kernel,
+    other_values: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor(list(range(10)), dtype="i32")
+    other = bb.tensor(other_values, dtype="i32")
+    dst = bb.zeros((10,), dtype="i32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    if op_name == "sub":
+        expected = [left - right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    elif op_name == "mul":
+        expected = [left * right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    else:
+        expected = [left // right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    assert dst.tolist() == expected
 
 
 def test_compile_auto_prefers_aster_exec_for_matching_i32_sub_kernel(
@@ -1305,6 +1437,80 @@ def test_aster_exec_runs_i32_add_tail_on_amd_hardware(tmp_path: Path) -> None:
     assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
 
 
+@pytest.mark.parametrize("op_name,kernel,other_values", F32_TAIL_BINARY_CASES)
+def test_aster_exec_runs_other_tail_f32_binary_on_amd_hardware(
+    op_name: str,
+    kernel,
+    other_values: list[list[float]],
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor(_tail_matrix_f32(), dtype="f32")
+    other = bb.tensor(other_values, dtype="f32")
+    dst = bb.zeros((2, 5), dtype="f32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(src, other, dst)
+    assert dst.tolist() == _binary_nested(src.tolist(), other.tolist(), op_name)
+
+
+@pytest.mark.parametrize("op_name,kernel,other_values", I32_TAIL_BINARY_CASES)
+def test_aster_exec_runs_other_tail_i32_binary_on_amd_hardware(
+    op_name: str,
+    kernel,
+    other_values: list[int],
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor(list(range(10)), dtype="i32")
+    other = bb.tensor(other_values, dtype="i32")
+    dst = bb.zeros((10,), dtype="i32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(src, other, dst)
+    if op_name == "sub":
+        expected = [left - right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    elif op_name == "mul":
+        expected = [left * right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    else:
+        expected = [left // right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    assert dst.tolist() == expected
+
+
 def test_aster_exec_runs_i32_sub_on_amd_hardware(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
@@ -1861,6 +2067,80 @@ def test_compile_auto_prefers_aster_exec_for_i32_add_tail_on_amd_hardware(tmp_pa
     assert artifact.backend_name == "aster_exec"
     artifact(src, other, dst)
     assert dst.tolist() == [left + right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+
+
+@pytest.mark.parametrize("op_name,kernel,other_values", F32_TAIL_BINARY_CASES)
+def test_compile_auto_prefers_aster_exec_for_other_tail_f32_binary_on_amd_hardware(
+    op_name: str,
+    kernel,
+    other_values: list[list[float]],
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor(_tail_matrix_f32(), dtype="f32")
+    other = bb.tensor(other_values, dtype="f32")
+    dst = bb.zeros((2, 5), dtype="f32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == _binary_nested(src.tolist(), other.tolist(), op_name)
+
+
+@pytest.mark.parametrize("op_name,kernel,other_values", I32_TAIL_BINARY_CASES)
+def test_compile_auto_prefers_aster_exec_for_other_tail_i32_binary_on_amd_hardware(
+    op_name: str,
+    kernel,
+    other_values: list[int],
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor(list(range(10)), dtype="i32")
+    other = bb.tensor(other_values, dtype="i32")
+    dst = bb.zeros((10,), dtype="i32")
+
+    artifact = bb.compile(
+        kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    if op_name == "sub":
+        expected = [left - right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    elif op_name == "mul":
+        expected = [left * right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    else:
+        expected = [left // right for left, right in zip(src.tolist(), other.tolist(), strict=True)]
+    assert dst.tolist() == expected
 
 
 def test_compile_auto_prefers_aster_exec_for_i32_sub_on_amd_hardware(tmp_path: Path) -> None:
