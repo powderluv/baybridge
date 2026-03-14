@@ -16,11 +16,11 @@ That split matters because some backends are integrated and tested, but still de
 Current repo state during this documentation pass:
 - branch: `main`
 - latest committed ASTER expansion: `6653146` `Expand ASTER exec dense broadcast support`
-- worktree is dirty because `src/baybridge/backends/aster_exec.py` still has an in-progress `f16` even-tail copy change that has not been validated yet
+- worktree is dirty because `src/baybridge/backends/aster_exec.py`, `src/baybridge/hip_runtime.py`, `tests/test_backend_aster_exec.py`, and `tests/test_hip_runtime.py` contain an uncommitted ASTER runtime-bootstrap and support-correction batch
 
 Focused local validation after the shared tooling updates in this pass:
-- `tests/test_backend_waveasm_ref.py tests/test_backend_aster_exec.py`
-- result: `66 passed, 93 skipped`
+- `tests/test_backend_aster_exec.py tests/test_hip_runtime.py -k 'not amd_hardware'`
+- result: `47 passed, 80 deselected`
 
 ## Backend Inventory
 
@@ -38,7 +38,7 @@ Focused local validation after the shared tooling updates in this pass:
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow pointwise/shared-memory subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
-| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul/div`; scalar broadcast from dense single-element tensors; 1D and 2D dense tensors | Benchmarked execution is currently less stable than pytest validation; see benchmark notes below |
+| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul`; scalar broadcast from dense single-element tensors for supported binary ops; 1D and 2D dense tensors | `div` is intentionally not supported; standalone benchmark-shell execution is still less stable than focused pytest execution |
 
 ## Execution Coverage Matrix
 
@@ -47,8 +47,8 @@ Focused local validation after the shared tooling updates in this pass:
 | Dense contiguous `f32` copy | Yes | No | Real validated 1D only | Yes | Experimental only |
 | Dense contiguous `i32` copy | Yes | No | No | Yes | Experimental only |
 | Dense contiguous `f16` copy | Yes | No | No | Yes | Experimental only |
-| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only | Yes | Experimental only |
-| Dense contiguous `i32` binary `add/sub/mul/div` | Yes | No | No | Yes | No |
+| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only | Add/sub/mul only | Experimental only |
+| Dense contiguous `i32` binary `add/sub/mul/div` | Yes | No | No | Add/sub/mul only | No |
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
 | Tensor reductions | Yes | No | Executable in Baybridge-side lowering; real upstream validation is still narrower | No | No |
 | Shared-memory staging | Yes | No | Integrated, but real upstream shared-memory validation is still incomplete | No | Experimental only |
@@ -81,8 +81,8 @@ Benchmark notes:
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `33.52` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `0.84` | Narrow supported microkernel family |
-| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Ad hoc benchmark run hung in the current shell environment |
-| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Ad hoc benchmark run hung in the current shell environment |
+| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Standalone shell benchmark is still not stable enough to publish a comparable number |
+| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Focused pytest execution is fixed, but the ad hoc benchmark shell path is still not stable enough for the common table |
 
 ### `mi300` (`gfx942`)
 
@@ -93,8 +93,8 @@ Benchmark notes:
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `58.01` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
-| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Current ASTER runtime shell path resolves to `ImportError: libamdhip64.so.7` on this machine |
-| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Same ASTER HIP runtime ABI issue as copy |
+| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | HIP runtime bootstrap is fixed, but the standalone benchmark shell is still not stable enough to publish a comparable number |
+| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Focused pytest execution is fixed, but the ad hoc benchmark shell path is still not stable enough for the common table |
 
 ## Environment Notes Behind Missing Numbers
 
@@ -112,13 +112,19 @@ The remaining boundary is semantic, not environmental:
 
 ### ASTER
 
-`aster_exec` is integrated and has previously passed focused pytest coverage on both `gfx950` and `gfx942`, but the current ad hoc benchmark environment is not equally healthy:
-- `mi355`: the benchmark hangs once the ASTER runtime path is entered
-- `mi300`: the current shell path fails with `ImportError: libamdhip64.so.7`
+`aster_exec` is integrated and the current focused pytest path is healthy again on both `gfx950` and `gfx942` for:
+- dense contiguous copy: `f32/i32/f16`
+- dense contiguous pointwise binary: `f32/i32 add/sub/mul`
+- dense scalar-broadcast binary for the same supported ops
+
+Two important boundaries remain:
+- `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
+- the shared ad hoc benchmark shell path is still less stable than the focused pytest execution path, so ASTER remains excluded from the published runtime table
 
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
-- not yet reliable for standalone benchmark-shell measurements on both machines
+- useful for executable copy and add/sub/mul coverage
+- not yet reliable for standalone benchmark-shell measurements in the same way `hipcc_exec` and `hipkittens_exec` are
 
 ### WaveASM
 

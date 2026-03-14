@@ -235,10 +235,10 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %tmp1 = amdgcn.alloca : !amdgcn.vgpr
     %tmp2 = amdgcn.alloca : !amdgcn.vgpr
     %tmp3 = amdgcn.alloca : !amdgcn.vgpr
-    %result0 = lsir.{lsir_op} {value_type} %tmp0, %lhs0, %rhs0 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result1 = lsir.{lsir_op} {value_type} %tmp1, %lhs1, %rhs1 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result2 = lsir.{lsir_op} {value_type} %tmp2, %lhs2, %rhs2 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
-    %result3 = lsir.{lsir_op} {value_type} %tmp3, %lhs3, %rhs3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+{op_line0}
+{op_line1}
+{op_line2}
+{op_line3}
     %result = amdgcn.make_register_range %result0, %result1, %result2, %result3 : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
     memref.store %result, %dst_memref[%idx] : memref<?x!vx4>
     return
@@ -350,7 +350,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %lhs = memref.load %lhs_memref[%idx] : memref<?x!v>
     %rhs = memref.load %rhs_memref[%idx] : memref<?x!v>
     %tmp = amdgcn.alloca : !amdgcn.vgpr
-    %result = lsir.{lsir_op} {value_type} %tmp, %lhs, %rhs : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+{op_line}
     memref.store %result, %dst_memref[%idx] : memref<?x!v>
     return
   }}
@@ -459,7 +459,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %lhs = memref.load %lhs_memref[%idx] : memref<?x!v>
     %rhs = memref.load %rhs_scalar_memref[%c0] : memref<?x!v>
     %tmp = amdgcn.alloca : !amdgcn.vgpr
-    %result = lsir.{lsir_op} {value_type} %tmp, %lhs, %rhs : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+{op_line}
     memref.store %result, %dst_memref[%idx] : memref<?x!v>
     return
   }}
@@ -568,7 +568,7 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
     %lhs = memref.load %lhs_scalar_memref[%c0] : memref<?x!v>
     %rhs = memref.load %rhs_memref[%idx] : memref<?x!v>
     %tmp = amdgcn.alloca : !amdgcn.vgpr
-    %result = lsir.{lsir_op} {value_type} %tmp, %lhs, %rhs : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+{op_line}
     memref.store %result, %dst_memref[%idx] : memref<?x!v>
     return
   }}
@@ -659,8 +659,9 @@ class _Binary1DMatch:
     vector_chunks: int
     op: str
     binary_name: str
-    lsir_op: str
-    value_type: str
+    op_kind: str
+    op_name: str
+    value_type: str | None
 
 
 @dataclass(frozen=True)
@@ -671,8 +672,9 @@ class _BinaryScalarMatch:
     dtype: str
     shape: tuple[int, ...]
     element_count: int
-    lsir_op: str
-    value_type: str
+    op_kind: str
+    op_name: str
+    value_type: str | None
     rhs_broadcast: bool = False
     lhs_broadcast: bool = False
 
@@ -982,22 +984,20 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require a positive contiguous element count")
         dtype_support = {
             "f32": {
-                "tensor_add": ("add", "addf", "f32"),
-                "tensor_sub": ("sub", "subf", "f32"),
-                "tensor_mul": ("mul", "mulf", "f32"),
-                "tensor_div": ("div", "divf", "f32"),
+                "tensor_add": ("add", "vop2", "v_add_f32", None),
+                "tensor_sub": ("sub", "vop2", "v_sub_f32", None),
+                "tensor_mul": ("mul", "vop2", "v_mul_f32", None),
             },
             "i32": {
-                "tensor_add": ("add", "addi", "i32"),
-                "tensor_sub": ("sub", "subi", "i32"),
-                "tensor_mul": ("mul", "muli", "i32"),
-                "tensor_div": ("div", "divsi", "i32"),
+                "tensor_add": ("add", "vop2", "v_add_u32", None),
+                "tensor_sub": ("sub", "vop2", "v_sub_u32", None),
+                "tensor_mul": ("mul", "vop3", "v_mul_lo_u32", None),
             },
         }
         supported_for_dtype = dtype_support.get(lhs_spec.dtype)
         if supported_for_dtype is None or binary_op not in supported_for_dtype:
             raise BackendNotImplementedError(
-                "aster_exec currently supports f32 and i32 add/sub/mul/div only"
+                "aster_exec currently supports f32 and i32 add/sub/mul only"
             )
         if rhs_broadcast or lhs_broadcast:
             broadcast_op = ir.operations[4] if rhs_broadcast else ir.operations[2]
@@ -1016,7 +1016,7 @@ class AsterExecBackend:
                 raise BackendNotImplementedError(
                     "aster_exec currently requires a scalar broadcast layout with zero strides"
                 )
-        binary_name, lsir_op, value_type = supported_for_dtype[binary_op]
+        binary_name, op_kind, op_name, value_type = supported_for_dtype[binary_op]
         if lhs_spec.dtype in {"f32", "i32"} and element_count % 4 != 0:
             return _BinaryScalarMatch(
                 lhs_name=lhs_arg.name,
@@ -1025,7 +1025,8 @@ class AsterExecBackend:
                 dtype=lhs_spec.dtype,
                 shape=dense_shape,
                 element_count=element_count,
-                lsir_op=lsir_op,
+                op_kind=op_kind,
+                op_name=op_name,
                 value_type=value_type,
                 rhs_broadcast=rhs_broadcast,
                 lhs_broadcast=lhs_broadcast,
@@ -1047,19 +1048,26 @@ class AsterExecBackend:
             vector_chunks=element_count // 4,
             op=binary_op,
             binary_name=binary_name,
-            lsir_op=lsir_op,
+            op_kind=op_kind,
+            op_name=op_name,
             value_type=value_type,
         )
 
     def _render_binary_1d(self, match: _Binary1DMatch, kernel_name: str, target: AMDTarget) -> str:
+        op_lines = [
+            self._render_binary_vgpr_op(match, f"%result{index}", f"%tmp{index}", f"%lhs{index}", f"%rhs{index}")
+            for index in range(4)
+        ]
         return _BINARY_1D_TEMPLATE.format(
             target=target.arch,
             isa=self._target_isa(target),
             kernel_name=kernel_name,
             vector_chunks=match.vector_chunks,
             binary_name=match.binary_name,
-            lsir_op=match.lsir_op,
-            value_type=match.value_type,
+            op_line0=op_lines[0],
+            op_line1=op_lines[1],
+            op_line2=op_lines[2],
+            op_line3=op_lines[3],
         )
 
     def _render_binary_scalar(self, match: _BinaryScalarMatch, kernel_name: str, target: AMDTarget) -> str:
@@ -1074,8 +1082,25 @@ class AsterExecBackend:
             isa=self._target_isa(target),
             kernel_name=kernel_name,
             element_count=match.element_count,
-            lsir_op=match.lsir_op,
-            value_type=match.value_type,
+            op_line=self._render_binary_vgpr_op(match, "%result", "%tmp", "%lhs", "%rhs"),
+        )
+
+    def _render_binary_vgpr_op(
+        self,
+        match: _Binary1DMatch | _BinaryScalarMatch,
+        result_name: str,
+        temp_name: str,
+        lhs_name: str,
+        rhs_name: str,
+    ) -> str:
+        if match.op_kind == "lsir":
+            return (
+                f"    {result_name} = lsir.{match.op_name} {match.value_type} "
+                f"{temp_name}, {lhs_name}, {rhs_name} : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr"
+            )
+        return (
+            f"    {result_name} = amdgcn.{match.op_kind} {match.op_name} "
+            f"outs {temp_name} ins {lhs_name}, {rhs_name} : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr"
         )
 
     def _target_isa(self, target: AMDTarget) -> str:
@@ -1091,9 +1116,22 @@ class AsterExecBackend:
         if python_package_root is None:
             raise BackendNotImplementedError("aster_exec requires an importable ASTER python package")
         load_hip_library(global_scope=True)
-        package_parent = str(Path(python_package_root).parent)
+        package_root = Path(python_package_root)
+        package_parent = str(package_root.parent)
         if package_parent not in sys.path:
             sys.path.insert(0, package_parent)
+        mlir_lib_root = package_root / "_mlir_libs"
+        if mlir_lib_root.exists():
+            preload_names = [
+                "libMLIRPythonSupport-mlir.so",
+                "libnanobind-mlir.so",
+                "libASTER.so.23.0git",
+                "libASTER.so",
+            ]
+            for name in preload_names:
+                candidate = mlir_lib_root / name
+                if candidate.exists():
+                    ctypes.CDLL(str(candidate), mode=getattr(ctypes, "RTLD_GLOBAL", 0))
         return {
             "ir": importlib.import_module("aster.ir"),
             "utils": importlib.import_module("aster.utils"),

@@ -31,18 +31,37 @@ def _hip_library_candidates() -> list[str]:
         libdir = Path(candidate)
         candidates.extend(
             [
-                libdir / "libamdhip64.so",
                 libdir / "libamdhip64.so.7",
+                libdir / "libamdhip64.so",
+            ]
+        )
+        candidates.extend(Path(path) for path in sorted(glob(str(libdir / "libamdhip64.so.*"))))
+    # Prefer the active Python environment's ROCm runtime before host ROCm installs.
+    for candidate in glob(str(prefix / "lib" / "python*" / "site-packages" / "torch" / "lib")):
+        libdir = Path(candidate)
+        candidates.extend(
+            [
+                libdir / "libamdhip64.so.7",
+                libdir / "libamdhip64.so",
+            ]
+        )
+        candidates.extend(Path(path) for path in sorted(glob(str(libdir / "libamdhip64.so.*"))))
+    for candidate in glob(str(prefix / "lib" / "python*" / "site-packages" / "triton" / "backends" / "amd" / "lib")):
+        libdir = Path(candidate)
+        candidates.extend(
+            [
+                libdir / "libamdhip64.so.7",
+                libdir / "libamdhip64.so",
             ]
         )
         candidates.extend(Path(path) for path in sorted(glob(str(libdir / "libamdhip64.so.*"))))
     for root in [Path("/opt/rocm/lib"), Path("/opt/rocm/lib64"), Path("/usr/lib"), Path("/usr/lib64")]:
-        candidates.extend([root / "libamdhip64.so", root / "libamdhip64.so.7"])
-    for root in sorted(glob("/opt/rocm-*")):
+        candidates.extend([root / "libamdhip64.so.7", root / "libamdhip64.so"])
+    for root in sorted(glob("/opt/rocm-*"), reverse=True):
         path_root = Path(root)
         for subdir in ("lib", "lib64"):
             libdir = path_root / subdir
-            candidates.extend([libdir / "libamdhip64.so", libdir / "libamdhip64.so.7"])
+            candidates.extend([libdir / "libamdhip64.so.7", libdir / "libamdhip64.so"])
     deduped: list[str] = []
     seen: set[Path] = set()
     for candidate in candidates:
