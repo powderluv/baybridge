@@ -15,12 +15,16 @@ That split matters because some backends are integrated and tested, but still de
 
 Current repo state during this documentation pass:
 - branch: `main`
-- latest committed ASTER expansion: `6653146` `Expand ASTER exec dense broadcast support`
-- worktree is dirty because `src/baybridge/backends/aster_exec.py`, `src/baybridge/hip_runtime.py`, `tests/test_backend_aster_exec.py`, and `tests/test_hip_runtime.py` contain an uncommitted ASTER runtime-bootstrap and support-correction batch
+- latest committed ASTER/runtime fix: `b21303b` `Fix ASTER exec support and runtime bootstrap`
+- worktree is dirty because the benchmark harness and status doc now include an ASTER-specific microbenchmark path:
+  - `tools/backend_benchmark_kernels.py`
+  - `tools/compare_backends.py`
+  - `tests/test_backend_benchmark_tools.py`
+  - `docs/backend-status.md`
 
 Focused local validation after the shared tooling updates in this pass:
-- `tests/test_backend_aster_exec.py tests/test_hip_runtime.py -k 'not amd_hardware'`
-- result: `47 passed, 80 deselected`
+- `tests/test_backend_benchmark_tools.py tests/test_backend_waveasm_ref.py -k 'benchmark_tools or compare_backends or emit_waveasm_repro'`
+- result: `14 passed, 1 skipped, 4 deselected`
 
 ## Backend Inventory
 
@@ -66,9 +70,10 @@ Benchmark notes:
 - compile is done once before measurement
 - each run uses `--repeat 7`
 - the first execution is usually a clear cold-start outlier
-- the tables below report the median of the seven recorded executions, which is effectively a warm-run number because six of the seven samples are steady-state
+- the tables below report the median of the six warm runs after dropping the first cold-start outlier
 - pointwise benchmark size: `65536` elements
 - GEMM benchmark shape: `32x16 * 16x32 -> 32x32`
+- ASTER microbenchmark size: `4096` elements
 
 ## Performance Snapshot
 
@@ -81,8 +86,8 @@ Benchmark notes:
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `33.52` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `0.84` | Narrow supported microkernel family |
-| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Standalone shell benchmark is still not stable enough to publish a comparable number |
-| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Focused pytest execution is fixed, but the ad hoc benchmark shell path is still not stable enough for the common table |
+| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
+| Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 
 ### `mi300` (`gfx942`)
 
@@ -93,8 +98,37 @@ Benchmark notes:
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `58.01` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
-| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | HIP runtime bootstrap is fixed, but the standalone benchmark shell is still not stable enough to publish a comparable number |
-| Dense `f32` add, `65536` elements | `aster_exec` | n/a | Focused pytest execution is fixed, but the ad hoc benchmark shell path is still not stable enough for the common table |
+| Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
+| Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
+
+## ASTER Microbenchmark Snapshot
+
+These are real checked-in-tool measurements for the current validated ASTER subset, using:
+- kernel/sample module: [`tools/backend_benchmark_kernels.py`](/home/nod/github/baybridge/tools/backend_benchmark_kernels.py)
+- runner: [`tools/compare_backends.py`](/home/nod/github/baybridge/tools/compare_backends.py)
+- ASTER-specific sample factories:
+  - `aster_dense_copy_f32_args`
+  - `aster_dense_add_f32_args`
+
+They are intentionally broken out from the common `65536`-element table above because ASTER is currently benchmarked through a smaller validated microkernel path.
+
+### `mi355` (`gfx950`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| Dense `f32` copy, `4096` elements | `hipcc_exec` | `1.89` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` copy, `4096` elements | `aster_exec` | `7.33` | Real ASTER executable path |
+| Dense `f32` add, `4096` elements | `hipcc_exec` | `2.59` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` add, `4096` elements | `aster_exec` | `7.53` | Real ASTER executable path |
+
+### `mi300` (`gfx942`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| Dense `f32` copy, `4096` elements | `hipcc_exec` | `3.00` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` copy, `4096` elements | `aster_exec` | `10.62` | Real ASTER executable path |
+| Dense `f32` add, `4096` elements | `hipcc_exec` | `4.28` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` add, `4096` elements | `aster_exec` | `11.49` | Real ASTER executable path |
 
 ## Environment Notes Behind Missing Numbers
 
@@ -119,12 +153,13 @@ The remaining boundary is semantic, not environmental:
 
 Two important boundaries remain:
 - `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
-- the shared ad hoc benchmark shell path is still less stable than the focused pytest execution path, so ASTER remains excluded from the published runtime table
+- ASTER performance is currently published through a dedicated `4096`-element checked-in microbenchmark path, not the common `65536`-element table
 
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
 - useful for executable copy and add/sub/mul coverage
-- not yet reliable for standalone benchmark-shell measurements in the same way `hipcc_exec` and `hipkittens_exec` are
+- benchmarkable through the checked-in ASTER microbenchmark harness above
+- not yet a drop-in replacement for the common large-shape benchmark table used by `hipcc_exec` and `hipkittens_exec`
 
 ### WaveASM
 
@@ -175,6 +210,23 @@ BAYBRIDGE_HIPKITTENS_ROOT=$HOME/tmp/HipKittens \
   --sample-factory hipkittens_bf16_gemm_args \
   --backends hipkittens_exec \
   --target gfx942 \
+  --execute \
+  --repeat 7
+```
+
+ASTER microbenchmark example on `mi355`:
+
+```bash
+cd ~/tmp/baybridge-codex
+PATH=$PWD/.venv/bin:$PATH \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=src \
+BAYBRIDGE_ASTER_ROOT=$HOME/tmp/ASTER \
+.venv/bin/python tools/compare_backends.py \
+  tools/backend_benchmark_kernels.py dense_add_f32_kernel \
+  --sample-factory aster_dense_add_f32_args \
+  --backends aster_exec \
+  --target gfx950 \
   --execute \
   --repeat 7
 ```

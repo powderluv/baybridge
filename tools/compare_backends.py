@@ -165,6 +165,29 @@ def _module_version(name: str) -> str | None:
     return str(version) if version is not None else "imported"
 
 
+def _make_execution_synchronizer(backend_name: str, run_args: tuple[object, ...]):
+    if backend_name in {"hipcc_exec", "hipkittens_exec", "waveasm_exec", "aster_exec"}:
+        try:
+            from baybridge.hip_runtime import HipRuntime
+
+            hip = HipRuntime()
+        except Exception:
+            return None
+
+        return hip.synchronize
+    if backend_name == "flydsl_exec":
+        try:
+            torch = importlib.import_module("torch")
+        except Exception:
+            return None
+        cuda = getattr(torch, "cuda", None)
+        synchronize = getattr(cuda, "synchronize", None) if cuda is not None else None
+        if callable(synchronize):
+            return synchronize
+    del run_args
+    return None
+
+
 def _environment_metadata(target: str | None, backends: tuple[str, ...]) -> dict[str, object]:
     tracked_env = {
         key: value
@@ -307,10 +330,15 @@ def main() -> int:
                         "use device-backed DLPack run_args or install ROCm/CUDA-enabled torch"
                     )
                     continue
+            synchronize = _make_execution_synchronizer(artifact.backend_name, run_args)
             timings_ms: list[float] = []
             for _ in range(args.repeat):
+                if synchronize is not None:
+                    synchronize()
                 start = time.perf_counter()
                 artifact(*run_args)
+                if synchronize is not None:
+                    synchronize()
                 timings_ms.append((time.perf_counter() - start) * 1000.0)
             indices = result_indices
             if indices is None:
