@@ -994,9 +994,9 @@ class AsterExecBackend:
         if rhs_broadcast or lhs_broadcast:
             broadcast_op = ir.operations[4] if rhs_broadcast else ir.operations[2]
             broadcast_source_spec = rhs_spec if rhs_broadcast else lhs_spec
-            if broadcast_source_spec.shape != (1,):
+            if not self._is_dense_contiguous(broadcast_source_spec) or self._total_elements(broadcast_source_spec.shape) != 1:
                 raise BackendNotImplementedError(
-                    "aster_exec currently supports broadcast only from a single-element tensor argument"
+                    "aster_exec currently supports broadcast only from a dense single-element tensor argument"
                 )
             result_spec = broadcast_op.attrs.get("result", {})
             if tuple(result_spec.get("shape", ())) != dense_shape:
