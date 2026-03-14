@@ -3,7 +3,10 @@ from .frontend import nvgpu as _nvgpu
 
 cpasync = _nvgpu.cpasync
 warp = _nvgpu.warp
+warpgroup = _nvgpu.warpgroup
+wgmma = _nvgpu.wgmma
 tcgen05 = _nvgpu.tcgen05
+mbarrier = _nvgpu.mbarrier
 CopyUniversalOp = _nvgpu.CopyUniversalOp
 MmaUniversalOp = _nvgpu.MmaUniversalOp
 make_tiled_tma_atom_A = _nvgpu.make_tiled_tma_atom_A
@@ -13,10 +16,13 @@ __all__ = [
     'CopyUniversalOp',
     'MmaUniversalOp',
     'cpasync',
+    'mbarrier',
     'make_tiled_tma_atom_A',
     'make_tiled_tma_atom_B',
     'tcgen05',
     'warp',
+    'warpgroup',
+    'wgmma',
 ]
 
 

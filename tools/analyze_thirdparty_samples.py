@@ -187,11 +187,7 @@ SUPPORTED_NVIDIA_MARKERS = {
     "tcgen05.make_tmem_copy",
 }
 
-UNSUPPORTED_NVIDIA_MARKERS = {
-    "nvgpu.warpgroup": "nvgpu.warpgroup",
-    "nvgpu.wgmma": "nvgpu.wgmma",
-    "nvgpu.mbarrier": "nvgpu.mbarrier",
-}
+UNSUPPORTED_NVIDIA_MARKERS = {}
 
 EXTERNAL_IMPORT_MARKERS = {
     "jax": "jax",

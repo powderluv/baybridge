@@ -100,6 +100,39 @@ class WarpMmaF16BF16Op:
 
 
 @dataclass(frozen=True)
+class WarpgroupMmaF16BF16Op:
+    dtype: Any
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    wave_size: int = 128
+    lane_shape: tuple[int, int] = (4, 8)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", resolve_element_type_name(self.dtype))
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def operand_dtype(self) -> str:
+        return str(self.dtype)
+
+
+@dataclass(frozen=True)
+class WarpgroupMmaTF32Op:
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    wave_size: int = 128
+    lane_shape: tuple[int, int] = (4, 8)
+    dtype: str = "f32"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def operand_dtype(self) -> str:
+        return str(self.dtype)
+
+
+@dataclass(frozen=True)
 class Tcgen05Ld32x32bOp:
     repetition: Any = None
     pack: Any = None
@@ -3688,6 +3721,35 @@ class _WarpNamespace(_UnsupportedNamespace):
         return WarpLdMatrix8x8x16bOp(transpose=transpose, num_matrices=num_matrices)
 
 
+class _WarpgroupNamespace(_UnsupportedNamespace):
+    def __init__(self, namespace: str = "nvgpu.warpgroup"):
+        super().__init__(namespace)
+
+    def MmaF16BF16Op(
+        self,
+        operand_dtype: Any,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+    ) -> WarpgroupMmaF16BF16Op:
+        return WarpgroupMmaF16BF16Op(operand_dtype, accumulator_dtype, tile)
+
+    def MmaTF32Op(
+        self,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+    ) -> WarpgroupMmaTF32Op:
+        return WarpgroupMmaTF32Op(accumulator_dtype, tile)
+
+    def fence(self) -> None:
+        barrier(kind="block", scope="warpgroup")
+
+    def commit_batch(self) -> None:
+        commit_group(group="warpgroup")
+
+    def wait_batch(self, count: int = 0) -> None:
+        wait_group(count=count, group="warpgroup")
+
+
 class _Tcgen05CtaGroup:
     ONE = "one"
     TWO = "two"
@@ -3891,12 +3953,44 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
         barrier(kind="block", scope="tcgen05_commit", barrier_id=barrier_id, mask=mask, cta_group=cta_group)
 
 
+class _MbarrierNamespace(_UnsupportedNamespace):
+    def __init__(self):
+        super().__init__("nvgpu.mbarrier")
+
+    def init(self, mbarrier: Mbarrier, arrival_count: int | None = None) -> None:
+        mbarrier.init(arrival_count)
+
+    def init_fence(self, mbarrier: Mbarrier, arrival_count: int | None = None) -> None:
+        mbarrier.init_fence(arrival_count)
+
+    def arrive(self, mbarrier: Mbarrier) -> None:
+        mbarrier.arrive()
+
+    def expect_tx(self, mbarrier: Mbarrier, bytes: int) -> None:
+        mbarrier.expect_tx(bytes)
+
+    def arrive_and_expect_tx(self, mbarrier: Mbarrier, bytes: int) -> None:
+        mbarrier.arrive_and_expect_tx(bytes)
+
+    def wait(self, mbarrier: Mbarrier) -> None:
+        mbarrier.wait()
+
+    def try_wait(self, mbarrier: Mbarrier, phase: int | None = None) -> bool | ScalarValue:
+        return mbarrier.try_wait(phase)
+
+    def test_wait(self, mbarrier: Mbarrier, phase: int | None = None) -> bool | ScalarValue:
+        return mbarrier.test_wait(phase)
+
+
 class _NvgpuNamespace(_UnsupportedNamespace):
     def __init__(self):
         super().__init__("nvgpu")
         self.cpasync = _CpAsyncNamespace()
         self.warp = _WarpNamespace()
+        self.warpgroup = _WarpgroupNamespace("nvgpu.warpgroup")
+        self.wgmma = _WarpgroupNamespace("nvgpu.wgmma")
         self.tcgen05 = _Tcgen05Namespace()
+        self.mbarrier = _MbarrierNamespace()
 
     def CopyUniversalOp(self) -> CopyUniversalOp:
         return CopyUniversalOp()

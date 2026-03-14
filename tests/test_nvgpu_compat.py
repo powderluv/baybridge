@@ -144,6 +144,46 @@ def test_tcgen05_tmem_surface_and_tf32_op_helpers() -> None:
     tcgen05.commit(bb.MbarrierArray(1)[0], mask=3, cta_group=tcgen05.CtaGroup.TWO)
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def warpgroup_helper_kernel(out: bb.Tensor):
+    bb.nvgpu.warpgroup.fence()
+    bb.nvgpu.warpgroup.commit_batch()
+    bb.nvgpu.warpgroup.wait_batch(0)
+    out[0] = bb.Int32(1)
+
+
+def test_warpgroup_wgmma_and_mbarrier_surface(tmp_path: Path) -> None:
+    warpgroup_mma = bb.make_tiled_mma(
+        bb.nvgpu.warpgroup.MmaF16BF16Op(bb.Float16, bb.Float32, (64, 8, 16))
+    )
+    wgmma_tf32 = bb.make_tiled_mma(
+        bb.nvgpu.wgmma.MmaTF32Op(bb.Float32, (64, 8, 8))
+    )
+    assert warpgroup_mma.shape == (64, 8, 16)
+    assert wgmma_tf32.shape == (64, 8, 8)
+
+    mbarrier = bb.MbarrierArray(1)[0]
+    bb.nvgpu.mbarrier.init(mbarrier, 64)
+    bb.nvgpu.mbarrier.init_fence(mbarrier, 64)
+    bb.nvgpu.mbarrier.arrive(mbarrier)
+    bb.nvgpu.mbarrier.expect_tx(mbarrier, 32)
+    bb.nvgpu.mbarrier.arrive_and_expect_tx(mbarrier, 64)
+    bb.nvgpu.mbarrier.wait(mbarrier)
+    assert bb.nvgpu.mbarrier.try_wait(mbarrier) is True
+    assert bb.nvgpu.mbarrier.test_wait(mbarrier) is True
+
+    out = bb.zeros((1,), dtype="i32")
+    warpgroup_helper_kernel(out).launch(grid=(1, 1, 1), block=(1, 1, 1))
+    assert out.tolist() == [1]
+
+    artifact = bb.compile(warpgroup_helper_kernel, out, cache_dir=tmp_path, backend="gpu_text")
+    assert artifact.ir is not None
+    ops = [operation.op for operation in artifact.ir.operations]
+    assert "barrier" in ops
+    assert "commit_group" in ops
+    assert "wait_group" in ops
+
+
 def test_cpasync_copy_kernel_runs_on_amd_hardware(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HIP backend tests")
