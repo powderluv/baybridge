@@ -196,6 +196,8 @@ Useful helpers:
 
 ### Backends
 
+For a current backend inventory, validation matrix, and benchmark notes, see [docs/backend-status.md](/home/nod/github/baybridge/docs/backend-status.md).
+
 `compile(...)` supports:
 - `backend="portable"`
   - stores portable IR only

@@ -86,7 +86,7 @@ def _sample_payload_from_factory(factory, *, backend_name: str, target) -> dict[
 
 
 def _is_executable_backend(name: str) -> bool:
-    return name in {"hipcc_exec", "hipkittens_exec", "flydsl_exec", "waveasm_exec"}
+    return name in {"hipcc_exec", "hipkittens_exec", "flydsl_exec", "waveasm_exec", "aster_exec"}
 
 
 def _summarize_value(value):
