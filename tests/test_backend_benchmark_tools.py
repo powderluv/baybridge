@@ -110,3 +110,10 @@ def test_compare_backends_returns_no_synchronizer_for_non_exec_backend() -> None
     compare_backends = _load_tool_module("compare_backends")
 
     assert compare_backends._make_execution_synchronizer("gpu_mlir", ()) is None
+
+
+def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> None:
+    kernels = _load_tool_module("backend_benchmark_kernels")
+
+    assert callable(kernels.dense_sub_f32_kernel)
+    assert callable(kernels.dense_mul_f32_kernel)

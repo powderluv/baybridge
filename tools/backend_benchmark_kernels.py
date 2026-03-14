@@ -23,6 +23,16 @@ def dense_add_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     dst.store(src.load() + other.load())
 
 
+@bb.kernel
+def dense_sub_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    dst.store(src.load() - other.load())
+
+
+@bb.kernel
+def dense_mul_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    dst.store(src.load() * other.load())
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(FLYDSL_GRID, 1, 1), block=(FLYDSL_BLOCK, 1, 1)))
 def indexed_add_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()

@@ -121,6 +121,10 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f32` copy, `4096` elements | `aster_exec` | `7.33` | Real ASTER executable path |
 | Dense `f32` add, `4096` elements | `hipcc_exec` | `2.59` | Same kernel/sample factory as ASTER baseline |
 | Dense `f32` add, `4096` elements | `aster_exec` | `7.53` | Real ASTER executable path |
+| Dense `f32` sub, `4096` elements | `hipcc_exec` | `2.66` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` sub, `4096` elements | `aster_exec` | `7.53` | Real ASTER executable path |
+| Dense `f32` mul, `4096` elements | `hipcc_exec` | `2.58` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` mul, `4096` elements | `aster_exec` | `7.56` | Real ASTER executable path |
 | Dense `i32` copy, `4096` elements | `hipcc_exec` | `2.26` | Same kernel/sample factory as ASTER baseline |
 | Dense `i32` copy, `4096` elements | `aster_exec` | `7.32` | Real ASTER executable path |
 | Dense `i32` add, `4096` elements | `hipcc_exec` | `3.13` | Same kernel/sample factory as ASTER baseline |
@@ -140,6 +144,10 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f32` copy, `4096` elements | `aster_exec` | `10.62` | Real ASTER executable path |
 | Dense `f32` add, `4096` elements | `hipcc_exec` | `4.28` | Same kernel/sample factory as ASTER baseline |
 | Dense `f32` add, `4096` elements | `aster_exec` | `11.49` | Real ASTER executable path |
+| Dense `f32` sub, `4096` elements | `hipcc_exec` | `4.26` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` sub, `4096` elements | `aster_exec` | `11.22` | Real ASTER executable path |
+| Dense `f32` mul, `4096` elements | `hipcc_exec` | `4.28` | Same kernel/sample factory as ASTER baseline |
+| Dense `f32` mul, `4096` elements | `aster_exec` | `11.21` | Real ASTER executable path |
 | Dense `i32` copy, `4096` elements | `hipcc_exec` | `3.89` | Same kernel/sample factory as ASTER baseline |
 | Dense `i32` copy, `4096` elements | `aster_exec` | `10.71` | Real ASTER executable path |
 | Dense `i32` add, `4096` elements | `hipcc_exec` | `5.38` | Same kernel/sample factory as ASTER baseline |
@@ -159,6 +167,8 @@ Warm median ratio of `aster_exec / hipcc_exec` on the matched `4096`-element AST
 | --- | ---: | ---: |
 | Dense `f32` copy | `3.89x` | `3.55x` |
 | Dense `f32` add | `2.91x` | `2.68x` |
+| Dense `f32` sub | `2.82x` | `2.63x` |
+| Dense `f32` mul | `2.93x` | `2.62x` |
 | Dense `i32` copy | `3.22x` | `2.75x` |
 | Dense `i32` add | `2.42x` | `2.08x` |
 | Dense `f16` copy | `1.90x` | `1.58x` |
@@ -173,6 +183,8 @@ Cold-start timing here is the first recorded execution in the `--repeat 7` run. 
 | --- | ---: | ---: | ---: | ---: |
 | Dense `f32` copy | `18927.18` | `7.33` | `37555.55` | `10.62` |
 | Dense `f32` add | `74842.37` | `7.53` | `149174.42` | `11.49` |
+| Dense `f32` sub | `73508.35` | `7.53` | `147932.72` | `11.22` |
+| Dense `f32` mul | `73691.14` | `7.56` | `148651.39` | `11.21` |
 | Dense `i32` copy | `18901.67` | `7.32` | `37700.85` | `10.71` |
 | Dense `i32` add | `74548.61` | `7.57` | `148596.15` | `11.20` |
 | Dense `f16` copy | `179.84` | `7.46` | `161.92` | `10.78` |
@@ -203,6 +215,12 @@ The remaining boundary is semantic, not environmental:
 Two important boundaries remain:
 - `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
 - ASTER performance is currently published through a dedicated `4096`-element checked-in microbenchmark path, not the common `65536`-element table
+- the very large first-run cost is not Baybridge tracing time alone:
+  - Baybridge compiles to ASTER MLIR before timing
+  - then [aster_exec.py](/home/nod/github/baybridge/src/baybridge/backends/aster_exec.py) still does ASTER-side lazy work on first launch:
+    - `_load_aster_modules()`
+    - `_compile_to_hsaco(...)` when the `.hsaco` is not present yet
+  - so the first timed call includes ASTER runtime import/bootstrap plus HSACO assembly, while warm calls mostly measure the steady-state execution path
 
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
