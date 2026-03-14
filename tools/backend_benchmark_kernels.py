@@ -147,6 +147,31 @@ def aster_dense_add_i32_args(*, backend_name=None, **_kwargs):
     }
 
 
+def aster_dense_copy_f16_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_f32(ASTER_POINTWISE_N, scale=0.125, offset=1.0)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="f16"),
+            bb.zeros((ASTER_POINTWISE_N,), dtype="f16"),
+        ),
+        "result_indices": (),
+    }
+
+
+def aster_broadcast_add_f32_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_f32(ASTER_POINTWISE_N, scale=0.5, offset=1.0)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="f32"),
+            bb.tensor([3.5], dtype="f32"),
+            bb.zeros((ASTER_POINTWISE_N,), dtype="f32"),
+        ),
+        "result_indices": (),
+    }
+
+
 def indexed_add_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}

@@ -17,8 +17,10 @@ Current repo state during this documentation pass:
 - branch: `main`
 - latest committed ASTER benchmark harness: `a11196a` `Add ASTER backend benchmark harness`
 - worktree is dirty because the benchmark harness and status doc now include an ASTER-specific microbenchmark path:
+  - `src/baybridge/backends/aster_exec.py`
   - `tools/backend_benchmark_kernels.py`
   - `tests/test_backend_benchmark_tools.py`
+  - `tests/test_backend_aster_exec.py`
   - `docs/backend-status.md`
 
 Focused local validation after the shared tooling updates in this pass:
@@ -123,6 +125,10 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `i32` copy, `4096` elements | `aster_exec` | `7.32` | Real ASTER executable path |
 | Dense `i32` add, `4096` elements | `hipcc_exec` | `3.13` | Same kernel/sample factory as ASTER baseline |
 | Dense `i32` add, `4096` elements | `aster_exec` | `7.57` | Real ASTER executable path |
+| Dense `f16` copy, `4096` elements | `hipcc_exec` | `3.92` | Same kernel/sample factory as ASTER baseline |
+| Dense `f16` copy, `4096` elements | `aster_exec` | `7.46` | Real ASTER executable path |
+| Dense `f32` broadcast add, `4096` elements | `hipcc_exec` | `1.69` | Dense source plus single-element RHS tensor |
+| Dense `f32` broadcast add, `4096` elements | `aster_exec` | `7.78` | Broadcast now validated on the aligned scalar-broadcast path |
 
 ### `mi300` (`gfx942`)
 
@@ -136,6 +142,23 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `i32` copy, `4096` elements | `aster_exec` | `10.71` | Real ASTER executable path |
 | Dense `i32` add, `4096` elements | `hipcc_exec` | `5.38` | Same kernel/sample factory as ASTER baseline |
 | Dense `i32` add, `4096` elements | `aster_exec` | `11.20` | Real ASTER executable path |
+| Dense `f16` copy, `4096` elements | `hipcc_exec` | `6.83` | Same kernel/sample factory as ASTER baseline |
+| Dense `f16` copy, `4096` elements | `aster_exec` | `10.78` | Real ASTER executable path |
+| Dense `f32` broadcast add, `4096` elements | `hipcc_exec` | `2.68` | Dense source plus single-element RHS tensor |
+| Dense `f32` broadcast add, `4096` elements | `aster_exec` | `11.36` | Broadcast now validated on the aligned scalar-broadcast path |
+
+## ASTER Ratio Summary
+
+Warm median ratio of `aster_exec / hipcc_exec` on the matched `4096`-element ASTER microbenchmarks.
+
+| Family | `mi355` ratio | `mi300` ratio |
+| --- | ---: | ---: |
+| Dense `f32` copy | `3.89x` | `3.55x` |
+| Dense `f32` add | `2.91x` | `2.68x` |
+| Dense `i32` copy | `3.22x` | `2.75x` |
+| Dense `i32` add | `2.42x` | `2.08x` |
+| Dense `f16` copy | `1.90x` | `1.58x` |
+| Dense `f32` broadcast add | `4.60x` | `4.24x` |
 
 ## Environment Notes Behind Missing Numbers
 
@@ -166,6 +189,7 @@ So ASTER should currently be treated as:
 - validated for its checked-in focused tests
 - useful for executable copy and add/sub/mul coverage
 - benchmarkable through the checked-in ASTER microbenchmark harness above
+- currently closest to `hipcc_exec` on `f16` copy in this microbench set, and furthest behind on scalar broadcast add
 - not yet a drop-in replacement for the common large-shape benchmark table used by `hipcc_exec` and `hipkittens_exec`
 
 ### WaveASM

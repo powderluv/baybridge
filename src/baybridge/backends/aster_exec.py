@@ -1036,8 +1036,18 @@ class AsterExecBackend:
                 "aster_exec pointwise binary ops require a contiguous element count aligned to the vector path for this dtype"
             )
         if rhs_broadcast or lhs_broadcast:
-            raise BackendNotImplementedError(
-                "aster_exec currently lowers broadcasted pointwise binary ops through the scalar path only"
+            return _BinaryScalarMatch(
+                lhs_name=lhs_arg.name,
+                rhs_name=rhs_arg.name,
+                dst_name=dst_arg.name,
+                dtype=lhs_spec.dtype,
+                shape=dense_shape,
+                element_count=element_count,
+                op_kind=op_kind,
+                op_name=op_name,
+                value_type=value_type,
+                rhs_broadcast=rhs_broadcast,
+                lhs_broadcast=lhs_broadcast,
             )
         return _Binary1DMatch(
             lhs_name=lhs_arg.name,

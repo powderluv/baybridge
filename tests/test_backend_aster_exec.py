@@ -198,6 +198,15 @@ def aster_exec_add_broadcast_kernel(
 
 
 @bb.kernel
+def aster_exec_add_broadcast_aligned_kernel(
+    src: bb.TensorSpec(shape=(16,), dtype="f32"),
+    other: bb.TensorSpec(shape=(1,), dtype="f32"),
+    dst: bb.TensorSpec(shape=(16,), dtype="f32"),
+):
+    dst.store(src.load() + other.load().broadcast_to((16,)))
+
+
+@bb.kernel
 def aster_exec_sub_broadcast_kernel(
     src: bb.TensorSpec(shape=(10,), dtype="f32"),
     other: bb.TensorSpec(shape=(1,), dtype="f32"),
@@ -1072,6 +1081,28 @@ def test_compile_auto_prefers_aster_exec_for_matching_i32_broadcast_binary_kerne
     else:
         expected = [left // scalar for left in src.tolist()]
     assert dst.tolist() == expected
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_aligned_f32_broadcast_binary_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor([float(index) for index in range(16)], dtype="f32")
+    other = bb.tensor([2.0], dtype="f32")
+    dst = bb.zeros((16,), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_add_broadcast_aligned_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == [left + 2.0 for left in src.tolist()]
 
 
 @pytest.mark.parametrize("op_name,kernel,src_values", F32_LHS_BROADCAST_BINARY_CASES)
@@ -1990,6 +2021,34 @@ def test_aster_exec_runs_f32_broadcast_binary_on_amd_hardware(
     else:
         expected = [left / scalar for left in src.tolist()]
     assert dst.tolist() == expected
+
+
+def test_aster_exec_runs_aligned_f32_broadcast_binary_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([float(index) for index in range(16)], dtype="f32")
+    other = bb.tensor([2.0], dtype="f32")
+    dst = bb.zeros((16,), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_add_broadcast_aligned_kernel,
+        src,
+        other,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, other, dst)
+    assert dst.tolist() == [left + 2.0 for left in src.tolist()]
 
 
 @pytest.mark.parametrize("op_name,kernel,other_values", I32_BROADCAST_BINARY_CASES)
