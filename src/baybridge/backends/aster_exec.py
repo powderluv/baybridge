@@ -520,6 +520,115 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
+_SCALAR_LHS_BROADCAST_BINARY_TEMPLATE = """// baybridge.aster_exec
+!sx2 = !amdgcn.sgpr<[? + 2]>
+!v = !amdgcn.vgpr
+!tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
+!tensor_position_descriptor_2d = !aster_utils.struct<ptr: !sx2, m_pos: index, n_pos: index, global_stride_in_bytes: index, elt_size: index>
+
+amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
+  func.func private @distributed_index_1d() -> index
+  func.func private @grid_stride_1d() -> index
+  func.func private @store_to_global_dword_wait(!v, !tensor_position_descriptor_2d) -> ()
+  func.func private @load_from_global_dword_wait(!tensor_position_descriptor_2d) -> !v
+
+  func.func private @global_load_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    %loaded = func.call @load_from_global_dword_wait(%pos_desc_2d) : (!tensor_position_descriptor_2d) -> !v
+    memref.store %loaded, %memref[%idx] : memref<?x!v>
+    return
+  }}
+
+  func.func private @global_store_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %value = memref.load %memref[%idx] : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    func.call @store_to_global_dword_wait(%value, %pos_desc_2d) : (!v, !tensor_position_descriptor_2d) -> ()
+    return
+  }}
+
+  func.func private @scalar_lhs_broadcast_binary_body(
+    %idx: index,
+    %lhs_scalar_memref: memref<?x!v>,
+    %rhs_memref: memref<?x!v>,
+    %dst_memref: memref<?x!v>
+  ) {{
+    %c0 = arith.constant 0 : index
+    %lhs = memref.load %lhs_scalar_memref[%c0] : memref<?x!v>
+    %rhs = memref.load %rhs_memref[%idx] : memref<?x!v>
+    %tmp = amdgcn.alloca : !amdgcn.vgpr
+    %result = lsir.{lsir_op} {value_type} %tmp, %lhs, %rhs : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    memref.store %result, %dst_memref[%idx] : memref<?x!v>
+    return
+  }}
+
+  func.func private @binary_lhs_broadcast_scalar_loop(
+    %num_elements: index,
+    %lhs_global: !sx2,
+    %rhs_global: !sx2,
+    %dst_global: !sx2
+  ) {{
+    %lhs_scalar_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %rhs_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %dst_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %base_index = func.call @distributed_index_1d() : () -> index
+    %grid_stride = func.call @grid_stride_1d() : () -> index
+    %grid_stride_bytes = affine.apply affine_map<(s)[elt] -> (s * elt)>(%grid_stride)[%c4]
+    %lhs_pos_desc = aster_utils.struct_create(%lhs_global, %c0, %c0, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+    func.call @global_load_body_scalar(%lhs_pos_desc, %c0, %lhs_scalar_memref)
+      {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+      : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+
+    scf.for %i = %c0 to %num_elements step %c1 {{
+      %elem_index = affine.apply affine_map<(base, i)[stride] -> (base + i * stride)>
+        (%base_index, %i)[%grid_stride]
+      %rhs_pos_desc = aster_utils.struct_create(%rhs_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %dst_pos_desc = aster_utils.struct_create(%dst_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      func.call @global_load_body_scalar(%rhs_pos_desc, %i, %rhs_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+      func.call @scalar_lhs_broadcast_binary_body(%i, %lhs_scalar_memref, %rhs_memref, %dst_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (index, memref<?x!v>, memref<?x!v>, memref<?x!v>) -> ()
+      func.call @global_store_body_scalar(%dst_pos_desc, %i, %dst_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+    }} {{sched.dims = array<i64: {element_count}>}}
+
+    return
+  }}
+
+  amdgcn.kernel @{kernel_name} arguments <[
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_write>
+  ]> attributes {{shared_memory_size = 0 : i32}} {{
+    %lhs_ptr_s = amdgcn.load_arg 0 : !sx2
+    %rhs_ptr_s = amdgcn.load_arg 1 : !sx2
+    %dst_ptr_s = amdgcn.load_arg 2 : !sx2
+    %lhs_ptr, %rhs_ptr, %dst_ptr = lsir.assume_noalias %lhs_ptr_s, %rhs_ptr_s, %dst_ptr_s : (!sx2, !sx2, !sx2) -> (!sx2, !sx2, !sx2)
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+    %num_elements = arith.constant {element_count} : index
+    func.call @binary_lhs_broadcast_scalar_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
+    amdgcn.end_kernel
+  }}
+}}
+"""
+
 
 @dataclass(frozen=True)
 class _Copy1DMatch:
@@ -565,6 +674,7 @@ class _BinaryScalarMatch:
     lsir_op: str
     value_type: str
     rhs_broadcast: bool = False
+    lhs_broadcast: bool = False
 
 
 class AsterExecBackend:
@@ -793,15 +903,39 @@ class AsterExecBackend:
             "tensor_mul": ("mul", "mulf"),
             "tensor_div": ("div", "divf"),
         }
-        if op_names[:4] != ["make_tensor", "copy", "make_tensor", "copy"] or op_names[-1:] != ["copy"]:
+        if op_names[-1:] != ["copy"]:
             raise BackendNotImplementedError(
                 "aster_exec currently supports a single supported tensor binary pipeline only"
             )
-        binary_op = op_names[4] if len(op_names) == 6 else None
+        binary_op = None
         rhs_broadcast = False
-        if binary_op not in supported_ops and len(op_names) == 7 and op_names[4] == "broadcast_to":
+        lhs_broadcast = False
+        if len(op_names) == 6 and op_names[:4] == ["make_tensor", "copy", "make_tensor", "copy"]:
+            binary_op = op_names[4]
+        elif (
+            len(op_names) == 7
+            and op_names[:4] == ["make_tensor", "copy", "make_tensor", "copy"]
+            and op_names[4] == "broadcast_to"
+        ):
             binary_op = op_names[5]
-            rhs_broadcast = True
+            broadcast_op = ir.operations[4]
+            binary_ir_op = ir.operations[5]
+            lhs_loaded = ir.operations[0].outputs[0]
+            rhs_loaded = ir.operations[2].outputs[0]
+            if broadcast_op.inputs == (rhs_loaded,) and binary_ir_op.inputs == (lhs_loaded, broadcast_op.outputs[0]):
+                rhs_broadcast = True
+        elif (
+            len(op_names) == 7
+            and op_names[:3] == ["make_tensor", "copy", "broadcast_to"]
+            and op_names[3:5] == ["make_tensor", "copy"]
+        ):
+            binary_op = op_names[5]
+            broadcast_op = ir.operations[2]
+            binary_ir_op = ir.operations[5]
+            lhs_loaded = ir.operations[0].outputs[0]
+            rhs_loaded = ir.operations[3].outputs[0]
+            if broadcast_op.inputs == (lhs_loaded,) and binary_ir_op.inputs == (broadcast_op.outputs[0], rhs_loaded):
+                lhs_broadcast = True
         if binary_op not in supported_ops:
             raise BackendNotImplementedError(
                 "aster_exec currently supports a single supported tensor binary pipeline only"
@@ -819,6 +953,11 @@ class AsterExecBackend:
                 raise BackendNotImplementedError(
                     "aster_exec broadcasted pointwise binary ops require the dense source and destination tensor shapes to match"
                 )
+        elif lhs_broadcast:
+            if rhs_spec.shape != dst_spec.shape:
+                raise BackendNotImplementedError(
+                    "aster_exec broadcasted pointwise binary ops require the dense source and destination tensor shapes to match"
+                )
         elif lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require matching tensor shapes")
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
@@ -829,7 +968,8 @@ class AsterExecBackend:
             or not self._is_dense_contiguous(dst_spec)
         ):
             raise BackendNotImplementedError("aster_exec pointwise binary ops currently require dense contiguous tensors")
-        element_count = self._total_elements(lhs_spec.shape)
+        dense_shape = lhs_spec.shape if not lhs_broadcast else rhs_spec.shape
+        element_count = self._total_elements(dense_shape)
         if element_count <= 0:
             raise BackendNotImplementedError("aster_exec pointwise binary ops require a positive contiguous element count")
         dtype_support = {
@@ -851,21 +991,15 @@ class AsterExecBackend:
             raise BackendNotImplementedError(
                 "aster_exec currently supports f32 and i32 add/sub/mul/div only"
             )
-        if rhs_broadcast:
-            broadcast_op = ir.operations[4]
-            binary_ir_op = ir.operations[5]
-            lhs_loaded = ir.operations[0].outputs[0]
-            rhs_loaded = ir.operations[2].outputs[0]
-            if broadcast_op.inputs != (rhs_loaded,) or binary_ir_op.inputs != (lhs_loaded, broadcast_op.outputs[0]):
+        if rhs_broadcast or lhs_broadcast:
+            broadcast_op = ir.operations[4] if rhs_broadcast else ir.operations[2]
+            broadcast_source_spec = rhs_spec if rhs_broadcast else lhs_spec
+            if broadcast_source_spec.shape != (1,):
                 raise BackendNotImplementedError(
-                    "aster_exec currently supports broadcast only when the second tensor argument is broadcast to the destination shape"
-                )
-            if rhs_spec.shape != (1,):
-                raise BackendNotImplementedError(
-                    "aster_exec currently supports broadcast only from a single-element second tensor argument"
+                    "aster_exec currently supports broadcast only from a single-element tensor argument"
                 )
             result_spec = broadcast_op.attrs.get("result", {})
-            if tuple(result_spec.get("shape", ())) != lhs_spec.shape:
+            if tuple(result_spec.get("shape", ())) != dense_shape:
                 raise BackendNotImplementedError(
                     "aster_exec currently requires the broadcast target shape to match the dense destination shape"
                 )
@@ -881,17 +1015,18 @@ class AsterExecBackend:
                 rhs_name=rhs_arg.name,
                 dst_name=dst_arg.name,
                 dtype=lhs_spec.dtype,
-                shape=lhs_spec.shape,
+                shape=dense_shape,
                 element_count=element_count,
                 lsir_op=lsir_op,
                 value_type=value_type,
                 rhs_broadcast=rhs_broadcast,
+                lhs_broadcast=lhs_broadcast,
             )
         if element_count % 4 != 0:
             raise BackendNotImplementedError(
                 "aster_exec pointwise binary ops require a contiguous element count aligned to the vector path for this dtype"
             )
-        if rhs_broadcast:
+        if rhs_broadcast or lhs_broadcast:
             raise BackendNotImplementedError(
                 "aster_exec currently lowers broadcasted pointwise binary ops through the scalar path only"
             )
@@ -920,7 +1055,12 @@ class AsterExecBackend:
         )
 
     def _render_binary_scalar(self, match: _BinaryScalarMatch, kernel_name: str, target: AMDTarget) -> str:
-        template = _SCALAR_BROADCAST_BINARY_TEMPLATE if match.rhs_broadcast else _SCALAR_BINARY_TEMPLATE
+        if match.rhs_broadcast:
+            template = _SCALAR_BROADCAST_BINARY_TEMPLATE
+        elif match.lhs_broadcast:
+            template = _SCALAR_LHS_BROADCAST_BINARY_TEMPLATE
+        else:
+            template = _SCALAR_BINARY_TEMPLATE
         return template.format(
             target=target.arch,
             isa=self._target_isa(target),
