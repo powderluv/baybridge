@@ -42,6 +42,8 @@ def test_testing_module_provides_benchmark_and_jit_arguments() -> None:
 
     assert avg_time_us >= 0.0
     assert calls == [7, 7, 7, 7]
+    assert bb.testing.tune(({"block": 64}, {"block": 128})) == {"block": 64}
+    assert bb.testing.get_workspace_count() == 1
 
 
 def test_runtime_module_reexports_from_dlpack() -> None:

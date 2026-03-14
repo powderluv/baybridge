@@ -3,7 +3,7 @@ from __future__ import annotations
 import builtins
 from itertools import product
 from math import prod
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from .dtypes import element_type, resolve_element_type_name
@@ -14,6 +14,7 @@ from .runtime import (
     ExecutionState,
     LaunchConfig,
     Pointer,
+    ReductionOp,
     RuntimeScalar,
     TensorHandle,
     RuntimeTensor,
@@ -147,11 +148,38 @@ class CompatibleMmaDescriptor:
             raise ValueError(f"unsupported MMA fragment role '{role}'") from exc
 
 
+class _ConfigurableAtom:
+    runtime_state: dict[str, Any]
+
+    def _modifier_key(self, modifier: Any) -> str:
+        if modifier is None:
+            return "value"
+        if isinstance(modifier, str):
+            return modifier
+        return getattr(modifier, "name", str(modifier))
+
+    def get(self, modifier: Any = None, default: Any = None) -> Any:
+        key = self._modifier_key(modifier)
+        if key == "value" and hasattr(self, "op"):
+            return getattr(self, "op")
+        return self.runtime_state.get(key, default)
+
+    def set(self, modifier: Any, value: Any) -> "_ConfigurableAtom":
+        self.runtime_state[self._modifier_key(modifier)] = value
+        return self
+
+    def with_(self, **updates: Any):
+        state = dict(self.runtime_state)
+        state.update(updates)
+        return replace(self, runtime_state=state)
+
+
 @dataclass(frozen=True)
-class CopyAtom:
+class CopyAtom(_ConfigurableAtom):
     op: Any
     value_type: str
     num_bits_per_copy: int | None = None
+    runtime_state: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "value_type", resolve_element_type_name(self.value_type))
@@ -166,20 +194,49 @@ class CopyAtom:
             raise ValueError("copy atoms require num_bits_per_copy to be byte aligned")
         return self.num_bits_per_copy // 8
 
+    @property
+    def type(self) -> str:
+        return self.value_type
+
 
 @dataclass(frozen=True)
-class TiledCopyTV:
+class TiledCopyTV(_ConfigurableAtom):
     atom: CopyAtom
     thread_layout: Layout
     value_layout: Layout
+    runtime_state: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def tv_layout(self) -> ThreadValueLayout:
         return ThreadValueLayout(self.thread_layout, self.value_layout)
 
     @property
+    def layout_tv(self) -> ThreadValueLayout:
+        return self.tv_layout
+
+    @property
+    def thr_layout(self) -> Layout:
+        return self.thread_layout
+
+    @property
+    def val_layout(self) -> Layout:
+        return self.value_layout
+
+    @property
     def tiler(self) -> tuple[int, ...]:
         return self.tv_layout.tile_shape
+
+    @property
+    def num_threads(self) -> int:
+        return prod(self.thread_layout.shape)
+
+    @property
+    def num_values(self) -> int:
+        return prod(self.value_layout.shape)
+
+    @property
+    def type(self) -> str:
+        return self.atom.value_type
 
     def get_slice(self, thread_index: ScalarValue | int) -> "ThreadCopySlice":
         return ThreadCopySlice(self, thread_index)
@@ -194,6 +251,12 @@ class TiledCopyTV:
     def partition_shape_D(self, shape: Any | None = None) -> tuple[int, ...]:
         del shape
         return self.tiler
+
+    def partition_S(self, tensor: Any, thread_index: ScalarValue | int = 0) -> Any:
+        return self.get_slice(thread_index).partition_S(tensor)
+
+    def partition_D(self, tensor: Any, thread_index: ScalarValue | int = 0) -> Any:
+        return self.get_slice(thread_index).partition_D(tensor)
 
 
 @dataclass(frozen=True)
@@ -221,16 +284,29 @@ class ThreadCopySlice:
     def retile(self, value: Any) -> Any:
         return value
 
+    def retile_S(self, value: Any) -> Any:
+        return self.retile(value)
+
+    def retile_D(self, value: Any) -> Any:
+        return self.retile(value)
+
+    def partition_fragment_S(self, value: Any) -> Any:
+        return self.retile(value)
+
+    def partition_fragment_D(self, value: Any) -> Any:
+        return self.retile(value)
+
 
 TiledCopy = TiledCopyTV
 
 
 @dataclass(frozen=True)
-class TiledMma:
+class TiledMma(_ConfigurableAtom):
     descriptor: MFMADescriptor | CompatibleMmaDescriptor
     axes: tuple[str, str] = ("x", "y")
     atom_layout: Layout | None = None
     permutation_mnk: Any = None
+    runtime_state: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def tile(self) -> tuple[int, int, int]:
@@ -239,6 +315,14 @@ class TiledMma:
     @property
     def shape(self) -> tuple[int, int, int]:
         return self.descriptor.tile
+
+    @property
+    def shape_mnk(self) -> tuple[int, int, int]:
+        return self.descriptor.tile
+
+    @property
+    def type(self) -> str:
+        return self.descriptor.accumulator_dtype
 
     def get_slice(self, thread_index: ScalarValue | int) -> "TiledMmaSlice":
         return TiledMmaSlice(self, thread_index)
@@ -266,6 +350,15 @@ class TiledMma:
         del shape
         return self.descriptor.operand_shape("acc")
 
+    def partition_A(self, tensor: TensorValue | RuntimeTensor, thread_index: ScalarValue | int = 0):
+        return self.get_slice(thread_index).partition_A(tensor)
+
+    def partition_B(self, tensor: TensorValue | RuntimeTensor, thread_index: ScalarValue | int = 0):
+        return self.get_slice(thread_index).partition_B(tensor)
+
+    def partition_C(self, tensor: TensorValue | RuntimeTensor, thread_index: ScalarValue | int = 0):
+        return self.get_slice(thread_index).partition_C(tensor)
+
     def make_fragment_C(self, shape: Any) -> TensorValue | RuntimeTensor:
         if hasattr(shape, "shape"):
             fragment_shape = tuple(getattr(shape, "shape"))
@@ -275,10 +368,11 @@ class TiledMma:
             raise TypeError("make_fragment_C expects a shape tuple/list or a tensor-like value with a shape")
         return make_rmem_tensor(fragment_shape, self.descriptor.accumulator_dtype)
 
+    def make_fragment_ACC(self, shape: Any) -> TensorValue | RuntimeTensor:
+        return self.make_fragment_C(shape)
+
     def set(self, field: Any, value: Any) -> "TiledMma":
-        del field
-        del value
-        return self
+        return super().set(field, value)
 
 
 @dataclass(frozen=True)
@@ -354,6 +448,18 @@ class TiledMmaSlice:
 
     def make_fragment_C(self, shape: Any) -> TensorValue | RuntimeTensor:
         return self.tiled_mma.make_fragment_C(shape)
+
+    def make_fragment_ACC(self, shape: Any) -> TensorValue | RuntimeTensor:
+        return self.make_fragment_C(shape)
+
+    def partition_fragment_A(self, value: Any) -> Any:
+        return value
+
+    def partition_fragment_B(self, value: Any) -> Any:
+        return value
+
+    def partition_fragment_C(self, value: Any) -> Any:
+        return value
 
 
 @dataclass(frozen=True)
@@ -1475,14 +1581,50 @@ class NamedBarrier:
 class Mbarrier:
     index: int
 
+    def init(self, arrival_count: int | None = None) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier", action="init", arrival_count=arrival_count)
+
+    def init_fence(self, arrival_count: int | None = None) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier", action="init_fence", arrival_count=arrival_count)
+
     def arrive(self) -> None:
         barrier(kind="block", barrier_id=self.index, scope="mbarrier")
+
+    def expect_tx(self, bytes: int) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier", action="expect_tx", bytes=int(bytes))
+
+    def arrive_and_expect_tx(self, bytes: int) -> None:
+        barrier(
+            kind="block",
+            barrier_id=self.index,
+            scope="mbarrier",
+            action="arrive_and_expect_tx",
+            bytes=int(bytes),
+        )
 
     def wait(self) -> None:
         barrier(kind="block", barrier_id=self.index, scope="mbarrier")
 
     def arrive_and_wait(self) -> None:
         barrier(kind="block", barrier_id=self.index, scope="mbarrier")
+
+    def try_wait(self, phase: int | None = None) -> bool | ScalarValue:
+        del phase
+        return True
+
+    def conditional_try_wait(self, predicate: ScalarValue | bool, phase: int | None = None) -> bool | ScalarValue:
+        del phase
+        return predicate
+
+    def test_wait(self, phase: int | None = None) -> bool | ScalarValue:
+        del phase
+        return True
+
+    def invalidate(self) -> None:
+        barrier(kind="block", barrier_id=self.index, scope="mbarrier", action="invalidate")
+
+    def data_ptr(self) -> Pointer:
+        return Pointer(value_type="i64", raw_address=0, address_space=AddressSpace.SHARED, assumed_align=8)
 
 
 @dataclass(frozen=True)
@@ -1534,6 +1676,9 @@ class TmaStoreFence:
 
     def arrive_and_wait(self) -> None:
         barrier(kind="block", scope="tma_store_fence")
+
+    def sync(self) -> None:
+        self.arrive_and_wait()
 
 
 def _normalize_axis(axis: str) -> str:
@@ -1813,6 +1958,10 @@ def elect_one() -> ScalarValue | bool:
     return lane_id() == 0
 
 
+def lane_idx() -> ScalarValue | int:
+    return lane_id()
+
+
 def get_dyn_smem_size() -> ScalarValue | int:
     try:
         builder = require_builder()
@@ -1823,6 +1972,62 @@ def get_dyn_smem_size() -> ScalarValue | int:
 
 def make_warp_uniform(value: Any) -> Any:
     return value
+
+
+def any_(value: Any) -> ScalarValue | bool:
+    if isinstance(value, TensorValue):
+        if value.spec.dtype != "i1":
+            raise TypeError("any_ requires an i1 tensor")
+        return value.reduce(ReductionOp.MAX, 0)
+    if isinstance(value, RuntimeTensor):
+        if value.dtype != "i1":
+            raise TypeError("any_ requires an i1 tensor")
+        return bool(value.reduce(ReductionOp.MAX, 0))
+    if isinstance(value, ScalarValue):
+        if value.spec.dtype != "i1":
+            raise TypeError("any_ requires an i1 scalar")
+        return value
+    if isinstance(value, RuntimeScalar):
+        if value.dtype != "i1":
+            raise TypeError("any_ requires an i1 scalar")
+        return bool(value)
+    if isinstance(value, (tuple, list)):
+        result = None
+        for item in value:
+            reduced = any_(item)
+            result = reduced if result is None else (result | reduced)
+        if result is None:
+            return False
+        return result
+    return builtins.bool(value)
+
+
+def all_(value: Any) -> ScalarValue | bool:
+    if isinstance(value, TensorValue):
+        if value.spec.dtype != "i1":
+            raise TypeError("all_ requires an i1 tensor")
+        return value.reduce(ReductionOp.MIN, 1)
+    if isinstance(value, RuntimeTensor):
+        if value.dtype != "i1":
+            raise TypeError("all_ requires an i1 tensor")
+        return bool(value.reduce(ReductionOp.MIN, 1))
+    if isinstance(value, ScalarValue):
+        if value.spec.dtype != "i1":
+            raise TypeError("all_ requires an i1 scalar")
+        return value
+    if isinstance(value, RuntimeScalar):
+        if value.dtype != "i1":
+            raise TypeError("all_ requires an i1 scalar")
+        return bool(value)
+    if isinstance(value, (tuple, list)):
+        result = None
+        for item in value:
+            reduced = all_(item)
+            result = reduced if result is None else (result & reduced)
+        if result is None:
+            return True
+        return result
+    return builtins.bool(value)
 
 
 def lane_coords(shape: tuple[int, ...]) -> tuple[ScalarValue, ...]:
@@ -2282,6 +2487,43 @@ def repeat_like(value: Any, like: Any) -> Any:
     if isinstance(like, (tuple, list)):
         return type(like)(repeat_like(value, item) for item in like)
     return value
+
+
+def repeat_as_tuple(value: Any, n: int) -> tuple[Any, ...]:
+    n = int(n)
+    if n < 1:
+        raise ValueError("repeat_as_tuple expects n >= 1")
+    return tuple(value for _ in range(n))
+
+
+def repeat(value: Any, n: int) -> Any:
+    repeated = repeat_as_tuple(value, n)
+    if n == 1:
+        return repeated[0]
+    return repeated
+
+
+def tuple_cat(*tuples: Any) -> tuple[Any, ...]:
+    flattened: list[Any] = []
+    for value in tuples:
+        if isinstance(value, tuple):
+            flattened.extend(value)
+        else:
+            flattened.append(value)
+    return tuple(flattened)
+
+
+def transform_apply(*args: Any, f: Callable[..., Any], g: Callable[..., Any]) -> Any:
+    if not args:
+        raise TypeError("transform_apply expects at least one positional argument")
+    if all(isinstance(value, tuple) for value in args):
+        lengths = {len(value) for value in args}
+        if len(lengths) != 1:
+            raise ValueError("transform_apply tuple arguments must have the same length")
+        transformed = [f(*(value[index] for value in args)) for index in range(len(args[0]))]
+        return g(*transformed)
+    transformed = [f(*args)]
+    return g(*transformed)
 
 
 def full(
@@ -2843,8 +3085,25 @@ def basic_copy(src: Any, dst: Any) -> None:
     copy(src, dst)
 
 
+def basic_copy_if(predicate: ScalarValue | RuntimeScalar | bool, src: Any, dst: Any) -> None:
+    if isinstance(predicate, ScalarValue):
+        raise UnsupportedOperationError(
+            "basic_copy_if with a traced predicate is not implemented yet; use predicated stores or runtime execution"
+        )
+    if isinstance(predicate, RuntimeScalar):
+        should_copy = bool(predicate)
+    else:
+        should_copy = bool(predicate)
+    if should_copy:
+        copy(src, dst)
+
+
 def autovec_copy(src: Any, dst: Any, *, vector_bytes: int | None = None) -> None:
     copy(src, dst, vector_bytes=vector_bytes)
+
+
+def prefetch(value: Any) -> None:
+    del value
 
 
 def copy_async(
@@ -3514,6 +3773,18 @@ class _ArchNamespace:
         barrier(kind="block")
 
     @staticmethod
+    def barrier(*, loc: Any | None = None, ip: Any | None = None) -> None:
+        del loc
+        del ip
+        barrier(kind="block")
+
+    @staticmethod
+    def barrier_arrive(*, loc: Any | None = None, ip: Any | None = None) -> None:
+        del loc
+        del ip
+        barrier(kind="block", action="arrive")
+
+    @staticmethod
     def sync_warp(*, loc: Any | None = None, ip: Any | None = None) -> None:
         sync_warp(loc=loc, ip=ip)
 
@@ -3530,6 +3801,50 @@ class _ArchNamespace:
     @staticmethod
     def get_dyn_smem_size() -> ScalarValue | int:
         return get_dyn_smem_size()
+
+    @staticmethod
+    def mbarrier_init(mbarrier: Mbarrier, arrival_count: int | None = None) -> None:
+        mbarrier.init(arrival_count)
+
+    @staticmethod
+    def mbarrier_init_fence(mbarrier: Mbarrier, arrival_count: int | None = None) -> None:
+        mbarrier.init_fence(arrival_count)
+
+    @staticmethod
+    def mbarrier_arrive(mbarrier: Mbarrier) -> None:
+        mbarrier.arrive()
+
+    @staticmethod
+    def mbarrier_expect_tx(mbarrier: Mbarrier, bytes: int) -> None:
+        mbarrier.expect_tx(bytes)
+
+    @staticmethod
+    def mbarrier_arrive_and_expect_tx(mbarrier: Mbarrier, bytes: int) -> None:
+        mbarrier.arrive_and_expect_tx(bytes)
+
+    @staticmethod
+    def mbarrier_wait(mbarrier: Mbarrier) -> None:
+        mbarrier.wait()
+
+    @staticmethod
+    def mbarrier_try_wait(mbarrier: Mbarrier, phase: int | None = None) -> bool | ScalarValue:
+        return mbarrier.try_wait(phase)
+
+    @staticmethod
+    def mbarrier_conditional_try_wait(
+        mbarrier: Mbarrier,
+        predicate: ScalarValue | bool,
+        phase: int | None = None,
+    ) -> bool | ScalarValue:
+        return mbarrier.conditional_try_wait(predicate, phase)
+
+    @staticmethod
+    def mbarrier_test_wait(mbarrier: Mbarrier, phase: int | None = None) -> bool | ScalarValue:
+        return mbarrier.test_wait(phase)
+
+    @staticmethod
+    def fence_tma_store(fence: TmaStoreFence | None = None) -> None:
+        (fence or TmaStoreFence()).arrive_and_wait()
 
 
 nvgpu = _NvgpuNamespace()
@@ -3555,9 +3870,12 @@ __all__ = [
     "TensorSpec",
     "AddressSpace",
     "arch",
+    "all_",
+    "any_",
     "autovec_copy",
     "barrier",
     "basic_copy",
+    "basic_copy_if",
     "block_dim",
     "block_in_cluster_dim",
     "block_in_cluster_idx",
@@ -3589,6 +3907,7 @@ __all__ = [
     "kernel",
     "elect_one",
     "lane_id",
+    "lane_idx",
     "lane_coords",
     "local_partition",
     "local_tile",
@@ -3621,6 +3940,8 @@ __all__ = [
     "print_tensor",
     "recast_ptr",
     "recast_layout",
+    "repeat",
+    "repeat_as_tuple",
     "repeat_like",
     "make_tensor",
     "mma",
@@ -3629,6 +3950,7 @@ __all__ = [
     "partition_program",
     "partition_thread",
     "partition_wave",
+    "prefetch",
     "ones_like",
     "printf",
     "product_each",
@@ -3641,6 +3963,8 @@ __all__ = [
     "tiled_product",
     "tile_to_shape",
     "thread_idx",
+    "transform_apply",
+    "tuple_cat",
     "sync_warp",
     "wait_group",
     "warp_idx",

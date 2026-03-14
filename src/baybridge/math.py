@@ -11,6 +11,15 @@ from .tracing import ScalarValue, TensorValue, require_builder
 
 @dataclass(frozen=True)
 class _MathNamespace:
+    def acos(self, value: Any):
+        return _tensor_unary(value, "math_acos", _math.acos)
+
+    def asin(self, value: Any):
+        return _tensor_unary(value, "math_asin", _math.asin)
+
+    def atan(self, value: Any):
+        return _tensor_unary(value, "math_atan", _math.atan)
+
     def sqrt(self, value: Any):
         return _tensor_unary(value, "math_sqrt", _math.sqrt)
 
@@ -46,6 +55,62 @@ class _MathNamespace:
 
 
 math = _MathNamespace()
+
+
+def acos(value: Any):
+    return math.acos(value)
+
+
+def asin(value: Any):
+    return math.asin(value)
+
+
+def atan(value: Any):
+    return math.atan(value)
+
+
+def sqrt(value: Any):
+    return math.sqrt(value)
+
+
+def rsqrt(value: Any):
+    return math.rsqrt(value)
+
+
+def exp(value: Any):
+    return math.exp(value)
+
+
+def sin(value: Any):
+    return math.sin(value)
+
+
+def cos(value: Any):
+    return math.cos(value)
+
+
+def exp2(value: Any):
+    return math.exp2(value)
+
+
+def log(value: Any):
+    return math.log(value)
+
+
+def log2(value: Any):
+    return math.log2(value)
+
+
+def log10(value: Any):
+    return math.log10(value)
+
+
+def erf(value: Any):
+    return math.erf(value)
+
+
+def atan2(lhs: Any, rhs: Any):
+    return math.atan2(lhs, rhs)
 
 
 def _exp2(value: float) -> float:

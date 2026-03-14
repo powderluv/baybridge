@@ -29,10 +29,17 @@ class CUstreamCaptureMode(IntEnum):
     CU_STREAM_CAPTURE_MODE_RELAXED = 2
 
 
+class CUstreamCaptureStatus(IntEnum):
+    CU_STREAM_CAPTURE_STATUS_NONE = 0
+    CU_STREAM_CAPTURE_STATUS_ACTIVE = 1
+    CU_STREAM_CAPTURE_STATUS_INVALIDATED = 2
+
+
 __all__ = [
     "CUgraph",
     "CUgraphExec",
     "CUstream",
     "CUstreamCaptureMode",
+    "CUstreamCaptureStatus",
     "CUstream_flags",
 ]

@@ -50,6 +50,9 @@ _SUPPORTED_OPS = {
     "log2",
     "make_tensor",
     "math_rsqrt",
+    "math_acos",
+    "math_asin",
+    "math_atan",
     "math_sqrt",
     "mma",
     "mod",
@@ -102,6 +105,9 @@ _EXEC_SUPPORTED_OPS = {
     "math_log2",
     "math_rsqrt",
     "math_sin",
+    "math_acos",
+    "math_asin",
+    "math_atan",
     "math_sqrt",
     "masked_load",
     "masked_store",
@@ -702,6 +708,9 @@ class FlyDslBridge:
                 f"{operation.outputs[0]} = fx.memref_alloca({type_name}, {layout_name})",
             ]
         if operation.op in {
+            "math_acos",
+            "math_asin",
+            "math_atan",
             "math_sqrt",
             "math_rsqrt",
             "math_sin",
@@ -1023,6 +1032,9 @@ class FlyDslBridge:
 
     def _render_exec_scalar_unary_math_expr(self, op_name: str, value: str) -> str:
         mapping = {
+            "math_acos": f"math.acos({value})",
+            "math_asin": f"math.asin({value})",
+            "math_atan": f"math.atan({value})",
             "math_sqrt": f"math.sqrt({value})",
             "math_rsqrt": f"(1.0 / math.sqrt({value}))",
             "math_sin": f"math.sin({value})",

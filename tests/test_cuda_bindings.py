@@ -40,14 +40,24 @@ def test_cuda_graph_shim_exposes_capture_flow() -> None:
     stream = cuda_driver.CUstream(11)
     begin_status, = cuda_runtime.cudaStreamBeginCapture(stream)
     assert begin_status == cuda_runtime.cudaError_t.cudaSuccess
+    capture_status, capture_state = cuda_runtime.cudaStreamIsCapturing(stream)
+    assert capture_status == cuda_runtime.cudaError_t.cudaSuccess
+    assert capture_state == cuda_driver.CUstreamCaptureStatus.CU_STREAM_CAPTURE_STATUS_ACTIVE
     end_status, graph = cuda_runtime.cudaStreamEndCapture(stream)
     assert end_status == cuda_runtime.cudaError_t.cudaSuccess
     assert isinstance(graph, cuda_driver.CUgraph)
+    capture_status, capture_state = cuda_runtime.cudaStreamIsCapturing(stream)
+    assert capture_status == cuda_runtime.cudaError_t.cudaSuccess
+    assert capture_state == cuda_driver.CUstreamCaptureStatus.CU_STREAM_CAPTURE_STATUS_NONE
     instantiate_status, graph_exec = cuda_runtime.cudaGraphInstantiate(graph)
     assert instantiate_status == cuda_runtime.cudaError_t.cudaSuccess
     assert isinstance(graph_exec, cuda_driver.CUgraphExec)
     launch_status, = cuda_runtime.cudaGraphLaunch(graph_exec, stream)
     assert launch_status == cuda_runtime.cudaError_t.cudaSuccess
+    destroy_status, = cuda_runtime.cudaGraphExecDestroy(graph_exec)
+    assert destroy_status == cuda_runtime.cudaError_t.cudaSuccess
+    destroy_status, = cuda_runtime.cudaGraphDestroy(graph)
+    assert destroy_status == cuda_runtime.cudaError_t.cudaSuccess
 
 
 def test_cuda_runtime_shim_runs_on_amd_hardware() -> None:

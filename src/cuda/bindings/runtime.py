@@ -5,7 +5,7 @@ from enum import IntEnum
 from typing import Any
 
 from baybridge.hip_runtime import load_hip_library
-from .driver import CUgraph, CUgraphExec, CUstream, CUstreamCaptureMode
+from .driver import CUgraph, CUgraphExec, CUstream, CUstreamCaptureMode, CUstreamCaptureStatus
 
 
 class cudaError_t(IntEnum):
@@ -93,6 +93,13 @@ def cudaStreamEndCapture(stream: CUstream | int) -> tuple[int | cudaError_t, CUg
     return cudaError_t.cudaSuccess, graph
 
 
+def cudaStreamIsCapturing(stream: CUstream | int) -> tuple[int | cudaError_t, CUstreamCaptureStatus]:
+    stream_id = int(stream)
+    if stream_id in _CAPTURED_STREAMS:
+        return cudaError_t.cudaSuccess, CUstreamCaptureStatus.CU_STREAM_CAPTURE_STATUS_ACTIVE
+    return cudaError_t.cudaSuccess, CUstreamCaptureStatus.CU_STREAM_CAPTURE_STATUS_NONE
+
+
 def cudaGraphInstantiate(graph: CUgraph | int, flags: int = 0) -> tuple[int | cudaError_t, CUgraphExec]:
     del flags
     return cudaError_t.cudaSuccess, CUgraphExec(int(graph))
@@ -104,14 +111,27 @@ def cudaGraphLaunch(graph_exec: CUgraphExec | int, stream: CUstream | int) -> tu
     return (cudaError_t.cudaSuccess,)
 
 
+def cudaGraphDestroy(graph: CUgraph | int) -> tuple[int | cudaError_t]:
+    del graph
+    return (cudaError_t.cudaSuccess,)
+
+
+def cudaGraphExecDestroy(graph_exec: CUgraphExec | int) -> tuple[int | cudaError_t]:
+    del graph_exec
+    return (cudaError_t.cudaSuccess,)
+
+
 __all__ = [
     "cudaDeviceSynchronize",
     "cudaError_t",
     "cudaFree",
+    "cudaGraphDestroy",
+    "cudaGraphExecDestroy",
     "cudaGraphInstantiate",
     "cudaGraphLaunch",
     "cudaMalloc",
     "cudaMemset",
+    "cudaStreamIsCapturing",
     "cudaStreamBeginCapture",
     "cudaStreamEndCapture",
 ]

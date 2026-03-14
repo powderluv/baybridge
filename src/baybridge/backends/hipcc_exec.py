@@ -369,7 +369,7 @@ class HipccExecBackend:
                     "hipcc_exec tensor elementwise ops require matching tensor dtypes"
                 )
             return self._emit_tensor_binary(operation.op, lhs_name, lhs_spec, rhs_name, rhs_spec, out_name, out_spec)
-        if operation.op in {"math_sqrt", "math_rsqrt", "math_sin", "math_cos", "math_exp", "math_exp2", "math_log", "math_log2", "math_log10", "math_erf"}:
+        if operation.op in {"math_acos", "math_asin", "math_atan", "math_sqrt", "math_rsqrt", "math_sin", "math_cos", "math_exp", "math_exp2", "math_log", "math_log2", "math_log10", "math_erf"}:
             source_name = operation.inputs[0]
             out_name = operation.outputs[0]
             if source_name in tensor_specs and out_name in tensor_specs:
@@ -629,6 +629,9 @@ class HipccExecBackend:
         out_spec: TensorSpec,
     ) -> list[str]:
         expr = {
+            "math_acos": lambda value: f"acosf({value})",
+            "math_asin": lambda value: f"asinf({value})",
+            "math_atan": lambda value: f"atanf({value})",
             "math_sqrt": lambda value: f"sqrtf({value})",
             "math_rsqrt": lambda value: f"rsqrtf({value})",
             "math_sin": lambda value: f"sinf({value})",
@@ -676,6 +679,9 @@ class HipccExecBackend:
 
     def _scalar_unary_math_expr(self, op: str, value: str) -> str:
         return {
+            "math_acos": f"acosf({value})",
+            "math_asin": f"asinf({value})",
+            "math_atan": f"atanf({value})",
             "math_sqrt": f"sqrtf({value})",
             "math_rsqrt": f"rsqrtf({value})",
             "math_sin": f"sinf({value})",
