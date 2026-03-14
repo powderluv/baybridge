@@ -99,6 +99,89 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
+_SCALAR_COPY_TEMPLATE = """// baybridge.aster_exec
+!s = !amdgcn.sgpr
+!sx2 = !amdgcn.sgpr<[? + 2]>
+!v = !amdgcn.vgpr
+!tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
+!tensor_position_descriptor_2d = !aster_utils.struct<ptr: !sx2, m_pos: index, n_pos: index, global_stride_in_bytes: index, elt_size: index>
+
+amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
+  func.func private @distributed_index_1d() -> index
+  func.func private @grid_stride_1d() -> index
+  func.func private @store_to_global_dword_wait(!v, !tensor_position_descriptor_2d) -> ()
+  func.func private @load_from_global_dword_wait(!tensor_position_descriptor_2d) -> !v
+
+  func.func private @global_load_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    %loaded = func.call @load_from_global_dword_wait(%pos_desc_2d) : (!tensor_position_descriptor_2d) -> !v
+    memref.store %loaded, %memref[%idx] : memref<?x!v>
+    return
+  }}
+
+  func.func private @global_store_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %value = memref.load %memref[%idx] : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    func.call @store_to_global_dword_wait(%value, %pos_desc_2d) : (!v, !tensor_position_descriptor_2d) -> ()
+    return
+  }}
+
+  func.func private @copy_scalar_loop(
+    %num_elements: index,
+    %src_global: !sx2,
+    %dst_global: !sx2
+  ) {{
+    %memref = memref.alloca(%num_elements) : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %base_index = func.call @distributed_index_1d() : () -> index
+    %grid_stride = func.call @grid_stride_1d() : () -> index
+    %grid_stride_bytes = affine.apply affine_map<(s)[elt] -> (s * elt)>(%grid_stride)[%c4]
+
+    scf.for %i = %c0 to %num_elements step %c1 {{
+      %elem_index = affine.apply affine_map<(base, i)[stride] -> (base + i * stride)>
+        (%base_index, %i)[%grid_stride]
+      %src_pos_desc = aster_utils.struct_create(%src_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %dst_pos_desc = aster_utils.struct_create(%dst_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      func.call @global_load_body_scalar(%src_pos_desc, %i, %memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+      func.call @global_store_body_scalar(%dst_pos_desc, %i, %memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+    }} {{sched.dims = array<i64: {element_count}>}}
+
+    return
+  }}
+
+  amdgcn.kernel @{kernel_name} arguments <[
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_write>
+  ]> attributes {{shared_memory_size = 0 : i32}} {{
+    %src_ptr_s = amdgcn.load_arg 0 : !sx2
+    %dst_ptr_s = amdgcn.load_arg 1 : !sx2
+    %src_ptr, %dst_ptr = lsir.assume_noalias %src_ptr_s, %dst_ptr_s : (!sx2, !sx2) -> (!sx2, !sx2)
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+    %num_elements = arith.constant {element_count} : index
+    func.call @copy_scalar_loop(%num_elements, %src_ptr, %dst_ptr) : (index, !sx2, !sx2) -> ()
+    amdgcn.end_kernel
+  }}
+}}
+"""
+
 _BINARY_1D_TEMPLATE = """// baybridge.aster_exec
 !sx2 = !amdgcn.sgpr<[? + 2]>
 !vx4 = !amdgcn.vgpr<[? + 4]>
@@ -220,6 +303,114 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
+_SCALAR_ADD_TEMPLATE = """// baybridge.aster_exec
+!sx2 = !amdgcn.sgpr<[? + 2]>
+!v = !amdgcn.vgpr
+!tensor_position_descriptor_1d = !aster_utils.struct<ptr: !sx2, pos: index, stride_in_bytes: index, elt_size: index>
+!tensor_position_descriptor_2d = !aster_utils.struct<ptr: !sx2, m_pos: index, n_pos: index, global_stride_in_bytes: index, elt_size: index>
+
+amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
+  func.func private @distributed_index_1d() -> index
+  func.func private @grid_stride_1d() -> index
+  func.func private @store_to_global_dword_wait(!v, !tensor_position_descriptor_2d) -> ()
+  func.func private @load_from_global_dword_wait(!tensor_position_descriptor_2d) -> !v
+
+  func.func private @global_load_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    %loaded = func.call @load_from_global_dword_wait(%pos_desc_2d) : (!tensor_position_descriptor_2d) -> !v
+    memref.store %loaded, %memref[%idx] : memref<?x!v>
+    return
+  }}
+
+  func.func private @global_store_body_scalar(
+    %pos_desc_1d: !tensor_position_descriptor_1d,
+    %idx: index,
+    %memref: memref<?x!v>
+  ) {{
+    %value = memref.load %memref[%idx] : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %ptr, %pos, %stride, %elt_size = aster_utils.struct_extract %pos_desc_1d["ptr", "pos", "stride_in_bytes", "elt_size"] : !tensor_position_descriptor_1d -> !sx2, index, index, index
+    %pos_desc_2d = aster_utils.struct_create(%ptr, %c0, %pos, %stride, %elt_size) : (!sx2, index, index, index, index) -> !tensor_position_descriptor_2d
+    func.call @store_to_global_dword_wait(%value, %pos_desc_2d) : (!v, !tensor_position_descriptor_2d) -> ()
+    return
+  }}
+
+  func.func private @scalar_add_body(
+    %idx: index,
+    %lhs_memref: memref<?x!v>,
+    %rhs_memref: memref<?x!v>,
+    %dst_memref: memref<?x!v>
+  ) {{
+    %lhs = memref.load %lhs_memref[%idx] : memref<?x!v>
+    %rhs = memref.load %rhs_memref[%idx] : memref<?x!v>
+    %tmp = amdgcn.alloca : !amdgcn.vgpr
+    %result = lsir.{lsir_op} {value_type} %tmp, %lhs, %rhs : !amdgcn.vgpr, !amdgcn.vgpr, !amdgcn.vgpr
+    memref.store %result, %dst_memref[%idx] : memref<?x!v>
+    return
+  }}
+
+  func.func private @add_scalar_loop(
+    %num_elements: index,
+    %lhs_global: !sx2,
+    %rhs_global: !sx2,
+    %dst_global: !sx2
+  ) {{
+    %lhs_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %rhs_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %dst_memref = memref.alloca(%num_elements) : memref<?x!v>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %base_index = func.call @distributed_index_1d() : () -> index
+    %grid_stride = func.call @grid_stride_1d() : () -> index
+    %grid_stride_bytes = affine.apply affine_map<(s)[elt] -> (s * elt)>(%grid_stride)[%c4]
+
+    scf.for %i = %c0 to %num_elements step %c1 {{
+      %elem_index = affine.apply affine_map<(base, i)[stride] -> (base + i * stride)>
+        (%base_index, %i)[%grid_stride]
+      %lhs_pos_desc = aster_utils.struct_create(%lhs_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %rhs_pos_desc = aster_utils.struct_create(%rhs_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      %dst_pos_desc = aster_utils.struct_create(%dst_global, %elem_index, %grid_stride_bytes, %c4) : (!sx2, index, index, index) -> !tensor_position_descriptor_1d
+      func.call @global_load_body_scalar(%lhs_pos_desc, %i, %lhs_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+      func.call @global_load_body_scalar(%rhs_pos_desc, %i, %rhs_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+      func.call @scalar_add_body(%i, %lhs_memref, %rhs_memref, %dst_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (index, memref<?x!v>, memref<?x!v>, memref<?x!v>) -> ()
+      func.call @global_store_body_scalar(%dst_pos_desc, %i, %dst_memref)
+        {{sched.delay = 0 : i32, sched.rate = 1 : i32}}
+        : (!tensor_position_descriptor_1d, index, memref<?x!v>) -> ()
+    }} {{sched.dims = array<i64: {element_count}>}}
+
+    return
+  }}
+
+  amdgcn.kernel @{kernel_name} arguments <[
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_write>
+  ]> attributes {{shared_memory_size = 0 : i32}} {{
+    %lhs_ptr_s = amdgcn.load_arg 0 : !sx2
+    %rhs_ptr_s = amdgcn.load_arg 1 : !sx2
+    %dst_ptr_s = amdgcn.load_arg 2 : !sx2
+    %lhs_ptr, %rhs_ptr, %dst_ptr = lsir.assume_noalias %lhs_ptr_s, %rhs_ptr_s, %dst_ptr_s : (!sx2, !sx2, !sx2) -> (!sx2, !sx2, !sx2)
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+    %num_elements = arith.constant {element_count} : index
+    func.call @add_scalar_loop(%num_elements, %lhs_ptr, %rhs_ptr, %dst_ptr) : (index, !sx2, !sx2, !sx2) -> ()
+    amdgcn.end_kernel
+  }}
+}}
+"""
+
 
 @dataclass(frozen=True)
 class _Copy1DMatch:
@@ -232,6 +423,15 @@ class _Copy1DMatch:
 
 
 @dataclass(frozen=True)
+class _CopyScalarMatch:
+    src_name: str
+    dst_name: str
+    dtype: str
+    shape: tuple[int, ...]
+    element_count: int
+
+
+@dataclass(frozen=True)
 class _Binary1DMatch:
     lhs_name: str
     rhs_name: str
@@ -241,6 +441,18 @@ class _Binary1DMatch:
     vector_chunks: int
     op: str
     binary_name: str
+    lsir_op: str
+    value_type: str
+
+
+@dataclass(frozen=True)
+class _AddScalarMatch:
+    lhs_name: str
+    rhs_name: str
+    dst_name: str
+    dtype: str
+    shape: tuple[int, ...]
+    element_count: int
     lsir_op: str
     value_type: str
 
@@ -280,8 +492,12 @@ class AsterExecBackend:
         match = self._match_kernel(ir, target)
         if isinstance(match, _Copy1DMatch):
             text = self._render_copy_1d(match, ir.name, target)
-        else:
+        elif isinstance(match, _CopyScalarMatch):
+            text = self._render_copy_scalar(match, ir.name, target)
+        elif isinstance(match, _Binary1DMatch):
             text = self._render_binary_1d(match, ir.name, target)
+        else:
+            text = self._render_add_scalar(match, ir.name, target)
         return LoweredModule(
             backend_name=self.name,
             entry_point=ir.name,
@@ -323,7 +539,7 @@ class AsterExecBackend:
                     configured_root,
                     ir.name,
                 )
-            if isinstance(match, _Copy1DMatch):
+            if isinstance(match, (_Copy1DMatch, _CopyScalarMatch)):
                 input_values = [
                     self._as_runtime_tensor(args[0], expected_dtype=match.dtype, argument_name=match.src_name),
                 ]
@@ -380,7 +596,7 @@ class AsterExecBackend:
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
-    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _Binary1DMatch:
+    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _CopyScalarMatch | _Binary1DMatch | _AddScalarMatch:
         if len(ir.arguments) == 2:
             return self._match_copy_1d(ir, target)
         if len(ir.arguments) == 3:
@@ -414,17 +630,27 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec currently requires dense contiguous tensors")
         element_count = self._total_elements(src_spec.shape)
         elements_per_chunk = 16 // self._dtype_size_bytes(src_spec.dtype)
-        if element_count <= 0 or element_count % elements_per_chunk != 0:
-            raise BackendNotImplementedError(
-                "aster_exec requires a contiguous element count aligned to a 16-byte transfer chunk"
+        if element_count <= 0:
+            raise BackendNotImplementedError("aster_exec requires a positive contiguous element count")
+        if element_count % elements_per_chunk == 0:
+            return _Copy1DMatch(
+                src_name=src_arg.name,
+                dst_name=dst_arg.name,
+                dtype=src_spec.dtype,
+                shape=src_spec.shape,
+                vector_chunks=element_count // elements_per_chunk,
+                elements_per_chunk=elements_per_chunk,
             )
-        return _Copy1DMatch(
-            src_name=src_arg.name,
-            dst_name=dst_arg.name,
-            dtype=src_spec.dtype,
-            shape=src_spec.shape,
-            vector_chunks=element_count // elements_per_chunk,
-            elements_per_chunk=elements_per_chunk,
+        if src_spec.dtype in {"f32", "i32"}:
+            return _CopyScalarMatch(
+                src_name=src_arg.name,
+                dst_name=dst_arg.name,
+                dtype=src_spec.dtype,
+                shape=src_spec.shape,
+                element_count=element_count,
+            )
+        raise BackendNotImplementedError(
+            "aster_exec requires a contiguous element count aligned to a 16-byte transfer chunk for this dtype"
         )
 
     def _render_copy_1d(self, match: _Copy1DMatch, kernel_name: str, target: AMDTarget) -> str:
@@ -433,6 +659,14 @@ class AsterExecBackend:
             isa=self._target_isa(target),
             kernel_name=kernel_name,
             vector_chunks=match.vector_chunks,
+        )
+
+    def _render_copy_scalar(self, match: _CopyScalarMatch, kernel_name: str, target: AMDTarget) -> str:
+        return _SCALAR_COPY_TEMPLATE.format(
+            target=target.arch,
+            isa=self._target_isa(target),
+            kernel_name=kernel_name,
+            element_count=match.element_count,
         )
 
     def _match_binary_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Binary1DMatch:
@@ -477,10 +711,8 @@ class AsterExecBackend:
         ):
             raise BackendNotImplementedError("aster_exec pointwise binary ops currently require dense contiguous tensors")
         element_count = self._total_elements(lhs_spec.shape)
-        if element_count <= 0 or element_count % 4 != 0:
-            raise BackendNotImplementedError(
-                "aster_exec pointwise binary ops require a contiguous element count that is a positive multiple of 4"
-            )
+        if element_count <= 0:
+            raise BackendNotImplementedError("aster_exec pointwise binary ops require a positive contiguous element count")
         dtype_support = {
             "f32": {
                 "tensor_add": ("add", "addf", "f32"),
@@ -501,6 +733,21 @@ class AsterExecBackend:
                 "aster_exec currently supports f32 and i32 add/sub/mul/div only"
             )
         binary_name, lsir_op, value_type = supported_for_dtype[binary_op]
+        if binary_op == "tensor_add" and lhs_spec.dtype in {"f32", "i32"} and element_count % 4 != 0:
+            return _AddScalarMatch(
+                lhs_name=lhs_arg.name,
+                rhs_name=rhs_arg.name,
+                dst_name=dst_arg.name,
+                dtype=lhs_spec.dtype,
+                shape=lhs_spec.shape,
+                element_count=element_count,
+                lsir_op=lsir_op,
+                value_type=value_type,
+            )
+        if element_count % 4 != 0:
+            raise BackendNotImplementedError(
+                "aster_exec pointwise binary ops require a contiguous element count that is a positive multiple of 4 unless scalar add fallback applies"
+            )
         return _Binary1DMatch(
             lhs_name=lhs_arg.name,
             rhs_name=rhs_arg.name,
@@ -521,6 +768,16 @@ class AsterExecBackend:
             kernel_name=kernel_name,
             vector_chunks=match.vector_chunks,
             binary_name=match.binary_name,
+            lsir_op=match.lsir_op,
+            value_type=match.value_type,
+        )
+
+    def _render_add_scalar(self, match: _AddScalarMatch, kernel_name: str, target: AMDTarget) -> str:
+        return _SCALAR_ADD_TEMPLATE.format(
+            target=target.arch,
+            isa=self._target_isa(target),
+            kernel_name=kernel_name,
+            element_count=match.element_count,
             lsir_op=match.lsir_op,
             value_type=match.value_type,
         )
