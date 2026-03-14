@@ -77,31 +77,38 @@ Benchmark notes:
 | Family | Backend | Median ms | Notes |
 | --- | --- | ---: | --- |
 | Dense `f32` copy, `65536` elements | `hipcc_exec` | `29.03` | Runtime benchmark completed cleanly |
+| Dense `f32` copy, `65536` elements | `flydsl_exec` | `907.73` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `33.52` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `0.84` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Ad hoc benchmark run hung in the current shell environment |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | Ad hoc benchmark run hung in the current shell environment |
-| Dense/indexed `f32` copy/add | `flydsl_exec` | n/a | Current repo venv does not have importable `torch`, so DLPack-backed runtime benchmarking was skipped |
 
 ### `mi300` (`gfx942`)
 
 | Family | Backend | Median ms | Notes |
 | --- | --- | ---: | --- |
 | Dense `f32` copy, `65536` elements | `hipcc_exec` | `46.91` | Runtime benchmark completed cleanly |
+| Dense `f32` copy, `65536` elements | `flydsl_exec` | `1370.14` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `58.01` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | Current ASTER runtime shell path resolves to `ImportError: libamdhip64.so.7` on this machine |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | Same ASTER HIP runtime ABI issue as copy |
-| Dense/indexed `f32` copy/add | `flydsl_exec` | n/a | Current repo venv does not have importable `torch`, so DLPack-backed runtime benchmarking was skipped |
 
 ## Environment Notes Behind Missing Numbers
 
 ### FlyDSL
 
-Current benchmark shells on both `mi355` and `mi300` report:
-- no importable `torch` in `~/tmp/baybridge-codex/.venv`
+Current benchmark shells on both `mi355` and `mi300` now have:
+- `torch 2.10.0+rocm7.1`
+- `torch.cuda.is_available() == True`
 
-That does not mean FlyDSL integration is gone. It means the current repo venv is not in the state needed for the benchmark harness to create GPU-backed DLPack inputs.
+That is enough for the benchmark harness to measure the validated real `flydsl_exec` copy path.
+
+The remaining boundary is semantic, not environmental:
+- dense `f32` copy is benchmarkable
+- the indexed add benchmark is still correctly skipped because Baybridge keeps that real upstream path behind the unvalidated-exec gate
 
 ### ASTER
 
