@@ -861,6 +861,14 @@ class AsterExecBackend:
                 vector_chunks=element_count // elements_per_chunk,
                 elements_per_chunk=elements_per_chunk,
             )
+        if src_spec.dtype == "f16" and element_count % 2 == 0:
+            return _CopyScalarMatch(
+                src_name=src_arg.name,
+                dst_name=dst_arg.name,
+                dtype=src_spec.dtype,
+                shape=src_spec.shape,
+                element_count=element_count // 2,
+            )
         if src_spec.dtype in {"f32", "i32"}:
             return _CopyScalarMatch(
                 src_name=src_arg.name,
@@ -870,7 +878,7 @@ class AsterExecBackend:
                 element_count=element_count,
             )
         raise BackendNotImplementedError(
-            "aster_exec requires a contiguous element count aligned to a 16-byte transfer chunk for this dtype"
+            "aster_exec requires a contiguous element count aligned to a supported transfer chunk for this dtype"
         )
 
     def _render_copy_1d(self, match: _Copy1DMatch, kernel_name: str, target: AMDTarget) -> str:

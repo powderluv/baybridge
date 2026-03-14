@@ -148,6 +148,14 @@ def aster_exec_copy_f16_kernel(
 
 
 @bb.kernel
+def aster_exec_copy_f16_tail_kernel(
+    src: bb.TensorSpec(shape=(10,), dtype="f16"),
+    dst: bb.TensorSpec(shape=(10,), dtype="f16"),
+):
+    bb.copy(src, dst)
+
+
+@bb.kernel
 def aster_exec_copy_2d_kernel(
     src: bb.TensorSpec(shape=(4, 4), dtype="f32"),
     dst: bb.TensorSpec(shape=(4, 4), dtype="f32"),
@@ -159,6 +167,14 @@ def aster_exec_copy_2d_kernel(
 def aster_exec_copy_2d_f16_kernel(
     src: bb.TensorSpec(shape=(4, 4), dtype="f16"),
     dst: bb.TensorSpec(shape=(4, 4), dtype="f16"),
+):
+    bb.copy(src, dst)
+
+
+@bb.kernel
+def aster_exec_copy_2d_f16_tail_kernel(
+    src: bb.TensorSpec(shape=(2, 5), dtype="f16"),
+    dst: bb.TensorSpec(shape=(2, 5), dtype="f16"),
 ):
     bb.copy(src, dst)
 
@@ -1312,6 +1328,26 @@ def test_compile_auto_prefers_aster_exec_for_matching_2d_add_kernel(
     assert dst.tolist() == [[left + right for left, right in zip(src_row, other_row, strict=True)] for src_row, other_row in zip(src.tolist(), other.tolist(), strict=True)]
 
 
+def test_compile_auto_prefers_aster_exec_for_matching_f16_tail_copy_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor([index / 8.0 for index in range(10)], dtype="f16")
+    dst = bb.zeros((10,), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_f16_tail_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
 def test_compile_auto_prefers_aster_exec_for_matching_2d_f16_copy_kernel(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1322,6 +1358,26 @@ def test_compile_auto_prefers_aster_exec_for_matching_2d_f16_copy_kernel(
 
     artifact = bb.compile(
         aster_exec_copy_2d_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_2d_f16_tail_copy_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    src = bb.tensor([[float(5 * row + col) / 8.0 for col in range(5)] for row in range(2)], dtype="f16")
+    dst = bb.zeros((2, 5), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_2d_f16_tail_kernel,
         src,
         dst,
         cache_dir=tmp_path / "cache",
@@ -1534,6 +1590,32 @@ def test_aster_exec_runs_2d_f16_copy_on_amd_hardware(tmp_path: Path) -> None:
 
     artifact = bb.compile(
         aster_exec_copy_2d_f16_kernel,
+        src,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
+def test_aster_exec_runs_2d_f16_tail_copy_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([[float(5 * row + col) / 8.0 for col in range(5)] for row in range(2)], dtype="f16")
+    dst = bb.zeros((2, 5), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_2d_f16_tail_kernel,
         src,
         dst,
         target=bb.AMDTarget(arch=target_arch),
@@ -2221,6 +2303,32 @@ def test_aster_exec_runs_f16_copy_on_amd_hardware(tmp_path: Path) -> None:
     assert dst.tolist() == src.tolist()
 
 
+def test_aster_exec_runs_f16_tail_copy_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([index / 8.0 for index in range(10)], dtype="f16")
+    dst = bb.zeros((10,), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_f16_tail_kernel,
+        src,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
 def test_compile_auto_prefers_aster_exec_on_amd_hardware(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
@@ -2370,6 +2478,32 @@ def test_compile_auto_prefers_aster_exec_for_2d_f16_copy_on_amd_hardware(tmp_pat
 
     artifact = bb.compile(
         aster_exec_copy_2d_f16_kernel,
+        src,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_2d_f16_tail_copy_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([[float(5 * row + col) / 8.0 for col in range(5)] for row in range(2)], dtype="f16")
+    dst = bb.zeros((2, 5), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_2d_f16_tail_kernel,
         src,
         dst,
         target=bb.AMDTarget(arch=target_arch),
@@ -2548,6 +2682,32 @@ def test_compile_auto_prefers_aster_exec_for_f16_copy_on_amd_hardware(tmp_path: 
 
     artifact = bb.compile(
         aster_exec_copy_f16_kernel,
+        src,
+        dst,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_f16_tail_copy_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    src = bb.tensor([index / 8.0 for index in range(10)], dtype="f16")
+    dst = bb.zeros((10,), dtype="f16")
+
+    artifact = bb.compile(
+        aster_exec_copy_f16_tail_kernel,
         src,
         dst,
         target=bb.AMDTarget(arch=target_arch),
