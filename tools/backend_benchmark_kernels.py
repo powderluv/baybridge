@@ -172,6 +172,19 @@ def aster_broadcast_add_f32_args(*, backend_name=None, **_kwargs):
     }
 
 
+def aster_broadcast_add_i32_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_i32(ASTER_POINTWISE_N, scale=3, offset=7)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="i32"),
+            bb.tensor([13], dtype="i32"),
+            bb.zeros((ASTER_POINTWISE_N,), dtype="i32"),
+        ),
+        "result_indices": (),
+    }
+
+
 def indexed_add_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}

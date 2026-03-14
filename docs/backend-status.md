@@ -129,6 +129,8 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f16` copy, `4096` elements | `aster_exec` | `7.46` | Real ASTER executable path |
 | Dense `f32` broadcast add, `4096` elements | `hipcc_exec` | `1.69` | Dense source plus single-element RHS tensor |
 | Dense `f32` broadcast add, `4096` elements | `aster_exec` | `7.78` | Broadcast now validated on the aligned scalar-broadcast path |
+| Dense `i32` broadcast add, `4096` elements | `hipcc_exec` | `1.98` | Dense source plus single-element RHS tensor |
+| Dense `i32` broadcast add, `4096` elements | `aster_exec` | `7.64` | Broadcast now validated on the aligned scalar-broadcast path |
 
 ### `mi300` (`gfx942`)
 
@@ -146,6 +148,8 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f16` copy, `4096` elements | `aster_exec` | `10.78` | Real ASTER executable path |
 | Dense `f32` broadcast add, `4096` elements | `hipcc_exec` | `2.68` | Dense source plus single-element RHS tensor |
 | Dense `f32` broadcast add, `4096` elements | `aster_exec` | `11.36` | Broadcast now validated on the aligned scalar-broadcast path |
+| Dense `i32` broadcast add, `4096` elements | `hipcc_exec` | `3.33` | Dense source plus single-element RHS tensor |
+| Dense `i32` broadcast add, `4096` elements | `aster_exec` | `11.37` | Broadcast now validated on the aligned scalar-broadcast path |
 
 ## ASTER Ratio Summary
 
@@ -159,6 +163,21 @@ Warm median ratio of `aster_exec / hipcc_exec` on the matched `4096`-element AST
 | Dense `i32` add | `2.42x` | `2.08x` |
 | Dense `f16` copy | `1.90x` | `1.58x` |
 | Dense `f32` broadcast add | `4.60x` | `4.24x` |
+| Dense `i32` broadcast add | `3.86x` | `3.41x` |
+
+## ASTER Cold vs Warm Snapshot
+
+Cold-start timing here is the first recorded execution in the `--repeat 7` run. Warm median is the median of the following six steady-state executions.
+
+| Family | `mi355` cold ms | `mi355` warm median ms | `mi300` cold ms | `mi300` warm median ms |
+| --- | ---: | ---: | ---: | ---: |
+| Dense `f32` copy | `18927.18` | `7.33` | `37555.55` | `10.62` |
+| Dense `f32` add | `74842.37` | `7.53` | `149174.42` | `11.49` |
+| Dense `i32` copy | `18901.67` | `7.32` | `37700.85` | `10.71` |
+| Dense `i32` add | `74548.61` | `7.57` | `148596.15` | `11.20` |
+| Dense `f16` copy | `179.84` | `7.46` | `161.92` | `10.78` |
+| Dense `f32` broadcast add | `76750.55` | `7.78` | `153196.57` | `11.36` |
+| Dense `i32` broadcast add | `76450.53` | `7.64` | `153626.47` | `11.37` |
 
 ## Environment Notes Behind Missing Numbers
 
@@ -190,6 +209,7 @@ So ASTER should currently be treated as:
 - useful for executable copy and add/sub/mul coverage
 - benchmarkable through the checked-in ASTER microbenchmark harness above
 - currently closest to `hipcc_exec` on `f16` copy in this microbench set, and furthest behind on scalar broadcast add
+- still carries a very large cold-start penalty on most `f32/i32` kernels, which is why the doc now separates cold and warm timing explicitly
 - not yet a drop-in replacement for the common large-shape benchmark table used by `hipcc_exec` and `hipkittens_exec`
 
 ### WaveASM
