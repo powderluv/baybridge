@@ -21,9 +21,13 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
 
     copy_payload = kernels.aster_dense_copy_f32_args()
     add_payload = kernels.aster_dense_add_f32_args()
+    copy_i32_payload = kernels.aster_dense_copy_i32_args()
+    add_i32_payload = kernels.aster_dense_add_i32_args()
 
     copy_args = copy_payload["args"]
     add_args = add_payload["args"]
+    copy_i32_args = copy_i32_payload["args"]
+    add_i32_args = add_i32_payload["args"]
 
     assert len(copy_args) == 2
     assert copy_args[0].shape == (kernels.ASTER_POINTWISE_N,)
@@ -35,6 +39,22 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert add_args[1].shape == (kernels.ASTER_POINTWISE_N,)
     assert add_args[2].shape == (kernels.ASTER_POINTWISE_N,)
     assert add_payload["result_indices"] == ()
+
+    assert len(copy_i32_args) == 2
+    assert copy_i32_args[0].shape == (kernels.ASTER_POINTWISE_N,)
+    assert copy_i32_args[1].shape == (kernels.ASTER_POINTWISE_N,)
+    assert str(copy_i32_args[0].dtype) == "i32"
+    assert str(copy_i32_args[1].dtype) == "i32"
+    assert copy_i32_payload["result_indices"] == ()
+
+    assert len(add_i32_args) == 3
+    assert add_i32_args[0].shape == (kernels.ASTER_POINTWISE_N,)
+    assert add_i32_args[1].shape == (kernels.ASTER_POINTWISE_N,)
+    assert add_i32_args[2].shape == (kernels.ASTER_POINTWISE_N,)
+    assert str(add_i32_args[0].dtype) == "i32"
+    assert str(add_i32_args[1].dtype) == "i32"
+    assert str(add_i32_args[2].dtype) == "i32"
+    assert add_i32_payload["result_indices"] == ()
 
 
 def test_compare_backends_uses_hip_synchronizer_for_aster_exec(monkeypatch) -> None:

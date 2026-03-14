@@ -46,6 +46,10 @@ def _vector_f32(n: int, *, scale: float = 1.0, offset: float = 0.0) -> list[floa
     return [scale * float(index % 251) + offset for index in range(n)]
 
 
+def _vector_i32(n: int, *, scale: int = 1, offset: int = 0) -> list[int]:
+    return [scale * int(index % 251) + offset for index in range(n)]
+
+
 def _maybe_torch_tensor(values, *, shape, dtype: str, backend_name: str):
     if backend_name != "flydsl_exec" or torch is None:
         return None
@@ -112,6 +116,32 @@ def aster_dense_add_f32_args(*, backend_name=None, **_kwargs):
             bb.tensor(src_values, dtype="f32"),
             bb.tensor(other_values, dtype="f32"),
             bb.zeros((ASTER_POINTWISE_N,), dtype="f32"),
+        ),
+        "result_indices": (),
+    }
+
+
+def aster_dense_copy_i32_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_i32(ASTER_POINTWISE_N, scale=3, offset=7)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="i32"),
+            bb.zeros((ASTER_POINTWISE_N,), dtype="i32"),
+        ),
+        "result_indices": (),
+    }
+
+
+def aster_dense_add_i32_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_i32(ASTER_POINTWISE_N, scale=3, offset=7)
+    other_values = _vector_i32(ASTER_POINTWISE_N, scale=5, offset=11)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="i32"),
+            bb.tensor(other_values, dtype="i32"),
+            bb.zeros((ASTER_POINTWISE_N,), dtype="i32"),
         ),
         "result_indices": (),
     }

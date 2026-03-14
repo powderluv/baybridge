@@ -15,10 +15,9 @@ That split matters because some backends are integrated and tested, but still de
 
 Current repo state during this documentation pass:
 - branch: `main`
-- latest committed ASTER/runtime fix: `b21303b` `Fix ASTER exec support and runtime bootstrap`
+- latest committed ASTER benchmark harness: `a11196a` `Add ASTER backend benchmark harness`
 - worktree is dirty because the benchmark harness and status doc now include an ASTER-specific microbenchmark path:
   - `tools/backend_benchmark_kernels.py`
-  - `tools/compare_backends.py`
   - `tests/test_backend_benchmark_tools.py`
   - `docs/backend-status.md`
 
@@ -120,6 +119,10 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f32` copy, `4096` elements | `aster_exec` | `7.33` | Real ASTER executable path |
 | Dense `f32` add, `4096` elements | `hipcc_exec` | `2.59` | Same kernel/sample factory as ASTER baseline |
 | Dense `f32` add, `4096` elements | `aster_exec` | `7.53` | Real ASTER executable path |
+| Dense `i32` copy, `4096` elements | `hipcc_exec` | `2.26` | Same kernel/sample factory as ASTER baseline |
+| Dense `i32` copy, `4096` elements | `aster_exec` | `7.32` | Real ASTER executable path |
+| Dense `i32` add, `4096` elements | `hipcc_exec` | `3.13` | Same kernel/sample factory as ASTER baseline |
+| Dense `i32` add, `4096` elements | `aster_exec` | `7.57` | Real ASTER executable path |
 
 ### `mi300` (`gfx942`)
 
@@ -129,6 +132,10 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `f32` copy, `4096` elements | `aster_exec` | `10.62` | Real ASTER executable path |
 | Dense `f32` add, `4096` elements | `hipcc_exec` | `4.28` | Same kernel/sample factory as ASTER baseline |
 | Dense `f32` add, `4096` elements | `aster_exec` | `11.49` | Real ASTER executable path |
+| Dense `i32` copy, `4096` elements | `hipcc_exec` | `3.89` | Same kernel/sample factory as ASTER baseline |
+| Dense `i32` copy, `4096` elements | `aster_exec` | `10.71` | Real ASTER executable path |
+| Dense `i32` add, `4096` elements | `hipcc_exec` | `5.38` | Same kernel/sample factory as ASTER baseline |
+| Dense `i32` add, `4096` elements | `aster_exec` | `11.20` | Real ASTER executable path |
 
 ## Environment Notes Behind Missing Numbers
 
