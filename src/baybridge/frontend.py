@@ -102,6 +102,55 @@ class WarpMmaF16BF16Op:
 @dataclass(frozen=True)
 class Tcgen05Ld32x32bOp:
     repetition: Any = None
+    pack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05Ld16x128bOp:
+    repetition: Any = None
+    pack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05Ld16x256bOp:
+    repetition: Any = None
+    pack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05Ld16x32bx2Op:
+    repetition: Any = None
+    pack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05St16x64bOp:
+    repetition: Any = None
+    unpack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05St16x128bOp:
+    repetition: Any = None
+    unpack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05St16x256bOp:
+    repetition: Any = None
+    unpack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05St16x32bx2Op:
+    repetition: Any = None
+    unpack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05St32x32bOp:
+    repetition: Any = None
+    unpack: Any = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +172,29 @@ class Tcgen05MmaF16BF16Op:
     @property
     def operand_dtype(self) -> str:
         return str(self.dtype)
+
+
+@dataclass(frozen=True)
+class Tcgen05MmaTF32Op:
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    cta_group: Any = None
+    operand_source: Any = None
+    operand_major_mode_a: Any = None
+    operand_major_mode_b: Any = None
+    wave_size: int = 64
+    lane_shape: tuple[int, int] = (4, 8)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def dtype(self) -> str:
+        return "f32"
+
+    @property
+    def operand_dtype(self) -> str:
+        return "f32"
 
 
 @dataclass(frozen=True)
@@ -2921,6 +2993,15 @@ def _resolve_tiled_mma_descriptor(
             lane_shape=op.lane_shape,
             variant_name="tcgen05_mma_f16bf16",
         )
+    if isinstance(op, Tcgen05MmaTF32Op):
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=op.operand_dtype,
+            accumulator_dtype=op.accumulator_dtype,
+            wave_size=op.wave_size,
+            lane_shape=op.lane_shape,
+            variant_name="tcgen05_mma_tf32",
+        )
     if hasattr(op, "variant_name") and hasattr(op, "tile") and hasattr(op, "operand_dtype") and hasattr(op, "accumulator_dtype"):
         wave_size = int(getattr(op, "wave_size", 64))
         lane_shape = tuple(getattr(op, "lane_shape", (4, 16)))
@@ -3609,22 +3690,48 @@ class _WarpNamespace(_UnsupportedNamespace):
 
 class _Tcgen05CtaGroup:
     ONE = "one"
+    TWO = "two"
 
 
 class _Tcgen05OperandSource:
     SMEM = "smem"
+    TMEM = "tmem"
 
 
 class _Tcgen05OperandMajorMode:
+    M = "m"
+    N = "n"
     K = "k"
 
 
 class _Tcgen05Repetition:
+    x1 = "x1"
+    x2 = "x2"
+    x4 = "x4"
+    x8 = "x8"
+    x16 = "x16"
+    x32 = "x32"
     x64 = "x64"
 
 
 class _Tcgen05Field:
     ACCUMULATE = "accumulate"
+    NEGATE_A = "negate_a"
+    NEGATE_B = "negate_b"
+    SCALE_A = "scale_a"
+    SCALE_B = "scale_b"
+
+
+class _Tcgen05Pack:
+    NONE = "none"
+    PACK_16 = "pack_16"
+    PACK_32 = "pack_32"
+
+
+class _Tcgen05Unpack:
+    NONE = "none"
+    UNPACK_16 = "unpack_16"
+    UNPACK_32 = "unpack_32"
 
 
 class _Tcgen05Namespace(_UnsupportedNamespace):
@@ -3633,6 +3740,8 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
     OperandMajorMode = _Tcgen05OperandMajorMode
     Repetition = _Tcgen05Repetition
     Field = _Tcgen05Field
+    Pack = _Tcgen05Pack
+    Unpack = _Tcgen05Unpack
 
     def __init__(self):
         super().__init__("nvgpu.tcgen05")
@@ -3646,9 +3755,27 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
         operand_source: Any = None,
         operand_major_mode_a: Any = None,
         operand_major_mode_b: Any = None,
-    ) -> Tcgen05MmaF16BF16Op:
+        ) -> Tcgen05MmaF16BF16Op:
         return Tcgen05MmaF16BF16Op(
             operand_dtype,
+            accumulator_dtype,
+            tile,
+            cta_group,
+            operand_source,
+            operand_major_mode_a,
+            operand_major_mode_b,
+        )
+
+    def MmaTF32Op(
+        self,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+        cta_group: Any = None,
+        operand_source: Any = None,
+        operand_major_mode_a: Any = None,
+        operand_major_mode_b: Any = None,
+    ) -> Tcgen05MmaTF32Op:
+        return Tcgen05MmaTF32Op(
             accumulator_dtype,
             tile,
             cta_group,
@@ -3660,13 +3787,108 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
     def Ld32x32bOp(self, repetition: Any = None) -> Tcgen05Ld32x32bOp:
         return Tcgen05Ld32x32bOp(repetition=repetition)
 
+    def Ld16x128bOp(self, repetition: Any = None, pack: Any = None) -> Tcgen05Ld16x128bOp:
+        return Tcgen05Ld16x128bOp(repetition=repetition, pack=pack)
+
+    def Ld16x256bOp(self, repetition: Any = None, pack: Any = None) -> Tcgen05Ld16x256bOp:
+        return Tcgen05Ld16x256bOp(repetition=repetition, pack=pack)
+
+    def Ld16x32bx2Op(self, repetition: Any = None, pack: Any = None) -> Tcgen05Ld16x32bx2Op:
+        return Tcgen05Ld16x32bx2Op(repetition=repetition, pack=pack)
+
+    def St16x64bOp(self, repetition: Any = None, unpack: Any = None) -> Tcgen05St16x64bOp:
+        return Tcgen05St16x64bOp(repetition=repetition, unpack=unpack)
+
+    def St16x128bOp(self, repetition: Any = None, unpack: Any = None) -> Tcgen05St16x128bOp:
+        return Tcgen05St16x128bOp(repetition=repetition, unpack=unpack)
+
+    def St16x256bOp(self, repetition: Any = None, unpack: Any = None) -> Tcgen05St16x256bOp:
+        return Tcgen05St16x256bOp(repetition=repetition, unpack=unpack)
+
+    def St16x32bx2Op(self, repetition: Any = None, unpack: Any = None) -> Tcgen05St16x32bx2Op:
+        return Tcgen05St16x32bx2Op(repetition=repetition, unpack=unpack)
+
+    def St32x32bOp(self, repetition: Any = None, unpack: Any = None) -> Tcgen05St32x32bOp:
+        return Tcgen05St32x32bOp(repetition=repetition, unpack=unpack)
+
+    def _repetition_count(self, repetition: Any) -> int:
+        if repetition is None:
+            return 1
+        text = str(repetition)
+        if text.startswith("x"):
+            try:
+                return int(text[1:])
+            except ValueError:
+                pass
+        return 1
+
+    def is_tmem_load(self, atom_or_op: Any) -> bool:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        return isinstance(op, (Tcgen05Ld32x32bOp, Tcgen05Ld16x128bOp, Tcgen05Ld16x256bOp, Tcgen05Ld16x32bx2Op))
+
+    def is_tmem_store(self, atom_or_op: Any) -> bool:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        return isinstance(op, (Tcgen05St16x64bOp, Tcgen05St16x128bOp, Tcgen05St16x256bOp, Tcgen05St16x32bx2Op, Tcgen05St32x32bOp))
+
+    def get_tmem_copy_properties(self, atom_or_op: Any) -> dict[str, Any]:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        traits = {
+            Tcgen05Ld32x32bOp: {"mode": "load", "lanes": 32, "bits": 32, "pack": getattr(op, "pack", None)},
+            Tcgen05Ld16x128bOp: {"mode": "load", "lanes": 16, "bits": 128, "pack": getattr(op, "pack", None)},
+            Tcgen05Ld16x256bOp: {"mode": "load", "lanes": 16, "bits": 256, "pack": getattr(op, "pack", None)},
+            Tcgen05Ld16x32bx2Op: {"mode": "load", "lanes": 16, "bits": 64, "pack": getattr(op, "pack", None)},
+            Tcgen05St16x64bOp: {"mode": "store", "lanes": 16, "bits": 64, "unpack": getattr(op, "unpack", None)},
+            Tcgen05St16x128bOp: {"mode": "store", "lanes": 16, "bits": 128, "unpack": getattr(op, "unpack", None)},
+            Tcgen05St16x256bOp: {"mode": "store", "lanes": 16, "bits": 256, "unpack": getattr(op, "unpack", None)},
+            Tcgen05St16x32bx2Op: {"mode": "store", "lanes": 16, "bits": 64, "unpack": getattr(op, "unpack", None)},
+            Tcgen05St32x32bOp: {"mode": "store", "lanes": 32, "bits": 32, "unpack": getattr(op, "unpack", None)},
+        }
+        for op_type, values in traits.items():
+            if isinstance(op, op_type):
+                return {
+                    **values,
+                    "repetition": self._repetition_count(getattr(op, "repetition", None)),
+                }
+        raise TypeError("tcgen05 helper expects a supported TMEM load/store op or baybridge CopyAtom")
+
+    def find_tmem_tensor_col_offset(self, tensor: Any) -> int:
+        stride = getattr(tensor, "stride", None)
+        offset = int(getattr(tensor, "offset", 0))
+        if callable(stride):
+            stride = stride()
+        if isinstance(stride, tuple) and len(stride) >= 2 and stride[0] > 0:
+            return offset % int(stride[0])
+        return offset
+
+    def tile_to_mma_shape(self, value: Any) -> tuple[int, ...]:
+        shape = getattr(value, "shape", None)
+        if isinstance(shape, tuple):
+            return tuple(int(dim) for dim in shape)
+        raise TypeError("tcgen05.tile_to_mma_shape expects a tensor-like value with a shape")
+
     def make_tmem_copy(self, atom: CopyAtom, tensor: Any) -> TiledCopyTV:
         shape = getattr(tensor, "shape", None)
         if not isinstance(shape, tuple) or len(shape) < 2:
             raise ValueError("tcgen05.make_tmem_copy expects a tensor-like value with rank >= 2")
-        thread_layout = Layout.ordered((1, shape[1]), order=(1, 0))
-        value_layout = Layout.ordered((shape[0], 1), order=(1, 0))
+        properties = self.get_tmem_copy_properties(atom)
+        lanes = min(int(properties["lanes"]), int(shape[1]))
+        repetitions = max(1, int(properties["repetition"]))
+        thread_layout = Layout.ordered((1, lanes), order=(1, 0))
+        value_layout = Layout.ordered((max(1, int(shape[0]) * repetitions), 1), order=(1, 0))
         return make_tiled_copy_tv(atom, thread_layout, value_layout)
+
+    def make_s2t_copy(self, atom: CopyAtom, tensor: Any) -> TiledCopyTV:
+        return self.make_tmem_copy(atom, tensor)
+
+    def commit(
+        self,
+        mbarrier_or_ptr: Mbarrier | Pointer | None = None,
+        *,
+        mask: int | None = None,
+        cta_group: Any = None,
+    ) -> None:
+        barrier_id = getattr(mbarrier_or_ptr, "index", None)
+        barrier(kind="block", scope="tcgen05_commit", barrier_id=barrier_id, mask=mask, cta_group=cta_group)
 
 
 class _NvgpuNamespace(_UnsupportedNamespace):

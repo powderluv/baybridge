@@ -102,6 +102,48 @@ def test_tma_compat_surface_constructs_passthrough_objects() -> None:
     assert tiled_mma.set(tcgen05.Field.ACCUMULATE, True) is tiled_mma
 
 
+def test_tcgen05_tmem_surface_and_tf32_op_helpers() -> None:
+    load_op = tcgen05.Ld16x128bOp(tcgen05.Repetition.x4, tcgen05.Pack.PACK_16)
+    store_op = tcgen05.St32x32bOp(tcgen05.Repetition.x2, tcgen05.Unpack.UNPACK_32)
+    load_atom = bb.make_copy_atom(load_op, bb.Float16)
+    store_atom = bb.make_copy_atom(store_op, bb.Float32)
+
+    assert tcgen05.is_tmem_load(load_atom) is True
+    assert tcgen05.is_tmem_store(store_atom) is True
+    assert tcgen05.get_tmem_copy_properties(load_atom) == {
+        "mode": "load",
+        "lanes": 16,
+        "bits": 128,
+        "pack": tcgen05.Pack.PACK_16,
+        "repetition": 4,
+    }
+    assert tcgen05.get_tmem_copy_properties(store_atom) == {
+        "mode": "store",
+        "lanes": 32,
+        "bits": 32,
+        "unpack": tcgen05.Unpack.UNPACK_32,
+        "repetition": 2,
+    }
+
+    tensor = bb.zeros((4, 8), dtype="f32")
+    assert tcgen05.find_tmem_tensor_col_offset(tensor) == 0
+    assert tcgen05.tile_to_mma_shape(tensor) == (4, 8)
+    assert isinstance(tcgen05.make_s2t_copy(load_atom, tensor), bb.TiledCopy)
+
+    tf32_mma = tcgen05.MmaTF32Op(
+        bb.Float32,
+        (16, 8, 8),
+        tcgen05.CtaGroup.TWO,
+        tcgen05.OperandSource.TMEM,
+        tcgen05.OperandMajorMode.M,
+        tcgen05.OperandMajorMode.N,
+    )
+    tiled_tf32 = bb.make_tiled_mma(tf32_mma)
+    assert tiled_tf32.shape == (16, 8, 8)
+
+    tcgen05.commit(bb.MbarrierArray(1)[0], mask=3, cta_group=tcgen05.CtaGroup.TWO)
+
+
 def test_cpasync_copy_kernel_runs_on_amd_hardware(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HIP backend tests")
