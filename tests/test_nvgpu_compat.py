@@ -144,6 +144,43 @@ def test_tcgen05_tmem_surface_and_tf32_op_helpers() -> None:
     tcgen05.commit(bb.MbarrierArray(1)[0], mask=3, cta_group=tcgen05.CtaGroup.TWO)
 
 
+def test_cpasync_tma_reduce_surface_and_helpers() -> None:
+    load_atom = bb.make_copy_atom(cpasync.CopyBulkTensorTileG2SMulticastOp(tcgen05.CtaGroup.TWO), bb.Float16)
+    store_atom = bb.make_copy_atom(cpasync.CopyBulkTensorTileS2GOp(tcgen05.CtaGroup.ONE), bb.Float32)
+    reduce_atom = bb.make_copy_atom(
+        cpasync.CopyReduceBulkTensorTileS2GOp(cpasync.ReductionOp.MAX, tcgen05.CtaGroup.TWO),
+        bb.Float32,
+    )
+    dsmem_atom = bb.make_copy_atom(cpasync.CopyDsmemStoreOp(), bb.Float32)
+
+    assert cpasync.is_tma_load(load_atom) is True
+    assert cpasync.is_tma_store(store_atom) is True
+    assert cpasync.is_tma_store(reduce_atom) is True
+    assert cpasync.is_tma_reduce(reduce_atom) is True
+    assert cpasync.is_tma_reduce(load_atom) is False
+    assert cpasync.get_tma_copy_properties(load_atom) == {
+        "mode": "load",
+        "variant": "g2s_multicast",
+        "cta_group": tcgen05.CtaGroup.TWO,
+    }
+    assert cpasync.get_tma_copy_properties(store_atom) == {
+        "mode": "store",
+        "variant": "s2g",
+        "cta_group": tcgen05.CtaGroup.ONE,
+    }
+    assert cpasync.get_tma_copy_properties(reduce_atom) == {
+        "mode": "store",
+        "variant": "s2g_reduce",
+        "cta_group": tcgen05.CtaGroup.TWO,
+        "reduction": cpasync.ReductionOp.MAX,
+    }
+    assert cpasync.get_tma_copy_properties(dsmem_atom) == {
+        "mode": "store",
+        "variant": "dsmem_store",
+        "cta_group": None,
+    }
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def warpgroup_helper_kernel(out: bb.Tensor):
     bb.nvgpu.warpgroup.fence()

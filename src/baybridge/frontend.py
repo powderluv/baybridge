@@ -72,6 +72,59 @@ class CpAsyncCopyBulkTensorTileG2SOp:
     cta_group: Any = None
 
 
+class _CpAsyncReductionOp:
+    ADD = "add"
+    INC = "inc"
+    DEC = "dec"
+    MIN = "min"
+    MAX = "max"
+    AND = "and"
+    OR = "or"
+    XOR = "xor"
+
+
+def _normalize_cpasync_reduction_kind(value: Any) -> str:
+    normalized = getattr(value, "value", value)
+    text = str(normalized).lower()
+    supported = {
+        _CpAsyncReductionOp.ADD,
+        _CpAsyncReductionOp.INC,
+        _CpAsyncReductionOp.DEC,
+        _CpAsyncReductionOp.MIN,
+        _CpAsyncReductionOp.MAX,
+        _CpAsyncReductionOp.AND,
+        _CpAsyncReductionOp.OR,
+        _CpAsyncReductionOp.XOR,
+    }
+    if text not in supported:
+        raise ValueError(f"unsupported cpasync reduction op '{value}'")
+    return text
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyBulkTensorTileG2SMulticastOp:
+    cta_group: Any = None
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyBulkTensorTileS2GOp:
+    cta_group: Any = None
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyReduceBulkTensorTileS2GOp:
+    reduction_kind: Any = _CpAsyncReductionOp.ADD
+    cta_group: Any = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reduction_kind", _normalize_cpasync_reduction_kind(self.reduction_kind))
+
+
+@dataclass(frozen=True)
+class CpAsyncCopyDsmemStoreOp:
+    pass
+
+
 @dataclass(frozen=True)
 class WarpLdMatrix8x8x16bOp:
     transpose: bool = False
@@ -3673,6 +3726,7 @@ class _CpAsyncLoadCacheMode:
 
 class _CpAsyncNamespace(_UnsupportedNamespace):
     LoadCacheMode = _CpAsyncLoadCacheMode
+    ReductionOp = _CpAsyncReductionOp
 
     def __init__(self):
         super().__init__("nvgpu.cpasync")
@@ -3682,6 +3736,66 @@ class _CpAsyncNamespace(_UnsupportedNamespace):
 
     def CopyBulkTensorTileG2SOp(self, cta_group: Any = None) -> CpAsyncCopyBulkTensorTileG2SOp:
         return CpAsyncCopyBulkTensorTileG2SOp(cta_group=cta_group)
+
+    def CopyBulkTensorTileG2SMulticastOp(self, cta_group: Any = None) -> CpAsyncCopyBulkTensorTileG2SMulticastOp:
+        return CpAsyncCopyBulkTensorTileG2SMulticastOp(cta_group=cta_group)
+
+    def CopyBulkTensorTileS2GOp(self, cta_group: Any = None) -> CpAsyncCopyBulkTensorTileS2GOp:
+        return CpAsyncCopyBulkTensorTileS2GOp(cta_group=cta_group)
+
+    def CopyReduceBulkTensorTileS2GOp(
+        self,
+        reduction_kind: Any = _CpAsyncReductionOp.ADD,
+        cta_group: Any = None,
+    ) -> CpAsyncCopyReduceBulkTensorTileS2GOp:
+        return CpAsyncCopyReduceBulkTensorTileS2GOp(reduction_kind=reduction_kind, cta_group=cta_group)
+
+    def CopyDsmemStoreOp(self) -> CpAsyncCopyDsmemStoreOp:
+        return CpAsyncCopyDsmemStoreOp()
+
+    def is_tma_load(self, atom_or_op: Any) -> bool:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        return isinstance(
+            op,
+            (
+                CpAsyncCopyBulkTensorTileG2SOp,
+                CpAsyncCopyBulkTensorTileG2SMulticastOp,
+            ),
+        )
+
+    def is_tma_store(self, atom_or_op: Any) -> bool:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        return isinstance(
+            op,
+            (
+                CpAsyncCopyBulkTensorTileS2GOp,
+                CpAsyncCopyReduceBulkTensorTileS2GOp,
+                CpAsyncCopyDsmemStoreOp,
+            ),
+        )
+
+    def is_tma_reduce(self, atom_or_op: Any) -> bool:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        return isinstance(op, CpAsyncCopyReduceBulkTensorTileS2GOp)
+
+    def get_tma_copy_properties(self, atom_or_op: Any) -> dict[str, Any]:
+        op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
+        if isinstance(op, CpAsyncCopyBulkTensorTileG2SOp):
+            return {"mode": "load", "variant": "g2s", "cta_group": op.cta_group}
+        if isinstance(op, CpAsyncCopyBulkTensorTileG2SMulticastOp):
+            return {"mode": "load", "variant": "g2s_multicast", "cta_group": op.cta_group}
+        if isinstance(op, CpAsyncCopyBulkTensorTileS2GOp):
+            return {"mode": "store", "variant": "s2g", "cta_group": op.cta_group}
+        if isinstance(op, CpAsyncCopyReduceBulkTensorTileS2GOp):
+            return {
+                "mode": "store",
+                "variant": "s2g_reduce",
+                "cta_group": op.cta_group,
+                "reduction": op.reduction_kind,
+            }
+        if isinstance(op, CpAsyncCopyDsmemStoreOp):
+            return {"mode": "store", "variant": "dsmem_store", "cta_group": None}
+        raise TypeError("cpasync helper expects a supported TMA copy op or baybridge CopyAtom")
 
     def prefetch_descriptor(self, descriptor: Any) -> None:
         del descriptor
