@@ -126,6 +126,15 @@ class CpAsyncCopyDsmemStoreOp:
 
 
 @dataclass(frozen=True)
+class Tcgen05SmemDesc:
+    src: Pointer
+    layout: Layout
+    major: str
+    next_src: Pointer | None = None
+    swizzle: str = "SWIZZLE_NONE"
+
+
+@dataclass(frozen=True)
 class WarpLdMatrix8x8x16bOp:
     transpose: bool = False
     num_matrices: int = 1
@@ -193,6 +202,12 @@ class Tcgen05Ld32x32bOp:
 
 @dataclass(frozen=True)
 class Tcgen05Ld16x128bOp:
+    repetition: Any = None
+    pack: Any = None
+
+
+@dataclass(frozen=True)
+class Tcgen05Ld16x64bOp:
     repetition: Any = None
     pack: Any = None
 
@@ -281,6 +296,27 @@ class Tcgen05MmaTF32Op:
     @property
     def operand_dtype(self) -> str:
         return "f32"
+
+
+@dataclass(frozen=True)
+class Tcgen05MmaI8Op:
+    dtype: Any
+    accumulator_dtype: Any
+    tile: tuple[int, int, int]
+    cta_group: Any = None
+    operand_source: Any = None
+    operand_major_mode_a: Any = None
+    operand_major_mode_b: Any = None
+    wave_size: int = 64
+    lane_shape: tuple[int, int] = (4, 8)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", resolve_element_type_name(self.dtype))
+        object.__setattr__(self, "accumulator_dtype", resolve_element_type_name(self.accumulator_dtype))
+
+    @property
+    def operand_dtype(self) -> str:
+        return str(self.dtype)
 
 
 @dataclass(frozen=True)
@@ -2983,7 +3019,14 @@ def _resolve_descriptor_or_compatible(
 
 
 def _is_cpasync_copy_op(op: Any) -> bool:
-    return isinstance(op, (CpAsyncCopyG2SOp, CpAsyncCopyBulkTensorTileG2SOp))
+    return isinstance(
+        op,
+        (
+            CpAsyncCopyG2SOp,
+            CpAsyncCopyBulkTensorTileG2SOp,
+            CpAsyncCopyBulkTensorTileG2SMulticastOp,
+        ),
+    )
 
 
 def _tensor_element_type_name(tensor: Any) -> str:
@@ -3005,7 +3048,7 @@ def make_copy_atom(op: Any, value_type: Any, *, num_bits_per_copy: int | None = 
 
 
 def make_atom(op: Any, *args: Any, **kwargs: Any) -> Any:
-    if isinstance(op, (MmaUniversalOp, WarpMmaF16BF16Op, Tcgen05MmaF16BF16Op)) or (
+    if isinstance(op, (MmaUniversalOp, WarpMmaF16BF16Op, Tcgen05MmaF16BF16Op, Tcgen05MmaI8Op)) or (
         hasattr(op, "tile") and hasattr(op, "dtype")
     ):
         return make_mma_atom(op, *args, **kwargs)
@@ -3087,6 +3130,15 @@ def _resolve_tiled_mma_descriptor(
             wave_size=op.wave_size,
             lane_shape=op.lane_shape,
             variant_name="tcgen05_mma_tf32",
+        )
+    if isinstance(op, Tcgen05MmaI8Op):
+        return _resolve_descriptor_or_compatible(
+            tile=tuple(op.tile),
+            operand_dtype=op.operand_dtype,
+            accumulator_dtype=op.accumulator_dtype,
+            wave_size=op.wave_size,
+            lane_shape=op.lane_shape,
+            variant_name="tcgen05_mma_i8",
         )
     if hasattr(op, "variant_name") and hasattr(op, "tile") and hasattr(op, "operand_dtype") and hasattr(op, "accumulator_dtype"):
         wave_size = int(getattr(op, "wave_size", 64))
@@ -3753,6 +3805,69 @@ class _CpAsyncNamespace(_UnsupportedNamespace):
     def CopyDsmemStoreOp(self) -> CpAsyncCopyDsmemStoreOp:
         return CpAsyncCopyDsmemStoreOp()
 
+    def make_tiled_tma_atom(
+        self,
+        op: Any,
+        tensor: TensorValue | RuntimeTensor,
+        smem_layout: Any,
+        cta_tiler: Any,
+        *,
+        num_multicast: int = 1,
+        internal_type: Any | None = None,
+    ) -> tuple[CopyAtom, TensorValue | RuntimeTensor]:
+        value_type = internal_type or _tensor_element_type_name(tensor)
+        atom = make_copy_atom(op, value_type)
+        atom.set("smem_layout", smem_layout)
+        atom.set("cta_tiler", cta_tiler)
+        atom.set("num_multicast", int(num_multicast))
+        return atom, tensor
+
+    def create_tma_multicast_mask(
+        self,
+        cta_layout_vmnk: Layout | Any,
+        cta_coord_vmnk: tuple[int, ...] | list[int],
+        mcast_mode: str = "m",
+    ) -> int:
+        raw_shape = getattr(cta_layout_vmnk, "shape", None)
+        if raw_shape is None:
+            raw_shape = tuple(cta_layout_vmnk)
+        shape = tuple(int(dim) for dim in raw_shape)
+        coord = tuple(int(dim) for dim in tuple(cta_coord_vmnk))
+        if len(shape) != len(coord):
+            raise ValueError("create_tma_multicast_mask expects coord rank to match the CTA layout rank")
+        axis_map = {"v": 0, "m": 0, "n": 1, "k": 2}
+        axis = axis_map.get(str(mcast_mode).lower())
+        if axis is None or axis >= len(shape):
+            raise ValueError("unsupported multicast mode")
+        strides = [prod(shape[index + 1:]) if index + 1 < len(shape) else 1 for index in range(len(shape))]
+        mask = 0
+        for axis_value in range(shape[axis]):
+            linear_coord = list(coord)
+            linear_coord[axis] = axis_value
+            linear_index = sum(int(value) * int(strides[index]) for index, value in enumerate(linear_coord))
+            mask |= 1 << linear_index
+        return mask
+
+    def copy_tensormap(self, tma_atom: Any, tensormap_ptr: Any) -> None:
+        if isinstance(tma_atom, CopyAtom):
+            tma_atom.set("tensormap_ptr", tensormap_ptr)
+
+    def update_tma_descriptor(self, tma_atom: Any, gmem_tensor: Any, tma_desc_ptr: Any) -> None:
+        if isinstance(tma_atom, CopyAtom):
+            tma_atom.set("tma_desc_ptr", tma_desc_ptr)
+            tma_atom.set("gmem_shape", getattr(gmem_tensor, "shape", None))
+            tma_atom.set("gmem_stride", getattr(gmem_tensor, "stride", None))
+
+    def fence_tma_desc_acquire(self, tma_desc_ptr: Any) -> None:
+        del tma_desc_ptr
+
+    def cp_fence_tma_desc_release(self, global_ptr: Any, shared_ptr: Any) -> None:
+        del global_ptr
+        del shared_ptr
+
+    def fence_tma_desc_release(self) -> None:
+        return None
+
     def is_tma_load(self, atom_or_op: Any) -> bool:
         op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
         return isinstance(
@@ -3888,6 +4003,7 @@ class _Tcgen05Repetition:
     x16 = "x16"
     x32 = "x32"
     x64 = "x64"
+    x128 = "x128"
 
 
 class _Tcgen05Field:
@@ -3898,16 +4014,36 @@ class _Tcgen05Field:
     SCALE_B = "scale_b"
 
 
+class _Tcgen05TmemLoadRedOp:
+    ADD = "add"
+    MAX = "max"
+    MIN = "min"
+
+
 class _Tcgen05Pack:
     NONE = "none"
     PACK_16 = "pack_16"
     PACK_32 = "pack_32"
+    PACK_16b_IN_32b = PACK_16
 
 
 class _Tcgen05Unpack:
     NONE = "none"
     UNPACK_16 = "unpack_16"
     UNPACK_32 = "unpack_32"
+    UNPACK_32b_IN_16b = UNPACK_32
+
+
+class _Tcgen05SmemLayoutAtomKind:
+    MN_INTER = "mn_inter"
+    MN_SW32 = "mn_sw32"
+    MN_SW64 = "mn_sw64"
+    MN_SW128 = "mn_sw128"
+    MN_SW128_32B = "mn_sw128_32b"
+    K_INTER = "k_inter"
+    K_SW32 = "k_sw32"
+    K_SW64 = "k_sw64"
+    K_SW128 = "k_sw128"
 
 
 class _Tcgen05Namespace(_UnsupportedNamespace):
@@ -3916,8 +4052,10 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
     OperandMajorMode = _Tcgen05OperandMajorMode
     Repetition = _Tcgen05Repetition
     Field = _Tcgen05Field
+    TmemLoadRedOp = _Tcgen05TmemLoadRedOp
     Pack = _Tcgen05Pack
     Unpack = _Tcgen05Unpack
+    SmemLayoutAtomKind = _Tcgen05SmemLayoutAtomKind
 
     def __init__(self):
         super().__init__("nvgpu.tcgen05")
@@ -3960,8 +4098,31 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
             operand_major_mode_b,
         )
 
+    def MmaI8Op(
+        self,
+        operand_dtype: Any,
+        accumulator_dtype: Any,
+        tile: tuple[int, int, int],
+        cta_group: Any = None,
+        operand_source: Any = None,
+        operand_major_mode_a: Any = None,
+        operand_major_mode_b: Any = None,
+    ) -> Tcgen05MmaI8Op:
+        return Tcgen05MmaI8Op(
+            operand_dtype,
+            accumulator_dtype,
+            tile,
+            cta_group,
+            operand_source,
+            operand_major_mode_a,
+            operand_major_mode_b,
+        )
+
     def Ld32x32bOp(self, repetition: Any = None) -> Tcgen05Ld32x32bOp:
         return Tcgen05Ld32x32bOp(repetition=repetition)
+
+    def Ld16x64bOp(self, repetition: Any = None, pack: Any = None) -> Tcgen05Ld16x64bOp:
+        return Tcgen05Ld16x64bOp(repetition=repetition, pack=pack)
 
     def Ld16x128bOp(self, repetition: Any = None, pack: Any = None) -> Tcgen05Ld16x128bOp:
         return Tcgen05Ld16x128bOp(repetition=repetition, pack=pack)
@@ -4000,7 +4161,7 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
 
     def is_tmem_load(self, atom_or_op: Any) -> bool:
         op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
-        return isinstance(op, (Tcgen05Ld32x32bOp, Tcgen05Ld16x128bOp, Tcgen05Ld16x256bOp, Tcgen05Ld16x32bx2Op))
+        return isinstance(op, (Tcgen05Ld32x32bOp, Tcgen05Ld16x64bOp, Tcgen05Ld16x128bOp, Tcgen05Ld16x256bOp, Tcgen05Ld16x32bx2Op))
 
     def is_tmem_store(self, atom_or_op: Any) -> bool:
         op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
@@ -4010,6 +4171,7 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
         op = atom_or_op.op if isinstance(atom_or_op, CopyAtom) else atom_or_op
         traits = {
             Tcgen05Ld32x32bOp: {"mode": "load", "lanes": 32, "bits": 32, "pack": getattr(op, "pack", None)},
+            Tcgen05Ld16x64bOp: {"mode": "load", "lanes": 16, "bits": 64, "pack": getattr(op, "pack", None)},
             Tcgen05Ld16x128bOp: {"mode": "load", "lanes": 16, "bits": 128, "pack": getattr(op, "pack", None)},
             Tcgen05Ld16x256bOp: {"mode": "load", "lanes": 16, "bits": 256, "pack": getattr(op, "pack", None)},
             Tcgen05Ld16x32bx2Op: {"mode": "load", "lanes": 16, "bits": 64, "pack": getattr(op, "pack", None)},
@@ -4055,6 +4217,47 @@ class _Tcgen05Namespace(_UnsupportedNamespace):
 
     def make_s2t_copy(self, atom: CopyAtom, tensor: Any) -> TiledCopyTV:
         return self.make_tmem_copy(atom, tensor)
+
+    def get_s2t_smem_desc_tensor(self, atom_or_copy: Any, smem_tensor: Any) -> Any:
+        if not self.is_tmem_load(atom_or_copy):
+            raise TypeError("tcgen05.get_s2t_smem_desc_tensor expects a TMEM load op or baybridge CopyAtom")
+        return smem_tensor
+
+    def make_smem_layout_atom(self, kind: Any, element_dtype: Any) -> Layout:
+        kind_name = str(kind).lower()
+        element_bits = max(8, int(element_type(resolve_element_type_name(element_dtype)).width))
+        element_bytes = max(1, element_bits // 8)
+        swizzle_bytes = {
+            self.SmemLayoutAtomKind.MN_INTER: 16,
+            self.SmemLayoutAtomKind.K_INTER: 16,
+            self.SmemLayoutAtomKind.MN_SW32: 32,
+            self.SmemLayoutAtomKind.K_SW32: 32,
+            self.SmemLayoutAtomKind.MN_SW64: 64,
+            self.SmemLayoutAtomKind.K_SW64: 64,
+            self.SmemLayoutAtomKind.MN_SW128: 128,
+            self.SmemLayoutAtomKind.MN_SW128_32B: 128,
+            self.SmemLayoutAtomKind.K_SW128: 128,
+        }.get(kind_name, 16)
+        return Layout.ordered((1, max(1, swizzle_bytes // element_bytes)), order=(1, 0))
+
+    def make_umma_smem_desc(
+        self,
+        src: Pointer,
+        layout: Layout | Any,
+        major: Any,
+        *,
+        next_src: Pointer | None = None,
+    ) -> Tcgen05SmemDesc:
+        if not isinstance(src, Pointer):
+            raise TypeError("tcgen05.make_umma_smem_desc expects a baybridge Pointer")
+        normalized_layout = layout if isinstance(layout, Layout) else make_layout(layout)
+        major_text = str(major).lower()
+        if major_text not in {self.OperandMajorMode.M, self.OperandMajorMode.N, self.OperandMajorMode.K}:
+            raise ValueError("tcgen05.make_umma_smem_desc expects a supported operand major mode")
+        swizzle = "SWIZZLE_NONE"
+        if normalized_layout.shape and normalized_layout.shape[-1] >= 32:
+            swizzle = "SWIZZLE_128B"
+        return Tcgen05SmemDesc(src=src, layout=normalized_layout, major=major_text, next_src=next_src, swizzle=swizzle)
 
     def commit(
         self,

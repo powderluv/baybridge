@@ -181,6 +181,67 @@ def test_cpasync_tma_reduce_surface_and_helpers() -> None:
     }
 
 
+def test_cpasync_extended_tma_helper_surface() -> None:
+    tensor = bb.zeros((16, 16), dtype="f16")
+    atom, returned_tensor = cpasync.make_tiled_tma_atom(
+        cpasync.CopyBulkTensorTileS2GOp(tcgen05.CtaGroup.TWO),
+        tensor,
+        bb.make_layout((16, 16), stride=(16, 1)),
+        (16, 8, 16),
+        num_multicast=2,
+        internal_type="f32",
+    )
+    cpasync.copy_tensormap(atom, 1234)
+    cpasync.update_tma_descriptor(atom, tensor, 5678)
+    cpasync.fence_tma_desc_acquire(5678)
+    cpasync.cp_fence_tma_desc_release(1234, 5678)
+    cpasync.fence_tma_desc_release()
+
+    assert returned_tensor is tensor
+    assert atom.type == "f32"
+    assert atom.get("num_multicast") == 2
+    assert atom.get("tensormap_ptr") == 1234
+    assert atom.get("tma_desc_ptr") == 5678
+    assert atom.get("gmem_shape") == (16, 16)
+    assert cpasync.create_tma_multicast_mask(bb.make_layout((2, 2), stride=(2, 1)), (1, 0), "n") == 0b1100
+
+
+def test_tcgen05_extended_helper_surface() -> None:
+    load_atom = bb.make_copy_atom(tcgen05.Ld16x64bOp(tcgen05.Repetition.x128, tcgen05.Pack.PACK_16b_IN_32b), "i8")
+    smem_tensor = bb.zeros((4, 8), dtype="i8")
+    layout_atom = tcgen05.make_smem_layout_atom(tcgen05.SmemLayoutAtomKind.MN_SW64, "f16")
+    umma_desc = tcgen05.make_umma_smem_desc(
+        bb.make_ptr("f16", 0x1000, address_space=bb.AddressSpace.SHARED, assumed_align=16),
+        bb.make_layout((8, 64), stride=(64, 1)),
+        tcgen05.OperandMajorMode.N,
+    )
+    tiled_mma = bb.make_tiled_mma(
+        tcgen05.MmaI8Op(
+            "i8",
+            "i32",
+            (16, 8, 32),
+            tcgen05.CtaGroup.ONE,
+            tcgen05.OperandSource.TMEM,
+            tcgen05.OperandMajorMode.K,
+            tcgen05.OperandMajorMode.N,
+        )
+    )
+
+    assert tcgen05.is_tmem_load(load_atom) is True
+    assert tcgen05.get_tmem_copy_properties(load_atom) == {
+        "mode": "load",
+        "lanes": 16,
+        "bits": 64,
+        "pack": tcgen05.Pack.PACK_16b_IN_32b,
+        "repetition": 128,
+    }
+    assert tcgen05.get_s2t_smem_desc_tensor(load_atom, smem_tensor) is smem_tensor
+    assert layout_atom.shape == (1, 32)
+    assert umma_desc.major == tcgen05.OperandMajorMode.N
+    assert umma_desc.swizzle == "SWIZZLE_128B"
+    assert tiled_mma.shape == (16, 8, 32)
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def warpgroup_helper_kernel(out: bb.Tensor):
     bb.nvgpu.warpgroup.fence()
