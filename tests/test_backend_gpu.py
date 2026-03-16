@@ -186,6 +186,64 @@ def test_gpu_text_backend_uses_tcgen05_tf32_mfma_intrinsic(tmp_path: Path) -> No
 
 
 @bb.jit
+def tcgen05_f16_fragment_mma_kernel(
+    a: bb.TensorSpec(shape=(64, 64), dtype="f16"),
+    b: bb.TensorSpec(shape=(64, 64), dtype="f16"),
+):
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.tcgen05.MmaF16BF16Op(
+            "f16",
+            "f32",
+            (16, 16, 16),
+            bb.nvgpu.tcgen05.CtaGroup.ONE,
+            bb.nvgpu.tcgen05.OperandSource.TMEM,
+            bb.nvgpu.tcgen05.OperandMajorMode.K,
+            bb.nvgpu.tcgen05.OperandMajorMode.N,
+        )
+    )
+    a_frag = tiled_mma.partition_A(a)
+    b_frag = tiled_mma.partition_B(b)
+    acc = tiled_mma.make_fragment_C((16, 16))
+    bb.mma(a_frag, b_frag, c=acc, tile=(16, 16, 16), accumulator_dtype="f32")
+
+
+def test_gpu_text_backend_uses_tcgen05_f16_mfma_intrinsic(tmp_path: Path) -> None:
+    artifact = bb.compile(tcgen05_f16_fragment_mma_kernel, cache_dir=tmp_path, backend="gpu_text")
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert text.count('"amdgpu.fragment_view"') == 2
+    assert '"llvm.amdgcn.mfma.f32.16x16x16f16"' in text
+    assert 'variant = "mfma_f32_16x16x16f16"' in text
+    assert 'operand_dtype = "f16"' in text
+    assert 'accumulator_dtype = "f32"' in text
+
+
+@bb.jit
+def warp_bf16_fragment_mma_kernel(
+    a: bb.TensorSpec(shape=(64, 64), dtype="bf16"),
+    b: bb.TensorSpec(shape=(64, 64), dtype="bf16"),
+):
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.warp.MmaF16BF16Op("bf16", "f32", (16, 16, 16))
+    )
+    a_frag = tiled_mma.partition_A(a)
+    b_frag = tiled_mma.partition_B(b)
+    acc = tiled_mma.make_fragment_C((16, 16))
+    bb.mma(a_frag, b_frag, c=acc, tile=(16, 16, 16), accumulator_dtype="f32")
+
+
+def test_gpu_text_backend_uses_warp_bf16_mfma_intrinsic(tmp_path: Path) -> None:
+    artifact = bb.compile(warp_bf16_fragment_mma_kernel, cache_dir=tmp_path, backend="gpu_text")
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert text.count('"amdgpu.fragment_view"') == 2
+    assert '"llvm.amdgcn.mfma.f32.16x16x16bf16"' in text
+    assert 'variant = "mfma_f32_16x16x16bf16"' in text
+    assert 'operand_dtype = "bf16"' in text
+    assert 'accumulator_dtype = "f32"' in text
+
+
+@bb.jit
 def unsupported_mma_kernel(
     a: bb.TensorSpec(shape=(8, 8), dtype="f16"),
     b: bb.TensorSpec(shape=(8, 8), dtype="f16"),

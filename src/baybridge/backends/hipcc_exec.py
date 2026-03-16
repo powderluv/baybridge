@@ -538,6 +538,11 @@ class HipccExecBackend:
             spec = tensor_specs[tensor_name]
             offset = self._offset_expr(spec, index_names)
             return [f"if ({predicate_name}) {{ {tensor_name}[{offset}] = {value_name}; }}"]
+        if operation.op in {"fragment", "mma"}:
+            raise BackendNotImplementedError(
+                "hipcc_exec does not support MFMA/mma lowering yet; "
+                "use gpu_text for inspection or a backend with explicit GEMM lowering"
+            )
         raise BackendNotImplementedError(
             f"hipcc_exec does not support operation '{operation.op}' yet; use gpu_text/mlir_text or runtime fallback"
         )

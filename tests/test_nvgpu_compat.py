@@ -355,6 +355,38 @@ def test_tcgen05_tf32_mma_resolves_real_mfma_descriptor() -> None:
     assert tiled_mma.descriptor.llvm_intrinsic == "llvm.amdgcn.mfma.f32.16x16x4f32"
 
 
+def test_tcgen05_f16_mma_resolves_real_mfma_descriptor() -> None:
+    tiled_mma = bb.make_tiled_mma(
+        tcgen05.MmaF16BF16Op(
+            "f16",
+            "f32",
+            (16, 16, 16),
+            tcgen05.CtaGroup.ONE,
+            tcgen05.OperandSource.TMEM,
+            tcgen05.OperandMajorMode.K,
+            tcgen05.OperandMajorMode.N,
+        )
+    )
+
+    assert tiled_mma.shape == (16, 16, 16)
+    assert tiled_mma.partition_shape_A() == (16, 16)
+    assert tiled_mma.partition_shape_B() == (16, 16)
+    assert tiled_mma.descriptor.variant_name == "mfma_f32_16x16x16f16"
+    assert tiled_mma.descriptor.llvm_intrinsic == "llvm.amdgcn.mfma.f32.16x16x16f16"
+
+
+def test_warp_bf16_mma_resolves_real_mfma_descriptor() -> None:
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.warp.MmaF16BF16Op("bf16", "f32", (16, 16, 16))
+    )
+
+    assert tiled_mma.shape == (16, 16, 16)
+    assert tiled_mma.partition_shape_A() == (16, 16)
+    assert tiled_mma.partition_shape_B() == (16, 16)
+    assert tiled_mma.descriptor.variant_name == "mfma_f32_16x16x16bf16"
+    assert tiled_mma.descriptor.llvm_intrinsic == "llvm.amdgcn.mfma.f32.16x16x16bf16"
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def warpgroup_helper_kernel(out: bb.Tensor):
     bb.nvgpu.warpgroup.fence()

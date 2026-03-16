@@ -208,6 +208,36 @@ def test_hipcc_exec_backend_emits_thread_fragment_gather_and_scatter(tmp_path: P
     assert "value_coord" in text
 
 
+@bb.jit
+def tcgen05_i8_fragment_mma_wrapper(
+    a: bb.TensorSpec(shape=(64, 64), dtype="i8"),
+    b: bb.TensorSpec(shape=(64, 64), dtype="i8"),
+):
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.tcgen05.MmaI8Op(
+            "i8",
+            "i32",
+            (16, 16, 32),
+            bb.nvgpu.tcgen05.CtaGroup.ONE,
+            bb.nvgpu.tcgen05.OperandSource.TMEM,
+            bb.nvgpu.tcgen05.OperandMajorMode.K,
+            bb.nvgpu.tcgen05.OperandMajorMode.N,
+        )
+    )
+    a_frag = tiled_mma.partition_A(a)
+    b_frag = tiled_mma.partition_B(b)
+    acc = tiled_mma.make_fragment_C((16, 16))
+    bb.mma(a_frag, b_frag, c=acc, tile=(16, 16, 32), accumulator_dtype="i32")
+
+
+def test_hipcc_exec_backend_rejects_mma_with_targeted_error(tmp_path: Path) -> None:
+    a = bb.tensor([[1 for _ in range(64)] for _ in range(64)], dtype="i8")
+    b = bb.tensor([[2 for _ in range(64)] for _ in range(64)], dtype="i8")
+
+    with pytest.raises(bb.BackendNotImplementedError, match="does not support MFMA/mma lowering yet"):
+        bb.compile(tcgen05_i8_fragment_mma_wrapper, a, b, cache_dir=tmp_path, backend="hipcc_exec")
+
+
 def test_hipcc_exec_backend_runs_on_amd_hardware(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HIP backend tests")
