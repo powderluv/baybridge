@@ -64,7 +64,7 @@ class GpuTextBackend:
             return self._emit_fragment(operation, value_types)
         if operation.op == "mma":
             return self._emit_mma(operation, value_types)
-        if operation.op in {"copy", "copy_async", "commit_group", "wait_group", "barrier"}:
+        if operation.op in {"copy", "copy_async", "copy_reduce", "commit_group", "wait_group", "barrier"}:
             return self._emit_gpu_semantic_op(operation, value_types)
         if operation.op in {
             "program_id",
@@ -214,6 +214,15 @@ class GpuTextBackend:
             if operation.op == "copy_async":
                 return [f"gpu.memcpy async %{dst_name}, %{src_name}{attr_text} : {dst_type}, {src_type}"]
             return [f"memref.copy %{src_name}, %{dst_name} : {src_type} to {dst_type}"]
+        if operation.op == "copy_reduce":
+            src_name, dst_name = operation.inputs
+            src_type = value_types[src_name]
+            dst_type = value_types[dst_name]
+            attrs = {key: value for key, value in operation.attrs.items() if value is not None}
+            attr_text = self._attrs(attrs)
+            return [
+                f'"baybridge.copy_reduce"(%{src_name}, %{dst_name}){attr_text} : ({src_type}, {dst_type}) -> ()'
+            ]
         raise ValueError(f"unsupported gpu semantic op '{operation.op}'")
 
     def _emit_builtin(self, operation: Operation, value_types: dict[str, str]) -> list[str]:

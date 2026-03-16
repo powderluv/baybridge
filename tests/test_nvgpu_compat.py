@@ -21,6 +21,40 @@ def cpasync_copy_kernel(src: bb.Tensor, out: bb.Tensor):
     out[tidx] = smem[tidx]
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def cpasync_tma_store_kernel(src: bb.Tensor, out: bb.Tensor):
+    smem = bb.make_tensor("smem", shape=(16,), dtype="f32", address_space=bb.AddressSpace.SHARED)
+    g2s = bb.make_copy_atom(
+        bb.nvgpu.cpasync.CopyBulkTensorTileG2SOp(tcgen05.CtaGroup.ONE),
+        src.element_type,
+        num_bits_per_copy=128,
+    )
+    s2g = bb.make_copy_atom(
+        bb.nvgpu.cpasync.CopyBulkTensorTileS2GOp(tcgen05.CtaGroup.ONE),
+        src.element_type,
+    )
+    bb.copy(g2s, src, smem)
+    bb.barrier()
+    bb.copy(s2g, smem, out)
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def cpasync_tma_reduce_kernel(src: bb.Tensor, out: bb.Tensor):
+    smem = bb.make_tensor("smem", shape=(16,), dtype="f32", address_space=bb.AddressSpace.SHARED)
+    g2s = bb.make_copy_atom(
+        bb.nvgpu.cpasync.CopyBulkTensorTileG2SOp(tcgen05.CtaGroup.ONE),
+        src.element_type,
+        num_bits_per_copy=128,
+    )
+    reduce_store = bb.make_copy_atom(
+        bb.nvgpu.cpasync.CopyReduceBulkTensorTileS2GOp(bb.nvgpu.cpasync.ReductionOp.ADD, tcgen05.CtaGroup.ONE),
+        src.element_type,
+    )
+    bb.copy(g2s, src, smem)
+    bb.barrier()
+    bb.copy(reduce_store, smem, out)
+
+
 def test_cpasync_copy_atom_routes_to_async_copy(tmp_path: Path) -> None:
     src = bb.tensor([float(index + 1) for index in range(16)], dtype="f32")
     out = bb.zeros((16,), dtype="f32")
@@ -37,6 +71,46 @@ def test_cpasync_copy_atom_routes_to_async_copy(tmp_path: Path) -> None:
     exec_artifact = bb.compile(cpasync_copy_kernel, src, out, cache_dir=tmp_path, backend="hipcc_exec")
     assert exec_artifact.lowered_module is not None
     assert "smem" in exec_artifact.lowered_module.text
+
+
+def test_cpasync_tma_store_and_reduce_route_to_available_backends(tmp_path: Path) -> None:
+    src = bb.tensor([float(index + 1) for index in range(16)], dtype="f32")
+    out_store = bb.zeros((16,), dtype="f32")
+    out_reduce = bb.tensor([10.0 for _ in range(16)], dtype="f32")
+
+    cpasync_tma_store_kernel(src, out_store).launch(grid=(1, 1, 1), block=(1, 1, 1))
+    cpasync_tma_reduce_kernel(src, out_reduce).launch(grid=(1, 1, 1), block=(1, 1, 1))
+    assert out_store.tolist() == src.tolist()
+    assert out_reduce.tolist() == [value + 10.0 for value in src.tolist()]
+
+    store_gpu = bb.compile(cpasync_tma_store_kernel, src, out_store, cache_dir=tmp_path, backend="gpu_text")
+    reduce_gpu = bb.compile(cpasync_tma_reduce_kernel, src, out_reduce, cache_dir=tmp_path, backend="gpu_text")
+    assert store_gpu.ir is not None
+    assert reduce_gpu.ir is not None
+    assert any(operation.op == "copy" and operation.attrs.get("copy_variant") == "cpasync_tma_s2g" for operation in store_gpu.ir.operations)
+    assert any(
+        operation.op == "copy_reduce"
+        and operation.attrs.get("copy_variant") == "cpasync_tma_s2g_reduce"
+        and operation.attrs.get("reduction") == bb.nvgpu.cpasync.ReductionOp.ADD
+        for operation in reduce_gpu.ir.operations
+    )
+    assert store_gpu.lowered_module is not None
+    assert reduce_gpu.lowered_module is not None
+    assert "memref.copy" in store_gpu.lowered_module.text
+    assert "baybridge.copy_reduce" in reduce_gpu.lowered_module.text
+
+    compiled_store = bb.compile(cpasync_tma_store_kernel, src, out_store, cache_dir=tmp_path, backend="hipcc_exec")
+    compiled_reduce = bb.compile(cpasync_tma_reduce_kernel, src, out_reduce, cache_dir=tmp_path, backend="hipcc_exec")
+    assert compiled_store.lowered_module is not None
+    assert compiled_reduce.lowered_module is not None
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        return
+    out_store.fill(0.0)
+    out_reduce.fill(10.0)
+    compiled_store(src, out_store)
+    compiled_reduce(src, out_reduce)
+    assert out_store.tolist() == src.tolist()
+    assert out_reduce.tolist() == [value + 10.0 for value in src.tolist()]
 
 
 def test_nvgpu_mma_compat_helpers_construct_shapes() -> None:
@@ -301,3 +375,35 @@ def test_cpasync_copy_kernel_runs_on_amd_hardware(tmp_path: Path) -> None:
     artifact(src, out)
 
     assert out.tolist() == src.tolist()
+
+
+def test_cpasync_tma_store_and_reduce_run_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HIP backend tests")
+
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    src = bb.tensor([float(index + 1) for index in range(16)], dtype="f32")
+    out_store = bb.zeros((16,), dtype="f32")
+    out_reduce = bb.tensor([10.0 for _ in range(16)], dtype="f32")
+
+    store_artifact = bb.compile(
+        cpasync_tma_store_kernel,
+        src,
+        out_store,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+    reduce_artifact = bb.compile(
+        cpasync_tma_reduce_kernel,
+        src,
+        out_reduce,
+        cache_dir=tmp_path,
+        backend="hipcc_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+    store_artifact(src, out_store)
+    reduce_artifact(src, out_reduce)
+
+    assert out_store.tolist() == src.tolist()
+    assert out_reduce.tolist() == [value + 10.0 for value in src.tolist()]

@@ -350,6 +350,20 @@ class HipccExecBackend:
                     f"hipcc_exec copy requires matching tensor shapes, got {src_spec.shape} and {dst_spec.shape}"
                 )
             return self._emit_tensor_copy(src_name, src_spec, dst_name, dst_spec)
+        if operation.op == "copy_reduce":
+            src_name, dst_name = operation.inputs
+            src_spec = tensor_specs[src_name]
+            dst_spec = tensor_specs[dst_name]
+            if src_spec.shape != dst_spec.shape:
+                raise BackendNotImplementedError(
+                    f"hipcc_exec copy_reduce requires matching tensor shapes, got {src_spec.shape} and {dst_spec.shape}"
+                )
+            if src_spec.dtype != dst_spec.dtype:
+                raise BackendNotImplementedError(
+                    f"hipcc_exec copy_reduce requires matching tensor dtypes, got {src_spec.dtype} and {dst_spec.dtype}"
+                )
+            reduction = str(operation.attrs.get("reduction", ""))
+            return self._emit_tensor_copy_reduce(src_name, src_spec, dst_name, dst_spec, reduction)
         if operation.op == "fill":
             tensor_name, value_name = operation.inputs
             tensor_spec = tensor_specs[tensor_name]
@@ -592,6 +606,38 @@ class HipccExecBackend:
             return [f"{tensor_name}[{tensor_offset}] = {value_name};"]
 
         return self._emit_loop_nest(tensor_spec.shape, body)
+
+    def _emit_tensor_copy_reduce(
+        self,
+        src_name: str,
+        src_spec: TensorSpec,
+        dst_name: str,
+        dst_spec: TensorSpec,
+        reduction: str,
+    ) -> list[str]:
+        exprs = {
+            "add": lambda dst, src: f"{dst} + {src}",
+            "max": lambda dst, src: f"(({dst} >= {src}) ? {dst} : {src})",
+            "min": lambda dst, src: f"(({dst} <= {src}) ? {dst} : {src})",
+            "and": lambda dst, src: f"{dst} & {src}",
+            "or": lambda dst, src: f"{dst} | {src}",
+            "xor": lambda dst, src: f"{dst} ^ {src}",
+        }
+        try:
+            expr_builder = exprs[reduction]
+        except KeyError as exc:
+            raise BackendNotImplementedError(
+                f"hipcc_exec copy_reduce does not support reduction '{reduction}'"
+            ) from exc
+
+        def body(index_names: list[str]) -> list[str]:
+            src_offset = self._offset_expr(src_spec, index_names)
+            dst_offset = self._offset_expr(dst_spec, index_names)
+            dst_expr = f"{dst_name}[{dst_offset}]"
+            src_expr = f"{src_name}[{src_offset}]"
+            return [f"{dst_expr} = {expr_builder(dst_expr, src_expr)};"]
+
+        return self._emit_loop_nest(dst_spec.shape, body)
 
     def _emit_tensor_binary(
         self,

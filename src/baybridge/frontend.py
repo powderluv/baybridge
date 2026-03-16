@@ -1953,6 +1953,31 @@ def _copy_runtime_tensor(src: RuntimeTensor, dst: RuntimeTensor) -> None:
         dst[index] = src[index]
 
 
+def _apply_copy_reduction(lhs: Any, rhs: Any, reduction_kind: str) -> Any:
+    if reduction_kind == _CpAsyncReductionOp.ADD:
+        return lhs + rhs
+    if reduction_kind == _CpAsyncReductionOp.MAX:
+        return lhs if lhs >= rhs else rhs
+    if reduction_kind == _CpAsyncReductionOp.MIN:
+        return lhs if lhs <= rhs else rhs
+    if reduction_kind == _CpAsyncReductionOp.AND:
+        return lhs & rhs
+    if reduction_kind == _CpAsyncReductionOp.OR:
+        return lhs | rhs
+    if reduction_kind == _CpAsyncReductionOp.XOR:
+        return lhs ^ rhs
+    raise UnsupportedOperationError(
+        f"cpasync TMA-reduce lowering currently supports add/max/min/and/or/xor, got '{reduction_kind}'"
+    )
+
+
+def _copy_reduce_runtime_tensor(src: RuntimeTensor, dst: RuntimeTensor, reduction_kind: str) -> None:
+    if src.shape != dst.shape:
+        raise ValueError(f"copy_reduce requires matching shapes, got {src.shape} and {dst.shape}")
+    for index in _iter_indices(src.shape):
+        dst[index] = _apply_copy_reduction(dst[index], src[index], reduction_kind)
+
+
 def _runtime_printf_value(value: Any) -> Any:
     if isinstance(value, RuntimeTensor):
         return value.tolist()
@@ -3250,6 +3275,30 @@ def _normalize_predicate_fragment(
     raise TypeError("copy predicates must be baybridge tensors")
 
 
+def _copy_atom_attrs(copy_atom: CopyAtom | None) -> dict[str, Any]:
+    if copy_atom is None:
+        return {}
+    attrs: dict[str, Any] = {}
+    op = copy_atom.op
+    if isinstance(op, CpAsyncCopyBulkTensorTileS2GOp):
+        attrs["copy_variant"] = "cpasync_tma_s2g"
+        attrs["cta_group"] = op.cta_group
+    elif isinstance(op, CpAsyncCopyReduceBulkTensorTileS2GOp):
+        attrs["copy_variant"] = "cpasync_tma_s2g_reduce"
+        attrs["cta_group"] = op.cta_group
+        attrs["reduction"] = op.reduction_kind
+    elif isinstance(op, CpAsyncCopyBulkTensorTileG2SMulticastOp):
+        attrs["copy_variant"] = "cpasync_tma_g2s_multicast"
+        attrs["cta_group"] = op.cta_group
+        attrs["num_multicast"] = copy_atom.get("num_multicast", 1)
+    elif isinstance(op, CpAsyncCopyBulkTensorTileG2SOp):
+        attrs["copy_variant"] = "cpasync_tma_g2s"
+        attrs["cta_group"] = op.cta_group
+    elif isinstance(op, CpAsyncCopyDsmemStoreOp):
+        attrs["copy_variant"] = "cpasync_dsmem_store"
+    return attrs
+
+
 def copy(
     *args: Any,
     vector_bytes: int | None = None,
@@ -3287,13 +3336,24 @@ def copy(
     if pred is not None:
         raise UnsupportedOperationError("predicated copy is only implemented for baybridge thread fragments today")
 
+    copy_attrs = {"vector_bytes": vector_bytes, **_copy_atom_attrs(copy_atom)}
+
     if copy_atom is not None and _is_cpasync_copy_op(copy_atom.op):
         del tma_bar_ptr
         copy_async(src, dst, vector_bytes=vector_bytes)
         return
 
+    if copy_atom is not None and isinstance(copy_atom.op, CpAsyncCopyReduceBulkTensorTileS2GOp):
+        reduction_kind = copy_atom.op.reduction_kind
+        try:
+            require_builder().emit_void("copy_reduce", src, dst, attrs=copy_attrs)
+        except CompilationError:
+            del tma_bar_ptr
+            _copy_reduce_runtime_tensor(_runtime_tensor(src), _runtime_tensor(dst), reduction_kind)
+        return
+
     try:
-        require_builder().emit_void("copy", src, dst, attrs={"vector_bytes": vector_bytes})
+        require_builder().emit_void("copy", src, dst, attrs=copy_attrs)
     except CompilationError:
         del vector_bytes
         del tma_bar_ptr
