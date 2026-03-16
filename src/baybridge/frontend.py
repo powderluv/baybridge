@@ -575,7 +575,7 @@ class TiledMmaSlice:
     thread_index: ScalarValue | int
 
     def partition_A(self, tensor: TensorValue) -> TensorValue:
-        del self.thread_index
+        _ = self.thread_index
         try:
             return make_fragment_a(
                 tensor,
@@ -593,7 +593,7 @@ class TiledMmaSlice:
             )
 
     def partition_B(self, tensor: TensorValue) -> TensorValue:
-        del self.thread_index
+        _ = self.thread_index
         try:
             return make_fragment_b(
                 tensor,
@@ -611,7 +611,7 @@ class TiledMmaSlice:
             )
 
     def partition_C(self, tensor: TensorValue) -> TensorValue:
-        del self.thread_index
+        _ = self.thread_index
         return partition_wave(
             tensor,
             self.tiled_mma.descriptor.operand_shape("acc"),

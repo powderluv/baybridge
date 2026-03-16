@@ -62,6 +62,13 @@ MFMA_DESCRIPTORS: tuple[MFMADescriptor, ...] = (
         variant_name="mfma_f32_16x16x4f32",
         llvm_intrinsic="llvm.amdgcn.mfma.f32.16x16x4f32",
     ),
+    MFMADescriptor(
+        tile=(16, 16, 32),
+        operand_dtype="i8",
+        accumulator_dtype="i32",
+        variant_name="mfma_i32_16x16x32i8",
+        llvm_intrinsic="llvm.amdgcn.mfma.i32.16x16x32.i8",
+    ),
 )
 
 
