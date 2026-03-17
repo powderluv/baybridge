@@ -3686,9 +3686,9 @@ def gemm(
 
 
 def _default_accumulator_dtype(a_dtype: str, b_dtype: str) -> str:
-    if a_dtype != b_dtype:
+    if a_dtype != b_dtype and {a_dtype, b_dtype} != {"fp8", "bf8"}:
         raise ValueError(f"mma currently requires matching operand dtypes, got {a_dtype} and {b_dtype}")
-    if a_dtype in {"f16", "bf16", "fp8", "bf8"}:
+    if a_dtype in {"f16", "bf16", "fp8", "bf8"} or b_dtype in {"f16", "bf16", "fp8", "bf8"}:
         return "f32"
     return a_dtype
 
@@ -3777,7 +3777,7 @@ def mma(
     transpose_a: bool = False,
     transpose_b: bool = False,
 ) -> TensorValue:
-    if a.spec.dtype != b.spec.dtype:
+    if a.spec.dtype != b.spec.dtype and {a.spec.dtype, b.spec.dtype} != {"fp8", "bf8"}:
         raise ValueError(f"mma currently requires matching operand dtypes, got {a.spec.dtype} and {b.spec.dtype}")
     if c is not None:
         if accumulator_dtype is not None and accumulator_dtype != c.spec.dtype:

@@ -30,6 +30,8 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf16_payload = kernels.aster_mfma_bf16_gemm_args()
     mfma_fp8_payload = kernels.aster_mfma_fp8_gemm_args()
     mfma_bf8_payload = kernels.aster_mfma_bf8_gemm_args()
+    mfma_fp8_bf8_payload = kernels.aster_mfma_fp8_bf8_gemm_args()
+    mfma_bf8_fp8_payload = kernels.aster_mfma_bf8_fp8_gemm_args()
 
     copy_args = copy_payload["args"]
     add_args = add_payload["args"]
@@ -42,6 +44,8 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf16_args = mfma_bf16_payload["args"]
     mfma_fp8_args = mfma_fp8_payload["args"]
     mfma_bf8_args = mfma_bf8_payload["args"]
+    mfma_fp8_bf8_args = mfma_fp8_bf8_payload["args"]
+    mfma_bf8_fp8_args = mfma_bf8_fp8_payload["args"]
 
     assert len(copy_args) == 2
     assert copy_args[0].shape == (kernels.ASTER_POINTWISE_N,)
@@ -131,6 +135,24 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert str(mfma_bf8_args[2].dtype) == "f32"
     assert mfma_bf8_payload["result_indices"] == ()
 
+    assert len(mfma_fp8_bf8_args) == 3
+    assert mfma_fp8_bf8_args[0].shape == (16, 32)
+    assert mfma_fp8_bf8_args[1].shape == (32, 16)
+    assert mfma_fp8_bf8_args[2].shape == (16, 16)
+    assert str(mfma_fp8_bf8_args[0].dtype) == "fp8"
+    assert str(mfma_fp8_bf8_args[1].dtype) == "bf8"
+    assert str(mfma_fp8_bf8_args[2].dtype) == "f32"
+    assert mfma_fp8_bf8_payload["result_indices"] == ()
+
+    assert len(mfma_bf8_fp8_args) == 3
+    assert mfma_bf8_fp8_args[0].shape == (16, 32)
+    assert mfma_bf8_fp8_args[1].shape == (32, 16)
+    assert mfma_bf8_fp8_args[2].shape == (16, 16)
+    assert str(mfma_bf8_fp8_args[0].dtype) == "bf8"
+    assert str(mfma_bf8_fp8_args[1].dtype) == "fp8"
+    assert str(mfma_bf8_fp8_args[2].dtype) == "f32"
+    assert mfma_bf8_fp8_payload["result_indices"] == ()
+
 
 def test_compare_backends_uses_hip_synchronizer_for_aster_exec(monkeypatch) -> None:
     compare_backends = _load_tool_module("compare_backends")
@@ -165,3 +187,5 @@ def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> N
     assert callable(kernels.aster_mfma_bf16_gemm_kernel)
     assert callable(kernels.aster_mfma_fp8_gemm_kernel)
     assert callable(kernels.aster_mfma_bf8_gemm_kernel)
+    assert callable(kernels.aster_mfma_fp8_bf8_gemm_kernel)
+    assert callable(kernels.aster_mfma_bf8_fp8_gemm_kernel)

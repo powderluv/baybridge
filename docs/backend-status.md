@@ -43,7 +43,7 @@ Focused local validation after the shared tooling updates in this pass:
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow pointwise/shared-memory subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
-| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul`; scalar broadcast from dense single-element tensors for supported binary ops; exact MFMA GEMM and fragment-copyout families for `f16/f16 -> f32` and `bf16/bf16 -> f32` on `16x16x16`; exact direct `fp8/fp8 -> f32` and `bf8/bf8 -> f32` MFMA GEMM on `gfx942` for `16x16x32`; 1D and 2D dense tensors | `div` is intentionally not supported; `fp8`/`bf8` are storage-only in Baybridge today; MFMA support is intentionally exact-shape and exact-descriptor only |
+| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul`; scalar broadcast from dense single-element tensors for supported binary ops; exact MFMA GEMM and fragment-copyout families for `f16/f16 -> f32` and `bf16/bf16 -> f32` on `16x16x16`; exact direct `fp8/fp8 -> f32`, `bf8/bf8 -> f32`, `fp8/bf8 -> f32`, and `bf8/fp8 -> f32` MFMA GEMM on `gfx942` for `16x16x32`; 1D and 2D dense tensors | `div` is intentionally not supported; `fp8`/`bf8` are storage-only in Baybridge today; MFMA support is intentionally exact-shape and exact-descriptor only |
 
 ## Execution Coverage Matrix
 
@@ -57,7 +57,7 @@ Focused local validation after the shared tooling updates in this pass:
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
 | Tensor reductions | Yes | No | Executable in Baybridge-side lowering; real upstream validation is still narrower | No | No |
 | Shared-memory staging | Yes | No | Integrated, but real upstream shared-memory validation is still incomplete | No | Experimental only |
-| GEMM | No dedicated path | Yes, narrow validated subset | No | Yes, exact `16x16x16` MFMA subset plus direct `fp8/bf8 16x16x32` on `gfx942` only | No |
+| GEMM | No dedicated path | Yes, narrow validated subset | No | Yes, exact `16x16x16` MFMA subset plus direct `fp8`/`bf8` exact and mixed `16x16x32` on `gfx942` only | No |
 | Attention / norm families | No dedicated path | ref only | ref only | ref only | ref only |
 
 ## Benchmark Method
@@ -180,10 +180,12 @@ These are real checked-in-tool measurements for the validated ASTER MFMA path, u
   - `aster_mfma_bf16_gemm_args`
   - `aster_mfma_fp8_gemm_args`
   - `aster_mfma_bf8_gemm_args`
+  - `aster_mfma_fp8_bf8_gemm_args`
+  - `aster_mfma_bf8_fp8_gemm_args`
 
 This is intentionally separated from the HipKittens GEMM row in the main table. The currently validated checked-in executable shapes do not overlap cleanly:
 - `hipkittens_exec` is validated on its own tile families
-- `aster_exec` is validated on exact `16x16x16` MFMA GEMM and equivalent fragment-copyout forms, plus direct `gfx942`-only `fp8/bf8 16x16x32` paths
+- `aster_exec` is validated on exact `16x16x16` MFMA GEMM and equivalent fragment-copyout forms, plus direct `gfx942`-only `fp8`/`bf8` exact and mixed `16x16x32` paths
 
 The timings below are for the direct `bb.gemm(...)` form. The checked-in fragment-copyout forms route through the same ASTER executable family and were not timed separately.
 
@@ -202,6 +204,8 @@ The timings below are for the direct `bb.gemm(...)` form. The checked-in fragmen
 | MFMA GEMM `bf16/bf16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `2.45` | Exact `16x16x16` ASTER MFMA path |
 | MFMA GEMM `fp8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.52` | Exact `gfx942`-only ASTER MFMA path; inputs are raw E4M3FNUZ byte payloads today |
 | MFMA GEMM `bf8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.57` | Exact `gfx942`-only ASTER MFMA path; inputs are raw E5M2FNUZ byte payloads today |
+| MFMA GEMM `fp8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.51` | Exact `gfx942`-only ASTER MFMA path; A uses raw E4M3FNUZ payloads and B uses raw E5M2FNUZ payloads |
+| MFMA GEMM `bf8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.53` | Exact `gfx942`-only ASTER MFMA path; A uses raw E5M2FNUZ payloads and B uses raw E4M3FNUZ payloads |
 
 ## ASTER MFMA Cold vs Warm Snapshot
 
@@ -213,6 +217,8 @@ Cold-start timing here is the first recorded execution in the `--repeat 7` run. 
 | MFMA GEMM `bf16/bf16 -> f32`, `16x16x16` | `292.94` | `3.08` | `296.97` | `2.45` |
 | MFMA GEMM `fp8/fp8 -> f32`, `16x16x32` | `n/a` | `n/a` | `262.45` | `2.52` |
 | MFMA GEMM `bf8/bf8 -> f32`, `16x16x32` | `n/a` | `n/a` | `263.48` | `2.57` |
+| MFMA GEMM `fp8/bf8 -> f32`, `16x16x32` | `n/a` | `n/a` | `263.61` | `2.51` |
+| MFMA GEMM `bf8/fp8 -> f32`, `16x16x32` | `n/a` | `n/a` | `261.90` | `2.53` |
 
 ## ASTER Ratio Summary
 
@@ -276,6 +282,8 @@ The remaining boundary is semantic, not environmental:
 - exact direct MFMA GEMM for:
   - `fp8/fp8 -> f32`, `16x16x32`, `gfx942` only
   - `bf8/bf8 -> f32`, `16x16x32`, `gfx942` only
+  - `fp8/bf8 -> f32`, `16x16x32`, `gfx942` only
+  - `bf8/fp8 -> f32`, `16x16x32`, `gfx942` only
 
 Two important boundaries remain:
 - `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
@@ -283,7 +291,7 @@ Two important boundaries remain:
   - tensor creation uses raw E4M3FNUZ byte payloads
   - tensor creation uses raw E5M2FNUZ byte payloads for `bf8`
   - generic runtime arithmetic on `fp8`/`bf8` is intentionally rejected
-  - only the exact ASTER MFMA path consumes it today
+  - only the exact ASTER MFMA paths consume them today
 - ASTER performance is currently published through two dedicated checked-in paths, not the common `65536`-element table:
   - `4096`-element dense copy/binary/broadcast microbenchmarks
   - exact `16x16x16` MFMA GEMM microbenchmarks
@@ -297,7 +305,7 @@ Two important boundaries remain:
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
 - useful for executable copy, add/sub/mul, scalar-broadcast, and exact MFMA GEMM coverage
-- useful for executable `gfx942` FP8/BF8 MFMA as well, but only through raw byte-payload tensors today
+- useful for executable `gfx942` exact and mixed FP8/BF8 MFMA as well, but only through raw byte-payload tensors today
 - benchmarkable through the checked-in ASTER microbenchmark harness above
 - currently closest to `hipcc_exec` on `f16` copy in this microbench set, and furthest behind on scalar broadcast add
 - currently shows much stronger warm behavior on the exact MFMA GEMM path than on the ASTER pointwise/broadcast families
