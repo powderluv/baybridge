@@ -78,6 +78,7 @@ class GpuTextBackend:
             "add",
             "sub",
             "mul",
+            "div",
             "floordiv",
             "mod",
             "cmp_lt",
@@ -93,6 +94,20 @@ class GpuTextBackend:
             "store",
             "masked_load",
             "masked_store",
+            "math_acos",
+            "math_asin",
+            "math_atan",
+            "math_sqrt",
+            "math_rsqrt",
+            "math_sin",
+            "math_cos",
+            "math_exp",
+            "math_exp2",
+            "math_log",
+            "math_log2",
+            "math_log10",
+            "math_erf",
+            "math_atan2",
         }:
             return self._emit_builtin(operation, value_types)
 
@@ -252,6 +267,11 @@ class GpuTextBackend:
             lhs, rhs = operation.inputs
             operand_type = value_types[output]
             return [f"%{output} = {arith_op} %{lhs}, %{rhs} : {operand_type}"]
+        if operation.op == "div":
+            lhs, rhs = operation.inputs
+            operand_type = value_types[output]
+            arith_op = "arith.divf" if operand_type.startswith("f") else "arith.divsi"
+            return [f"%{output} = {arith_op} %{lhs}, %{rhs} : {operand_type}"]
         if operation.op == "floordiv":
             lhs, rhs = operation.inputs
             operand_type = value_types[output]
@@ -310,6 +330,28 @@ class GpuTextBackend:
                 f"  memref.store %{value_name}, %{tensor_name}[{indices}] : {tensor_type}",
                 "}",
             ]
+        if operation.op in {
+            "math_acos",
+            "math_asin",
+            "math_atan",
+            "math_sqrt",
+            "math_rsqrt",
+            "math_sin",
+            "math_cos",
+            "math_exp",
+            "math_exp2",
+            "math_log",
+            "math_log2",
+            "math_log10",
+            "math_erf",
+        }:
+            source_name = operation.inputs[0]
+            operand_type = value_types[output]
+            return [f"%{output} = {self._math_unary_op(operation.op)} %{source_name} : {operand_type}"]
+        if operation.op == "math_atan2":
+            lhs, rhs = operation.inputs
+            operand_type = value_types[output]
+            return [f"%{output} = math.atan2 %{lhs}, %{rhs} : {operand_type}"]
         raise ValueError(f"unsupported builtin op '{operation.op}'")
 
     def _arith_op(self, op: str, result_type: str) -> str:
@@ -335,6 +377,23 @@ class GpuTextBackend:
             "cmp_ne": "one" if is_float else "ne",
         }[op]
         return f"arith.cmp{'f' if is_float else 'i'} {suffix}"
+
+    def _math_unary_op(self, op: str) -> str:
+        return {
+            "math_acos": "math.acos",
+            "math_asin": "math.asin",
+            "math_atan": "math.atan",
+            "math_sqrt": "math.sqrt",
+            "math_rsqrt": "math.rsqrt",
+            "math_sin": "math.sin",
+            "math_cos": "math.cos",
+            "math_exp": "math.exp",
+            "math_exp2": "math.exp2",
+            "math_log": "math.log",
+            "math_log2": "math.log2",
+            "math_log10": "math.log10",
+            "math_erf": "math.erf",
+        }[op]
 
     def _mfma_variant(self, operation: Operation, a_type: str, b_type: str, acc_type: str):
         tile = tuple(operation.attrs.get("tile") or ())

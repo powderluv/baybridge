@@ -22,6 +22,17 @@ def topology_kernel(
     bb.copy(smem, dst, vector_bytes=16)
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(4, 1, 1)))
+def math_lowering_kernel(
+    src: bb.TensorSpec(shape=(4,), dtype="f32"),
+    other: bb.TensorSpec(shape=(4,), dtype="f32"),
+    dst: bb.TensorSpec(shape=(4,), dtype="f32"),
+    scale: bb.ScalarSpec(dtype="f32"),
+):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = bb.math.atan2(bb.math.sqrt(src[tidx]) / scale, other[tidx])
+
+
 @bb.jit(launch=bb.LaunchConfig(grid=(96, 2, 1), block=(128, 2, 1), shared_mem_bytes=8192))
 def tiled_kernel(
     a: bb.TensorSpec(shape=(64, 64), dtype="f16"),
@@ -58,6 +69,15 @@ def test_gpu_text_backend_maps_topology_builtins(tmp_path: Path) -> None:
     assert "gpu.block_dim x" in text
     assert "gpu.grid_dim y" in text
     assert '"rocdl.lane_id"() : () -> index' in text
+
+
+def test_gpu_text_backend_lowers_math_ops_to_standard_mlir(tmp_path: Path) -> None:
+    artifact = bb.compile(math_lowering_kernel, cache_dir=tmp_path, backend="gpu_text")
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "math.sqrt" in text
+    assert "arith.divf" in text
+    assert "math.atan2" in text
 
 
 def test_gpu_text_backend_uses_gpu_style_types(tmp_path: Path) -> None:

@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 
@@ -28,6 +29,15 @@ def waveasm_exec_shared_inplace_scale_kernel(
     smem[tidx] = buf[tidx]
     bb.barrier()
     buf[tidx] = smem[tidx] * scale
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(4, 1, 1)))
+def waveasm_exec_inplace_sqrt_scale_kernel(
+    buf: bb.TensorSpec(shape=(4,), dtype="f32"),
+    scale: bb.ScalarSpec(dtype="f32"),
+):
+    tidx, _, _ = bb.arch.thread_idx()
+    buf[tidx] = bb.math.sqrt(buf[tidx]) / scale
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(4, 1, 1)))
@@ -179,6 +189,48 @@ def test_waveasm_exec_supports_shared_stage_kernel(monkeypatch: pytest.MonkeyPat
     text = artifact.lowered_module.text
     assert "%smem = memref.alloca()" in text
     assert "gpu.barrier" in text
+
+
+def test_waveasm_exec_supports_single_buffer_math_kernel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wave_root = tmp_path / "wave"
+    _install_fake_toolchain(wave_root)
+    monkeypatch.setenv("BAYBRIDGE_WAVEASM_ROOT", str(wave_root))
+    monkeypatch.setenv(_WAVEASM_EXPERIMENTAL_ENV, "1")
+
+    backend = WaveAsmExecBackend()
+    fake_runtime = _FakeModuleRuntime()
+
+    def fake_make_module_runtime():
+        return fake_runtime
+
+    def fake_launch(runtime, function, ir, args, stream):
+        del runtime, function, ir, stream
+        buf, scale = args
+        for index, value in enumerate(buf.tolist()):
+            buf[index] = math.sqrt(value) / scale
+
+    monkeypatch.setattr(backend, "_make_module_runtime", fake_make_module_runtime)
+    monkeypatch.setattr(backend, "_launch", fake_launch)
+
+    buf = bb.tensor([1.0, 4.0, 9.0, 16.0], dtype="f32")
+    artifact = bb.compile(
+        waveasm_exec_inplace_sqrt_scale_kernel,
+        buf,
+        2.0,
+        cache_dir=tmp_path / "cache",
+        backend=backend,
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "math.sqrt" in text
+    assert "arith.divf" in text
+
+    artifact(buf, 2.0)
+
+    assert buf.tolist() == pytest.approx([0.5, 1.0, 1.5, 2.0], rel=1e-6, abs=1e-6)
 
 
 def test_waveasm_exec_rejects_multi_buffer_kernel(tmp_path: Path) -> None:

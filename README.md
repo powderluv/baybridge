@@ -227,6 +227,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - `BAYBRIDGE_ASTER_ROOT` can point at an ASTER checkout or install root to improve tool and package discovery
   - current experimental family:
     - single-global-tensor pointwise kernels
+    - single-global-tensor pointwise math kernels
     - single-global-tensor shared-memory staging
   - not enabled by default because current upstream WaveASM execution still has correctness issues for Baybridge kernels, including the scalar global `memref.load/store` SRD aliasing bug tracked in `iree-org/wave#1117`
   - does not yet cover reductions, multi-buffer copy, GEMM, or Baybridge custom tensor-SSA ops

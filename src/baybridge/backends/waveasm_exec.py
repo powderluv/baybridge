@@ -29,6 +29,20 @@ _SUPPORTED_EXEC_OPS = {
     "make_tensor",
     "masked_load",
     "masked_store",
+    "math_acos",
+    "math_asin",
+    "math_atan",
+    "math_atan2",
+    "math_cos",
+    "math_erf",
+    "math_exp",
+    "math_exp2",
+    "math_log",
+    "math_log10",
+    "math_log2",
+    "math_rsqrt",
+    "math_sin",
+    "math_sqrt",
     "mod",
     "mul",
     "or",
@@ -161,7 +175,7 @@ class WaveAsmExecBackend:
                     "Current upstream correctness issues are tracked in iree-org/wave#1117."
                 )
             raise BackendNotImplementedError(
-                "waveasm_exec currently supports only experimental single-global-tensor pointwise/shared-memory kernels lowered fully to standard GPU/MLIR ops"
+                "waveasm_exec currently supports only experimental single-global-tensor pointwise/shared-memory/math kernels lowered fully to standard GPU/MLIR ops"
             )
         lowered = self._bridge.lower_mlir(ir, target)
         return LoweredModule(
