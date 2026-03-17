@@ -259,28 +259,28 @@ def aster_mfma_bf16_gemm_args(**_kwargs):
 
 
 def aster_mfma_fp8_gemm_args(**_kwargs):
-    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
-    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    a = bb.pack_fp8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_fp8([[1.0 for _ in range(16)] for _ in range(32)])
     c = bb.zeros((16, 16), dtype="f32")
     return {"args": (a, b, c), "result_indices": ()}
 
 
 def aster_mfma_bf8_gemm_args(**_kwargs):
-    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
-    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    a = bb.pack_bf8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_bf8([[1.0 for _ in range(16)] for _ in range(32)])
     c = bb.zeros((16, 16), dtype="f32")
     return {"args": (a, b, c), "result_indices": ()}
 
 
 def aster_mfma_fp8_bf8_gemm_args(**_kwargs):
-    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
-    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    a = bb.pack_fp8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_bf8([[1.0 for _ in range(16)] for _ in range(32)])
     c = bb.zeros((16, 16), dtype="f32")
     return {"args": (a, b, c), "result_indices": ()}
 
 
 def aster_mfma_bf8_fp8_gemm_args(**_kwargs):
-    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
-    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    a = bb.pack_bf8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_fp8([[1.0 for _ in range(16)] for _ in range(32)])
     c = bb.zeros((16, 16), dtype="f32")
     return {"args": (a, b, c), "result_indices": ()}

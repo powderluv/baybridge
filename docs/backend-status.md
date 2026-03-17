@@ -202,10 +202,10 @@ The timings below are for the direct `bb.gemm(...)` form. The checked-in fragmen
 | --- | --- | ---: | --- |
 | MFMA GEMM `f16/f16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `2.47` | Exact `16x16x16` ASTER MFMA path |
 | MFMA GEMM `bf16/bf16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `2.45` | Exact `16x16x16` ASTER MFMA path |
-| MFMA GEMM `fp8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.52` | Exact `gfx942`-only ASTER MFMA path; inputs are raw E4M3FNUZ byte payloads today |
-| MFMA GEMM `bf8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.57` | Exact `gfx942`-only ASTER MFMA path; inputs are raw E5M2FNUZ byte payloads today |
-| MFMA GEMM `fp8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.51` | Exact `gfx942`-only ASTER MFMA path; A uses raw E4M3FNUZ payloads and B uses raw E5M2FNUZ payloads |
-| MFMA GEMM `bf8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.53` | Exact `gfx942`-only ASTER MFMA path; A uses raw E5M2FNUZ payloads and B uses raw E4M3FNUZ payloads |
+| MFMA GEMM `fp8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.52` | Exact `gfx942`-only ASTER MFMA path; benchmark harness uses `bb.pack_fp8(...)` |
+| MFMA GEMM `bf8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.57` | Exact `gfx942`-only ASTER MFMA path; benchmark harness uses `bb.pack_bf8(...)` |
+| MFMA GEMM `fp8/bf8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.51` | Exact `gfx942`-only ASTER MFMA path; benchmark harness uses `bb.pack_fp8(...)` and `bb.pack_bf8(...)` |
+| MFMA GEMM `bf8/fp8 -> f32`, `16x32 * 32x16 -> 16x16` | `aster_exec` | `2.53` | Exact `gfx942`-only ASTER MFMA path; benchmark harness uses `bb.pack_bf8(...)` and `bb.pack_fp8(...)` |
 
 ## ASTER MFMA Cold vs Warm Snapshot
 
@@ -288,8 +288,8 @@ The remaining boundary is semantic, not environmental:
 Two important boundaries remain:
 - `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
 - `fp8`/`bf8` in Baybridge are storage-only today:
-  - tensor creation uses raw E4M3FNUZ byte payloads
-  - tensor creation uses raw E5M2FNUZ byte payloads for `bf8`
+  - `bb.pack_fp8(...)` and `bb.pack_bf8(...)` now provide a Baybridge-native input path from normal float data
+  - raw E4M3FNUZ and E5M2FNUZ byte payload tensors still work when explicit control is needed
   - generic runtime arithmetic on `fp8`/`bf8` is intentionally rejected
   - only the exact ASTER MFMA paths consume them today
 - ASTER performance is currently published through two dedicated checked-in paths, not the common `65536`-element table:
@@ -305,7 +305,7 @@ Two important boundaries remain:
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
 - useful for executable copy, add/sub/mul, scalar-broadcast, and exact MFMA GEMM coverage
-- useful for executable `gfx942` exact and mixed FP8/BF8 MFMA as well, but only through raw byte-payload tensors today
+- useful for executable `gfx942` exact and mixed FP8/BF8 MFMA through the new pack helpers or raw byte-payload tensors
 - benchmarkable through the checked-in ASTER microbenchmark harness above
 - currently closest to `hipcc_exec` on `f16` copy in this microbench set, and furthest behind on scalar broadcast add
 - currently shows much stronger warm behavior on the exact MFMA GEMM path than on the ASTER pointwise/broadcast families

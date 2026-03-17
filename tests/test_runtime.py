@@ -1,3 +1,5 @@
+import pytest
+
 import baybridge as bb
 
 
@@ -64,3 +66,41 @@ def test_from_dlpack_supports_alignment_and_dynamic_layout_marking() -> None:
     assert handle.assumed_align == 16
     assert handle.dynamic_layout_leading_dim == 1
     assert handle.to_runtime_tensor().shape == (4, 8)
+
+
+def test_pack_fp8_scalar_reference_values() -> None:
+    assert bb.pack_fp8(0.0) == 0x00
+    assert bb.pack_fp8(1.0) == 0x40
+    assert bb.pack_fp8(1.5) == 0x44
+    assert bb.pack_fp8(2.0) == 0x48
+
+
+def test_pack_bf8_scalar_reference_values() -> None:
+    assert bb.pack_bf8(0.0) == 0x00
+    assert bb.pack_bf8(1.0) == 0x40
+    assert bb.pack_bf8(1.5) == 0x42
+    assert bb.pack_bf8(2.0) == 0x44
+
+
+def test_pack_and_unpack_fp8_tensor_roundtrip_known_values() -> None:
+    packed = bb.pack_fp8([[0.0, 1.0], [1.5, 2.0]])
+    assert packed.shape == (2, 2)
+    assert packed.dtype == "fp8"
+    assert packed.tolist() == [[0x00, 0x40], [0x44, 0x48]]
+
+    unpacked = bb.unpack_fp8(packed)
+    assert unpacked.dtype == "f32"
+    assert unpacked.tolist()[0] == pytest.approx([0.0, 1.0])
+    assert unpacked.tolist()[1] == pytest.approx([1.5, 2.0])
+
+
+def test_pack_and_unpack_bf8_tensor_roundtrip_known_values() -> None:
+    packed = bb.pack_bf8([[0.0, 1.0], [1.5, 2.0]])
+    assert packed.shape == (2, 2)
+    assert packed.dtype == "bf8"
+    assert packed.tolist() == [[0x00, 0x40], [0x42, 0x44]]
+
+    unpacked = bb.unpack_bf8(packed)
+    assert unpacked.dtype == "f32"
+    assert unpacked.tolist()[0] == pytest.approx([0.0, 1.0])
+    assert unpacked.tolist()[1] == pytest.approx([1.5, 2.0])

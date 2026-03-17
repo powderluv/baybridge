@@ -1191,6 +1191,30 @@ def test_aster_exec_launches_mfma_bf8_fp8_gemm_kernel_with_fake_aster(
     assert artifact.lowered_path.with_suffix(".hsaco").exists()
 
 
+def test_aster_exec_launches_mfma_fp8_bf8_gemm_kernel_with_pack_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.pack_fp8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_bf8([[1.0 for _ in range(16)] for _ in range(32)])
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_bf8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+
+
 def test_aster_exec_launches_fragment_mfma_kernel_with_fake_aster(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2447,6 +2471,36 @@ def test_aster_exec_runs_mfma_bf8_fp8_gemm_on_amd_hardware(tmp_path: Path) -> No
 
     artifact = bb.compile(
         aster_exec_mfma_bf8_fp8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_mfma_fp8_bf8_gemm_from_pack_helpers_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    if target_arch != "gfx942":
+        pytest.skip("aster_exec fp8/bf8 MFMA currently supports gfx942 only")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.pack_fp8([[1.0 for _ in range(32)] for _ in range(16)])
+    b = bb.pack_bf8([[1.0 for _ in range(16)] for _ in range(32)])
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_bf8_gemm_kernel,
         a,
         b,
         c,

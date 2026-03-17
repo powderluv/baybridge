@@ -13,7 +13,9 @@ from .dtypes import (
     is_float_dtype,
     is_storage_only_dtype,
     normalize_dtype_name,
+    pack_storage_only_scalar,
     promote_scalar_dtype,
+    unpack_storage_only_scalar,
 )
 
 
@@ -589,6 +591,54 @@ def zeros(shape: tuple[int, ...], *, dtype: str = "f32") -> RuntimeTensor:
 
 def clone(value: RuntimeTensor) -> RuntimeTensor:
     return RuntimeTensor(list(value._storage), value.shape, dtype=value.dtype, stride=value.stride, offset=value.offset)
+
+
+def _pack_storage_only_value(value: Any, dtype: str) -> Any:
+    if isinstance(value, RuntimeTensor):
+        packed = [pack_storage_only_scalar(item, dtype) for item in value._storage]
+        return RuntimeTensor(packed, value.shape, dtype=dtype, stride=value.stride, offset=value.offset)
+    if isinstance(value, RuntimeScalar):
+        return pack_storage_only_scalar(value.value, dtype)
+    if isinstance(value, (list, tuple)):
+        shape = _infer_shape(value)
+        flat: list[Any] = []
+        _flatten_nested(value, flat)
+        packed = [pack_storage_only_scalar(item, dtype) for item in flat]
+        return RuntimeTensor(packed, shape, dtype=dtype)
+    return pack_storage_only_scalar(value, dtype)
+
+
+def _unpack_storage_only_value(value: Any, dtype: str) -> Any:
+    if isinstance(value, RuntimeTensor):
+        if value.dtype != dtype:
+            raise TypeError(f"expected RuntimeTensor dtype '{dtype}', got '{value.dtype}'")
+        unpacked = [unpack_storage_only_scalar(item, dtype) for item in value._storage]
+        return RuntimeTensor(unpacked, value.shape, dtype="f32", stride=value.stride, offset=value.offset)
+    if isinstance(value, RuntimeScalar):
+        return unpack_storage_only_scalar(value.value, dtype)
+    if isinstance(value, (list, tuple)):
+        shape = _infer_shape(value)
+        flat: list[Any] = []
+        _flatten_nested(value, flat)
+        unpacked = [unpack_storage_only_scalar(item, dtype) for item in flat]
+        return RuntimeTensor(unpacked, shape, dtype="f32")
+    return unpack_storage_only_scalar(value, dtype)
+
+
+def pack_fp8(value: Any) -> RuntimeTensor | int:
+    return _pack_storage_only_value(value, "fp8")
+
+
+def pack_bf8(value: Any) -> RuntimeTensor | int:
+    return _pack_storage_only_value(value, "bf8")
+
+
+def unpack_fp8(value: Any) -> RuntimeTensor | float:
+    return _unpack_storage_only_value(value, "fp8")
+
+
+def unpack_bf8(value: Any) -> RuntimeTensor | float:
+    return _unpack_storage_only_value(value, "bf8")
 
 
 def full(shape: tuple[int, ...], fill_value: Any, *, dtype: str = "f32") -> RuntimeTensor:
