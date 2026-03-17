@@ -87,6 +87,9 @@ class HipKittensRefBackend:
 
     def _match_family(self, ir: PortableKernelIR, value_specs: dict[str, TensorSpec | ScalarSpec]) -> HipKittensMatch:
         op_counts = Counter(operation.op for operation in ir.operations)
+        explicit_match = self._match_explicit_family(ir, value_specs, op_counts)
+        if explicit_match is not None:
+            return explicit_match
         mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
         if not mma_ops:
             norm_match = self._match_norm_family(ir, value_specs, op_counts)
@@ -150,6 +153,73 @@ class HipKittensRefBackend:
             notes=tuple(notes),
             op_counts=dict(sorted(op_counts.items())),
         )
+
+    def _match_explicit_family(
+        self,
+        ir: PortableKernelIR,
+        value_specs: dict[str, TensorSpec | ScalarSpec],
+        op_counts: Counter[str],
+    ) -> HipKittensMatch | None:
+        if len(ir.operations) != 1:
+            return None
+        operation = ir.operations[0]
+        if operation.op == "layernorm":
+            x_spec = value_specs.get(operation.inputs[0])
+            if not isinstance(x_spec, TensorSpec):
+                return None
+            trailing = int(x_spec.shape[-1]) if x_spec.shape else 1
+            return HipKittensMatch(
+                family="layernorm",
+                operand_dtype=x_spec.dtype,
+                accumulator_dtype=x_spec.dtype,
+                tile=(1, trailing, trailing),
+                reference_paths=("kernels/layernorm/",),
+                notes=(
+                    "explicit baybridge.layernorm op is present",
+                    "HipKittens executable path is available for exact BF16 shapes",
+                ),
+                op_counts=dict(sorted(op_counts.items())),
+            )
+        if operation.op == "rmsnorm":
+            x_spec = value_specs.get(operation.inputs[0])
+            if not isinstance(x_spec, TensorSpec):
+                return None
+            trailing = int(x_spec.shape[-1]) if x_spec.shape else 1
+            return HipKittensMatch(
+                family="rmsnorm",
+                operand_dtype=x_spec.dtype,
+                accumulator_dtype=x_spec.dtype,
+                tile=(1, trailing, trailing),
+                reference_paths=("kernels/rmsnorm/", "kernels/layernorm/"),
+                notes=(
+                    "explicit baybridge.rmsnorm op is present",
+                    "HipKittens executable path is available for exact BF16 shapes",
+                ),
+                op_counts=dict(sorted(op_counts.items())),
+            )
+        if operation.op == "attention":
+            q_spec = value_specs.get(operation.inputs[0])
+            if not isinstance(q_spec, TensorSpec):
+                return None
+            head_dim = int(q_spec.shape[-1]) if q_spec.shape else 1
+            return HipKittensMatch(
+                family="attention",
+                operand_dtype=q_spec.dtype,
+                accumulator_dtype=q_spec.dtype,
+                tile=(32, 64, head_dim),
+                reference_paths=(
+                    "kernels/attn/gqa/",
+                    "kernels/attn/gqa_causal/",
+                    "kernels/attn/gqa_backwards/",
+                    "kernels/attn/gqa_causal_backwards/",
+                ),
+                notes=(
+                    "explicit baybridge.attention op is present",
+                    "HipKittens executable path maps to the fused GQA kernel, not the heuristic score/exp/reduce reference family",
+                ),
+                op_counts=dict(sorted(op_counts.items())),
+            )
+        return None
 
     def _match_norm_family(
         self,

@@ -58,6 +58,43 @@ class HipKittensExecMatch:
     k_tiles: int
 
 
+@dataclass(frozen=True)
+class HipKittensLayerNormExecMatch:
+    x_name: str
+    residual_name: str
+    out_name: str
+    out_resid_name: str
+    weight_name: str
+    bias_name: str
+    shape: tuple[int, int, int]
+    epsilon: float
+    reference_path: str
+
+
+@dataclass(frozen=True)
+class HipKittensRmsNormExecMatch:
+    x_name: str
+    out_name: str
+    gamma_name: str
+    shape: tuple[int, int, int]
+    epsilon: float
+    reference_path: str
+
+
+@dataclass(frozen=True)
+class HipKittensAttentionExecMatch:
+    q_name: str
+    k_name: str
+    v_name: str
+    out_name: str
+    lse_name: str
+    q_shape: tuple[int, int, int, int]
+    kv_shape: tuple[int, int, int, int]
+    lse_shape: tuple[int, int, int, int]
+    causal: bool
+    reference_path: str
+
+
 _DESCRIPTORS = (
     HipKittensExecDescriptor(
         family="bf16_gemm_32x16x32",
@@ -591,16 +628,36 @@ class HipKittensExecBackend:
                 argtypes.append(scalar_ctype(argument.spec.dtype))
         return argtypes
 
-    def _match(self, ir: PortableKernelIR, target: AMDTarget) -> HipKittensExecMatch:
+    def _match(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+    ) -> HipKittensExecMatch | HipKittensLayerNormExecMatch | HipKittensRmsNormExecMatch | HipKittensAttentionExecMatch:
         if target.arch not in {"gfx950", "gfx942"}:
             raise BackendNotImplementedError(
                 f"hipkittens_exec currently supports gfx950 and gfx942 only, got target arch '{target.arch}'"
             )
+        if len(ir.operations) != 1:
+            raise BackendNotImplementedError(
+                "hipkittens_exec currently supports a single explicit HipKittens op or a single pure GEMM mma op"
+            )
+        operation = ir.operations[0]
+        if operation.op == "mma":
+            return self._match_gemm(ir, target)
+        if operation.op == "layernorm":
+            return self._match_layernorm(ir, target, operation)
+        if operation.op == "rmsnorm":
+            return self._match_rmsnorm(ir, target, operation)
+        if operation.op == "attention":
+            return self._match_attention(ir, target, operation)
+        raise BackendNotImplementedError(
+            "hipkittens_exec currently supports exact GEMM, layernorm, rmsnorm, and fused attention ops only"
+        )
+
+    def _match_gemm(self, ir: PortableKernelIR, target: AMDTarget) -> HipKittensExecMatch:
         mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
         if len(mma_ops) != 1:
             raise BackendNotImplementedError("hipkittens_exec currently supports exactly one mma op")
-        if len(ir.operations) != 1:
-            raise BackendNotImplementedError("hipkittens_exec currently supports pure GEMM kernels without extra ops")
         mma = mma_ops[0]
         a_name, b_name, c_name = mma.inputs
         transpose_a = bool(mma.attrs.get("transpose_a", False))
@@ -671,6 +728,156 @@ class HipKittensExecBackend:
                 for d in _DESCRIPTORS
                 if self._descriptor_supported_on_target(d, target)
             )
+        )
+
+    def _match_layernorm(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        operation: Any,
+    ) -> HipKittensLayerNormExecMatch:
+        if target.arch not in {"gfx950", "gfx942"}:
+            raise BackendNotImplementedError("hipkittens_exec layernorm is only wired for gfx950 and gfx942")
+        if len(operation.inputs) != 6:
+            raise BackendNotImplementedError("hipkittens_exec layernorm expects x, residual, out, out_resid, weight, and bias")
+        x_name, residual_name, out_name, out_resid_name, weight_name, bias_name = operation.inputs
+        specs = {argument.name: argument.spec for argument in ir.arguments if isinstance(argument.spec, TensorSpec)}
+        try:
+            x_spec = specs[x_name]
+            residual_spec = specs[residual_name]
+            out_spec = specs[out_name]
+            out_resid_spec = specs[out_resid_name]
+            weight_spec = specs[weight_name]
+            bias_spec = specs[bias_name]
+        except KeyError as exc:
+            raise BackendNotImplementedError("hipkittens_exec layernorm expects direct tensor arguments") from exc
+        if any(spec.dtype != "bf16" for spec in (x_spec, residual_spec, out_spec, out_resid_spec, weight_spec, bias_spec)):
+            raise BackendNotImplementedError("hipkittens_exec layernorm currently requires BF16 tensors")
+        if len(x_spec.shape) != 3 or residual_spec.shape != x_spec.shape or out_spec.shape != x_spec.shape or out_resid_spec.shape != x_spec.shape:
+            raise BackendNotImplementedError(
+                f"hipkittens_exec layernorm requires matching rank-3 x/residual/out/out_resid tensors, got {x_spec.shape}"
+            )
+        batch, seqlen, hidden = x_spec.shape
+        if weight_spec.shape != (hidden,) or bias_spec.shape != (hidden,):
+            raise BackendNotImplementedError(
+                f"hipkittens_exec layernorm requires weight and bias shapes {(hidden,)}, got {weight_spec.shape} and {bias_spec.shape}"
+            )
+        if seqlen % 4 != 0:
+            raise BackendNotImplementedError(
+                f"hipkittens_exec layernorm requires the sequence dimension to be divisible by 4, got {seqlen}"
+            )
+        epsilon = float(operation.attrs.get("epsilon", 1e-5))
+        return HipKittensLayerNormExecMatch(
+            x_name=x_name,
+            residual_name=residual_name,
+            out_name=out_name,
+            out_resid_name=out_resid_name,
+            weight_name=weight_name,
+            bias_name=bias_name,
+            shape=(batch, seqlen, hidden),
+            epsilon=epsilon,
+            reference_path="kernels/layernorm/kernel.cpp",
+        )
+
+    def _match_rmsnorm(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        operation: Any,
+    ) -> HipKittensRmsNormExecMatch:
+        if target.arch != "gfx942":
+            raise BackendNotImplementedError("hipkittens_exec rmsnorm is currently wired only for gfx942/cdna3")
+        if len(operation.inputs) != 3:
+            raise BackendNotImplementedError("hipkittens_exec rmsnorm expects x, out, and gamma tensors")
+        x_name, out_name, gamma_name = operation.inputs
+        specs = {argument.name: argument.spec for argument in ir.arguments if isinstance(argument.spec, TensorSpec)}
+        try:
+            x_spec = specs[x_name]
+            out_spec = specs[out_name]
+            gamma_spec = specs[gamma_name]
+        except KeyError as exc:
+            raise BackendNotImplementedError("hipkittens_exec rmsnorm expects direct tensor arguments") from exc
+        if any(spec.dtype != "bf16" for spec in (x_spec, out_spec, gamma_spec)):
+            raise BackendNotImplementedError("hipkittens_exec rmsnorm currently requires BF16 tensors")
+        if len(x_spec.shape) != 3 or out_spec.shape != x_spec.shape or gamma_spec.shape != x_spec.shape:
+            raise BackendNotImplementedError(
+                f"hipkittens_exec rmsnorm requires matching rank-3 x/out/gamma tensors, got {x_spec.shape}, {out_spec.shape}, {gamma_spec.shape}"
+            )
+        batch, seqlen, hidden = x_spec.shape
+        if seqlen % 4 != 0:
+            raise BackendNotImplementedError(
+                f"hipkittens_exec rmsnorm requires the sequence dimension to be divisible by 4, got {seqlen}"
+            )
+        epsilon = float(operation.attrs.get("epsilon", 1e-5))
+        return HipKittensRmsNormExecMatch(
+            x_name=x_name,
+            out_name=out_name,
+            gamma_name=gamma_name,
+            shape=(batch, seqlen, hidden),
+            epsilon=epsilon,
+            reference_path="kernels/rmsnorm/kernel.cpp",
+        )
+
+    def _match_attention(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+        operation: Any,
+    ) -> HipKittensAttentionExecMatch:
+        root = self._configured_root()
+        if target.arch != "gfx950":
+            raise BackendNotImplementedError("hipkittens_exec fused attention is currently wired only for gfx950")
+        if len(operation.inputs) != 5:
+            raise BackendNotImplementedError("hipkittens_exec attention expects q, k, v, out, and lse tensors")
+        q_name, k_name, v_name, out_name, lse_name = operation.inputs
+        specs = {argument.name: argument.spec for argument in ir.arguments if isinstance(argument.spec, TensorSpec)}
+        try:
+            q_spec = specs[q_name]
+            k_spec = specs[k_name]
+            v_spec = specs[v_name]
+            out_spec = specs[out_name]
+            lse_spec = specs[lse_name]
+        except KeyError as exc:
+            raise BackendNotImplementedError("hipkittens_exec attention expects direct tensor arguments") from exc
+        if any(spec.dtype != "bf16" for spec in (q_spec, k_spec, v_spec, out_spec)) or lse_spec.dtype != "f32":
+            raise BackendNotImplementedError("hipkittens_exec attention requires BF16 q/k/v/out tensors and an F32 lse tensor")
+        if len(q_spec.shape) != 4 or len(k_spec.shape) != 4 or len(v_spec.shape) != 4 or len(out_spec.shape) != 4:
+            raise BackendNotImplementedError("hipkittens_exec attention requires rank-4 q, k, v, and out tensors")
+        if q_spec.shape != out_spec.shape or k_spec.shape != v_spec.shape:
+            raise BackendNotImplementedError("hipkittens_exec attention requires q/out and k/v shape pairs to match")
+        batch, seqlen, heads, head_dim = q_spec.shape
+        kv_batch, kv_seqlen, kv_heads, kv_dim = k_spec.shape
+        if (kv_batch, kv_seqlen, kv_dim) != (batch, seqlen, head_dim):
+            raise BackendNotImplementedError("hipkittens_exec attention requires compatible q/k/v shapes")
+        if lse_spec.shape != (batch, heads, 1, seqlen):
+            raise BackendNotImplementedError(
+                f"hipkittens_exec attention requires lse shape {(batch, heads, 1, seqlen)}, got {lse_spec.shape}"
+            )
+        if head_dim != 128:
+            raise BackendNotImplementedError(f"hipkittens_exec attention currently requires head_dim=128, got {head_dim}")
+        if heads % kv_heads != 0:
+            raise BackendNotImplementedError("hipkittens_exec attention requires query heads to be divisible by kv heads")
+        if seqlen % 64 != 0 or seqlen < 256:
+            raise BackendNotImplementedError(
+                f"hipkittens_exec attention currently requires sequence length divisible by 64 and >= 256, got {seqlen}"
+            )
+        causal = bool(operation.attrs.get("causal", False))
+        relative_path = "kernels/attn/gqa_causal/kernel.cpp" if causal else "kernels/attn/gqa/kernel.cpp"
+        if root is not None and not (root / relative_path).exists():
+            raise BackendNotImplementedError(
+                f"hipkittens_exec attention requires {relative_path} in the configured HipKittens root"
+            )
+        return HipKittensAttentionExecMatch(
+            q_name=q_name,
+            k_name=k_name,
+            v_name=v_name,
+            out_name=out_name,
+            lse_name=lse_name,
+            q_shape=q_spec.shape,
+            kv_shape=k_spec.shape,
+            lse_shape=lse_spec.shape,
+            causal=causal,
+            reference_path=relative_path,
         )
 
     def _descriptor_supported_on_target(
@@ -760,6 +967,21 @@ class HipKittensExecBackend:
         self,
         entry_point: str,
         target: AMDTarget,
+        match: HipKittensExecMatch | HipKittensLayerNormExecMatch | HipKittensRmsNormExecMatch | HipKittensAttentionExecMatch,
+        root: Path | None,
+    ) -> str:
+        if isinstance(match, HipKittensLayerNormExecMatch):
+            return self._render_layernorm_cpp(entry_point, target, match, root)
+        if isinstance(match, HipKittensRmsNormExecMatch):
+            return self._render_rmsnorm_cpp(entry_point, target, match, root)
+        if isinstance(match, HipKittensAttentionExecMatch):
+            return self._render_attention_cpp(entry_point, target, match, root)
+        return self._render_gemm_cpp(entry_point, target, match, root)
+
+    def _render_gemm_cpp(
+        self,
+        entry_point: str,
+        target: AMDTarget,
         match: HipKittensExecMatch,
         root: Path | None,
     ) -> str:
@@ -808,6 +1030,188 @@ class HipKittensExecBackend:
             "}\n"
         )
 
+    def _render_layernorm_cpp(
+        self,
+        entry_point: str,
+        target: AMDTarget,
+        match: HipKittensLayerNormExecMatch,
+        root: Path | None,
+    ) -> str:
+        if root is None:
+            raise BackendNotImplementedError(
+                f"set {_HIPKITTENS_ENV} to a HipKittens checkout before launching hipkittens_exec layernorm kernels"
+            )
+        source_path = root / match.reference_path
+        if not source_path.exists():
+            raise BackendNotImplementedError(f"hipkittens_exec could not find the layernorm kernel source at {source_path}")
+        batch, seqlen, hidden = match.shape
+        source_text = source_path.read_text(encoding="utf-8")
+        source_text = source_text.replace('#include "pyutils/pyutils.cuh"\n', "")
+        source_text = source_text.replace("#include <rocrand_kernel.h>\n", "")
+        source_text = self._strip_pybind_module(source_text)
+        dropout_start = source_text.find("template<kittens::ducks::rv::all T>")
+        norm_globals_marker = "template<int _d_model> struct norm_globals"
+        norm_globals_start = source_text.find(norm_globals_marker)
+        if dropout_start != -1 and norm_globals_start != -1 and dropout_start < norm_globals_start:
+            source_text = source_text[:dropout_start] + source_text[norm_globals_start:]
+        source_text = source_text.replace("constexpr int B = 16;", f"constexpr int B = {batch};")
+        source_text = source_text.replace("constexpr int H = 16;", "constexpr int H = 1;")
+        source_text = source_text.replace("constexpr int N = 4096;", f"constexpr int N = {seqlen};")
+        source_text = source_text.replace("constexpr int HEAD_D = 128;", f"constexpr int HEAD_D = {hidden};")
+        source_text = source_text.replace("constexpr float DROPOUT_P = 0.01;", "constexpr float DROPOUT_P = 0.0;")
+        source_text = source_text.replace(
+            "__float2bfloat16(1e-05f)",
+            f"__float2bfloat16({match.epsilon:.9g}f)",
+        )
+        preamble = (
+            "// Baybridge HipKittens executable backend\n"
+            "// family: layernorm\n"
+            f"// target: {target.arch}\n"
+            f"// reference: {match.reference_path}\n"
+            f"// full shape: x=residual=out=out_resid={match.shape}, weight=bias=({hidden},)\n"
+            f"// HipKittens root: {root}\n\n"
+        )
+        wrapper = (
+            "\nextern \"C\" int launch_"
+            f"{entry_point}(const std::uint16_t* {match.x_name}, const std::uint16_t* {match.residual_name}, "
+            f"std::uint16_t* {match.out_name}, std::uint16_t* {match.out_resid_name}, "
+            f"const std::uint16_t* {match.weight_name}, const std::uint16_t* {match.bias_name}) {{\n"
+            f"    auto gl_x = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.x_name})), 1, B, N, D);\n"
+            f"    auto gl_residual = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.residual_name})), 1, B, N, D);\n"
+            f"    auto gl_out = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>({match.out_name}), 1, B, N, D);\n"
+            f"    auto gl_out_resid = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>({match.out_resid_name}), 1, B, N, D);\n"
+            f"    auto gl_weight = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.weight_name})), 1, 1, 1, D);\n"
+            f"    auto gl_bias = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.bias_name})), 1, 1, 1, D);\n"
+            "    norm_globals<D> g{gl_x, gl_residual, gl_out, gl_out_resid, gl_weight, gl_bias};\n"
+            "    dispatch_micro<D>(g);\n"
+            "    return static_cast<int>(hipDeviceSynchronize());\n"
+            "}\n"
+        )
+        return preamble + source_text + wrapper
+
+    def _render_rmsnorm_cpp(
+        self,
+        entry_point: str,
+        target: AMDTarget,
+        match: HipKittensRmsNormExecMatch,
+        root: Path | None,
+    ) -> str:
+        batch, seqlen, hidden = match.shape
+        root_hint = (
+            f"// HipKittens root: {root}\n" if root is not None else f"// Set {_HIPKITTENS_ENV} to a HipKittens checkout before launch\n"
+        )
+        return (
+            "// Baybridge HipKittens executable backend\n"
+            "// family: rmsnorm\n"
+            f"// target: {target.arch}\n"
+            f"// reference: {match.reference_path}\n"
+            f"// full shape: x=out=gamma={match.shape}\n"
+            f"{root_hint}"
+            "#include <cstdint>\n"
+            "#include <hip/hip_runtime.h>\n"
+            "#include \"kittens.cuh\"\n\n"
+            "#define NUM_WORKERS (4)\n"
+            "#define NUM_THREADS (NUM_WORKERS * kittens::WARP_THREADS)\n\n"
+            "using namespace kittens;\n\n"
+            f"constexpr int B = {batch};\n"
+            f"constexpr int N = {seqlen};\n"
+            f"constexpr int D = {hidden};\n"
+            f"constexpr float EPSILON = {match.epsilon:.9g}f;\n\n"
+            "template<int _D> struct rmsnorm_globals {\n"
+            "    using x_gl = gl<bf16, -1, -1, -1, -1>;\n"
+            "    using o_gl = gl<bf16, -1, -1, -1, -1>;\n"
+            "    using gamma_gl = gl<bf16, -1, -1, -1, -1>;\n"
+            "    x_gl x;\n"
+            "    o_gl o;\n"
+            "    gamma_gl gamma;\n"
+            "    float epsilon;\n"
+            "    const int n_per_tile = NUM_WORKERS;\n"
+            "    const int n_tile_size = N / n_per_tile;\n"
+            "    dim3 grid() { return dim3(n_tile_size, B, 1); }\n"
+            "    dim3 block() { return dim3(NUM_THREADS); }\n"
+            "    size_t dynamic_shared_memory() { return 0; }\n"
+            "};\n\n"
+            "template<int _D>\n"
+            "__global__ void rmsnorm_hk(const rmsnorm_globals<_D> g) {\n"
+            "    auto warpid = kittens::warpid();\n"
+            "    const int batch = blockIdx.y;\n"
+            "    const int seq_start = blockIdx.x * g.n_per_tile;\n"
+            "    const int seq_idx = seq_start + warpid;\n"
+            "    rv<bf16, _D> x_reg, gamma_reg, squared_reg;\n"
+            "    load(x_reg, g.x, {0, batch, seq_idx, 0});\n"
+            "    load(gamma_reg, g.gamma, {0, batch, seq_idx, 0});\n"
+            "    asm volatile(\"s_waitcnt vmcnt(0)\");\n"
+            "    mul(squared_reg, x_reg, x_reg);\n"
+            "    bf16 x_var;\n"
+            "    sum(x_var, squared_reg);\n"
+            "    float var_f32 = __bfloat162float(x_var) / float(_D);\n"
+            "    float inv_rms_f32 = rsqrtf(var_f32 + g.epsilon);\n"
+            "    bf16 inv_rms = __float2bfloat16(inv_rms_f32);\n"
+            "    mul(x_reg, x_reg, inv_rms);\n"
+            "    mul(x_reg, x_reg, gamma_reg);\n"
+            "    store(g.o, x_reg, {0, batch, seq_idx, 0});\n"
+            "}\n\n"
+            "extern \"C\" int launch_"
+            f"{entry_point}(const std::uint16_t* {match.x_name}, std::uint16_t* {match.out_name}, const std::uint16_t* {match.gamma_name}) {{\n"
+            f"    auto gl_x = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.x_name})), 1, B, N, D);\n"
+            f"    auto gl_out = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>({match.out_name}), 1, B, N, D);\n"
+            f"    auto gl_gamma = make_gl<gl<bf16, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.gamma_name})), 1, B, N, D);\n"
+            "    rmsnorm_globals<D> g{gl_x, gl_out, gl_gamma, EPSILON};\n"
+            "    rmsnorm_hk<D><<<g.grid(), g.block(), g.dynamic_shared_memory()>>>(g);\n"
+            "    return static_cast<int>(hipDeviceSynchronize());\n"
+            "}\n"
+        )
+
+    def _render_attention_cpp(
+        self,
+        entry_point: str,
+        target: AMDTarget,
+        match: HipKittensAttentionExecMatch,
+        root: Path | None,
+    ) -> str:
+        if root is None:
+            raise BackendNotImplementedError(
+                f"set {_HIPKITTENS_ENV} to a HipKittens checkout before launching hipkittens_exec attention kernels"
+            )
+        source_path = root / match.reference_path
+        if not source_path.exists():
+            raise BackendNotImplementedError(f"hipkittens_exec could not find the attention kernel source at {source_path}")
+        batch, seqlen, heads, head_dim = match.q_shape
+        _, _, kv_heads, _ = match.kv_shape
+        source_text = source_path.read_text(encoding="utf-8")
+        source_text = source_text.replace('#include "pyutils/pyutils.cuh"\n', "")
+        source_text = self._strip_pybind_module(source_text)
+        preamble = (
+            "// Baybridge HipKittens executable backend\n"
+            "// family: attention\n"
+            f"// target: {target.arch}\n"
+            f"// reference: {match.reference_path}\n"
+            f"// q/out shape: {match.q_shape}\n"
+            f"// k/v shape: {match.kv_shape}\n"
+            f"// lse shape: {match.lse_shape}\n"
+            f"// HipKittens root: {root}\n"
+            f"#define ATTN_B {batch}\n"
+            f"#define ATTN_H {heads}\n"
+            f"#define ATTN_H_KV {kv_heads}\n"
+            f"#define ATTN_N {seqlen}\n"
+            f"#define ATTN_D {head_dim}\n\n"
+        )
+        wrapper = (
+            "\nextern \"C\" int launch_"
+            f"{entry_point}(const std::uint16_t* {match.q_name}, const std::uint16_t* {match.k_name}, const std::uint16_t* {match.v_name}, "
+            f"std::uint16_t* {match.out_name}, float* {match.lse_name}) {{\n"
+            f"    auto gl_q = make_gl<_gl_QKVO>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.q_name})), ATTN_B, ATTN_N, ATTN_H, ATTN_D);\n"
+            f"    auto gl_k = make_gl<_gl_QKVO>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.k_name})), ATTN_B, ATTN_N, ATTN_H_KV, ATTN_D);\n"
+            f"    auto gl_v = make_gl<_gl_QKVO>(reinterpret_cast<uint64_t>(const_cast<std::uint16_t*>({match.v_name})), ATTN_B, ATTN_N, ATTN_H_KV, ATTN_D);\n"
+            f"    auto gl_o = make_gl<_gl_QKVO>(reinterpret_cast<uint64_t>({match.out_name}), ATTN_B, ATTN_N, ATTN_H, ATTN_D);\n"
+            f"    auto gl_l = make_gl<gl<float, -1, -1, -1, -1>>(reinterpret_cast<uint64_t>({match.lse_name}), ATTN_B, ATTN_H, 1, ATTN_N);\n"
+            "    attn_globals<ATTN_D> g{gl_q, gl_k, gl_v, gl_o, gl_l, nullptr};\n"
+            "    dispatch_micro<ATTN_D>(g);\n"
+            "    return static_cast<int>(hipDeviceSynchronize());\n"
+            "}\n"
+        )
+        return preamble + source_text + wrapper
+
     def _render_rt_type(
         self,
         alias: str,
@@ -831,3 +1235,10 @@ class HipKittensExecBackend:
                 return "{0, 0, tile_col, k_tile}"
             return "{0, 0, k_tile, tile_col}"
         raise ValueError(f"unknown operand '{operand}'")
+
+    def _strip_pybind_module(self, source_text: str) -> str:
+        marker = "PYBIND11_MODULE("
+        index = source_text.find(marker)
+        if index == -1:
+            return source_text
+        return source_text[:index].rstrip() + "\n"

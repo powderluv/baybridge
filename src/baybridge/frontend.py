@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 from itertools import product
+import math as py_math
 from math import prod
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
@@ -3683,6 +3684,234 @@ def gemm(
         transpose_a=transpose_a,
         transpose_b=transpose_b,
     )
+
+
+def _runtime_index(coords: tuple[int, ...]) -> int | tuple[int, ...]:
+    return coords[0] if len(coords) == 1 else coords
+
+
+def _runtime_prefix_indices(shape: tuple[int, ...]):
+    if not shape:
+        yield ()
+        return
+    yield from product(*(range(dim) for dim in shape))
+
+
+def layernorm(
+    x: TensorValue | RuntimeTensor,
+    residual: TensorValue | RuntimeTensor,
+    out: TensorValue | RuntimeTensor,
+    out_resid: TensorValue | RuntimeTensor,
+    weight: TensorValue | RuntimeTensor,
+    bias: TensorValue | RuntimeTensor,
+    *,
+    epsilon: float = 1e-5,
+) -> Any:
+    if all(isinstance(value, RuntimeTensor) for value in (x, residual, out, out_resid, weight, bias)):
+        if x.shape != residual.shape or x.shape != out.shape or x.shape != out_resid.shape:
+            raise ValueError("baybridge.layernorm requires x, residual, out, and out_resid to have matching shapes")
+        if len(x.shape) < 1:
+            raise ValueError("baybridge.layernorm requires rank >= 1 tensors")
+        hidden = x.shape[-1]
+        if weight.shape not in {(hidden,), x.shape}:
+            raise ValueError(
+                f"baybridge.layernorm expects weight shape {(hidden,)} or {x.shape}, got {weight.shape}"
+            )
+        if bias.shape not in {(hidden,), x.shape}:
+            raise ValueError(
+                f"baybridge.layernorm expects bias shape {(hidden,)} or {x.shape}, got {bias.shape}"
+            )
+        if len(weight.shape) != 1 and weight.shape != x.shape:
+            raise ValueError("baybridge.layernorm currently supports only 1D or fully-expanded weight tensors")
+        if len(bias.shape) != 1 and bias.shape != x.shape:
+            raise ValueError("baybridge.layernorm currently supports only 1D or fully-expanded bias tensors")
+        for prefix in _runtime_prefix_indices(x.shape[:-1]):
+            mixed_values: list[float] = []
+            for lane in range(hidden):
+                index = _runtime_index(prefix + (lane,))
+                mixed = float(x[index]) + float(residual[index])
+                mixed_values.append(mixed)
+                out_resid[index] = mixed
+            mean = sum(mixed_values) / float(hidden)
+            variance = sum((value - mean) * (value - mean) for value in mixed_values) / float(hidden)
+            denom = py_math.sqrt(variance + float(epsilon))
+            for lane, mixed in enumerate(mixed_values):
+                index = _runtime_index(prefix + (lane,))
+                weight_value = float(weight[lane] if len(weight.shape) == 1 else weight[index])
+                bias_value = float(bias[lane] if len(bias.shape) == 1 else bias[index])
+                out[index] = ((mixed - mean) / denom) * weight_value + bias_value
+        return out
+    if not all(isinstance(value, TensorValue) for value in (x, residual, out, out_resid, weight, bias)):
+        raise TypeError("baybridge.layernorm expects all arguments to be runtime tensors or all to be traced tensors")
+    if x.spec.shape != residual.spec.shape or x.spec.shape != out.spec.shape or x.spec.shape != out_resid.spec.shape:
+        raise ValueError("baybridge.layernorm requires x, residual, out, and out_resid to have matching shapes")
+    if len(x.spec.shape) < 1:
+        raise ValueError("baybridge.layernorm requires rank >= 1 tensors")
+    hidden = x.spec.shape[-1]
+    if weight.spec.shape not in {(hidden,), x.spec.shape}:
+        raise ValueError(
+            f"baybridge.layernorm expects weight shape {(hidden,)} or {x.spec.shape}, got {weight.spec.shape}"
+        )
+    if bias.spec.shape not in {(hidden,), x.spec.shape}:
+        raise ValueError(
+            f"baybridge.layernorm expects bias shape {(hidden,)} or {x.spec.shape}, got {bias.spec.shape}"
+        )
+    if not all(value.spec.dtype == x.spec.dtype for value in (residual, out, out_resid, weight, bias)):
+        raise ValueError("baybridge.layernorm requires matching tensor dtypes")
+    require_builder().emit_void(
+        "layernorm",
+        x,
+        residual,
+        out,
+        out_resid,
+        weight,
+        bias,
+        attrs={"epsilon": float(epsilon)},
+    )
+    return out
+
+
+def rmsnorm(
+    x: TensorValue | RuntimeTensor,
+    out: TensorValue | RuntimeTensor,
+    gamma: TensorValue | RuntimeTensor,
+    *,
+    epsilon: float = 1e-5,
+) -> Any:
+    if all(isinstance(value, RuntimeTensor) for value in (x, out, gamma)):
+        if x.shape != out.shape:
+            raise ValueError("baybridge.rmsnorm requires x and out to have matching shapes")
+        if len(x.shape) < 1:
+            raise ValueError("baybridge.rmsnorm requires rank >= 1 tensors")
+        hidden = x.shape[-1]
+        if gamma.shape not in {(hidden,), x.shape}:
+            raise ValueError(
+                f"baybridge.rmsnorm expects gamma shape {(hidden,)} or {x.shape}, got {gamma.shape}"
+            )
+        for prefix in _runtime_prefix_indices(x.shape[:-1]):
+            values = [float(x[_runtime_index(prefix + (lane,))]) for lane in range(hidden)]
+            mean_square = sum(value * value for value in values) / float(hidden)
+            inv_rms = 1.0 / py_math.sqrt(mean_square + float(epsilon))
+            for lane, value in enumerate(values):
+                index = _runtime_index(prefix + (lane,))
+                gamma_value = float(gamma[lane] if len(gamma.shape) == 1 else gamma[index])
+                out[index] = value * inv_rms * gamma_value
+        return out
+    if not all(isinstance(value, TensorValue) for value in (x, out, gamma)):
+        raise TypeError("baybridge.rmsnorm expects all arguments to be runtime tensors or all to be traced tensors")
+    if x.spec.shape != out.spec.shape:
+        raise ValueError("baybridge.rmsnorm requires x and out to have matching shapes")
+    if len(x.spec.shape) < 1:
+        raise ValueError("baybridge.rmsnorm requires rank >= 1 tensors")
+    hidden = x.spec.shape[-1]
+    if gamma.spec.shape not in {(hidden,), x.spec.shape}:
+        raise ValueError(
+            f"baybridge.rmsnorm expects gamma shape {(hidden,)} or {x.spec.shape}, got {gamma.spec.shape}"
+        )
+    if gamma.spec.dtype != x.spec.dtype or out.spec.dtype != x.spec.dtype:
+        raise ValueError("baybridge.rmsnorm requires matching tensor dtypes")
+    require_builder().emit_void(
+        "rmsnorm",
+        x,
+        out,
+        gamma,
+        attrs={"epsilon": float(epsilon)},
+    )
+    return out
+
+
+def attention(
+    q: TensorValue | RuntimeTensor,
+    k: TensorValue | RuntimeTensor,
+    v: TensorValue | RuntimeTensor,
+    out: TensorValue | RuntimeTensor,
+    lse: TensorValue | RuntimeTensor,
+    *,
+    causal: bool = False,
+) -> Any:
+    if all(isinstance(value, RuntimeTensor) for value in (q, k, v, out, lse)):
+        if len(q.shape) != 4 or len(k.shape) != 4 or len(v.shape) != 4 or len(out.shape) != 4:
+            raise ValueError("baybridge.attention requires rank-4 q, k, v, and out tensors")
+        if q.shape != out.shape:
+            raise ValueError("baybridge.attention requires q and out to have matching shapes")
+        bsz, seqlen, heads, head_dim = q.shape
+        kb, kn, kv_heads, kv_dim = k.shape
+        if v.shape != k.shape:
+            raise ValueError("baybridge.attention requires k and v to have matching shapes")
+        if (kb, kn, kv_dim) != (bsz, seqlen, head_dim):
+            raise ValueError("baybridge.attention requires compatible q/k/v shapes")
+        if heads % kv_heads != 0:
+            raise ValueError("baybridge.attention requires q heads to be divisible by kv heads")
+        if lse.shape not in {(bsz, heads, 1, seqlen), (bsz, heads, seqlen)}:
+            raise ValueError(
+                f"baybridge.attention expects lse shape {(bsz, heads, 1, seqlen)} or {(bsz, heads, seqlen)}, got {lse.shape}"
+            )
+        scale = 1.0 / py_math.sqrt(float(head_dim))
+        group_size = heads // kv_heads
+        for batch in range(bsz):
+            for head in range(heads):
+                kv_head = head // group_size
+                for query_idx in range(seqlen):
+                    scores: list[float] = []
+                    max_score = float("-inf")
+                    for key_idx in range(seqlen):
+                        if causal and key_idx > query_idx:
+                            score = float("-inf")
+                        else:
+                            acc = 0.0
+                            for dim_idx in range(head_dim):
+                                acc += float(q[batch, query_idx, head, dim_idx]) * float(
+                                    k[batch, key_idx, kv_head, dim_idx]
+                                )
+                            score = acc * scale
+                        scores.append(score)
+                        if score > max_score:
+                            max_score = score
+                    exp_scores = [0.0 if score == float("-inf") else py_math.exp(score - max_score) for score in scores]
+                    norm = sum(exp_scores)
+                    lse_value = float("-inf") if norm == 0.0 else py_math.log(norm) + max_score
+                    if len(lse.shape) == 4:
+                        lse[batch, head, 0, query_idx] = lse_value
+                    else:
+                        lse[batch, head, query_idx] = lse_value
+                    for dim_idx in range(head_dim):
+                        acc = 0.0
+                        for key_idx, weight in enumerate(exp_scores):
+                            if weight == 0.0:
+                                continue
+                            acc += (weight / norm) * float(v[batch, key_idx, kv_head, dim_idx])
+                        out[batch, query_idx, head, dim_idx] = acc
+        return out
+    if not all(isinstance(value, TensorValue) for value in (q, k, v, out, lse)):
+        raise TypeError("baybridge.attention expects all arguments to be runtime tensors or all to be traced tensors")
+    if len(q.spec.shape) != 4 or len(k.spec.shape) != 4 or len(v.spec.shape) != 4 or len(out.spec.shape) != 4:
+        raise ValueError("baybridge.attention requires rank-4 q, k, v, and out tensors")
+    if q.spec.shape != out.spec.shape:
+        raise ValueError("baybridge.attention requires q and out to have matching shapes")
+    bsz, seqlen, heads, head_dim = q.spec.shape
+    kb, kn, kv_heads, kv_dim = k.spec.shape
+    if v.spec.shape != k.spec.shape:
+        raise ValueError("baybridge.attention requires k and v to have matching shapes")
+    if (kb, kn, kv_dim) != (bsz, seqlen, head_dim):
+        raise ValueError("baybridge.attention requires compatible q/k/v shapes")
+    if heads % kv_heads != 0:
+        raise ValueError("baybridge.attention requires q heads to be divisible by kv heads")
+    if lse.spec.shape not in {(bsz, heads, 1, seqlen), (bsz, heads, seqlen)}:
+        raise ValueError(
+            f"baybridge.attention expects lse shape {(bsz, heads, 1, seqlen)} or {(bsz, heads, seqlen)}, got {lse.spec.shape}"
+        )
+    if not all(value.spec.dtype == q.spec.dtype for value in (k, v, out)):
+        raise ValueError("baybridge.attention requires matching q/k/v/out dtypes")
+    require_builder().emit_void(
+        "attention",
+        q,
+        k,
+        v,
+        out,
+        lse,
+        attrs={"causal": bool(causal)},
+    )
+    return out
 
 
 def _default_accumulator_dtype(a_dtype: str, b_dtype: str) -> str:

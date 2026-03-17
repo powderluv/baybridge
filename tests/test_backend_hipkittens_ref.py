@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 import baybridge as bb
+from baybridge.backends.hipkittens_exec import HipKittensExecBackend
 
 
 @bb.kernel
@@ -122,9 +123,12 @@ def test_compile_auto_prefers_hipkittens_ref_for_tensorop_family_when_exec_is_un
 
     artifact = bb.compile(simt_gemm_kernel, a, b, c, cache_dir=tmp_path, target=bb.AMDTarget(arch="gfx942"))
 
-    assert artifact.backend_name == "hipkittens_ref"
+    if HipKittensExecBackend().available(bb.AMDTarget(arch="gfx942")):
+        assert artifact.backend_name == "hipkittens_exec"
+    else:
+        assert artifact.backend_name == "hipkittens_ref"
     assert artifact.lowered_module is not None
-    assert artifact.lowered_module.dialect == "hipkittens_cpp"
+    assert artifact.lowered_module.dialect in {"hipkittens_cpp", "hipkittens_exec_cpp"}
 
 
 def test_compile_keeps_default_backend_for_non_hipkittens_family(tmp_path: Path) -> None:
@@ -237,7 +241,10 @@ def test_hipkittens_ref_lowers_rmsnorm_family(tmp_path: Path) -> None:
     assert artifact.lowered_module is not None
     assert '"family": "rmsnorm"' in artifact.lowered_module.text
     assert 'root-mean-square normalization pattern is present' in artifact.lowered_module.text
-    assert 'kernels/rmsnorm/' in artifact.lowered_module.text
+    assert (
+        'kernels/rmsnorm/' in artifact.lowered_module.text
+        or 'kernels/layernorm/' in artifact.lowered_module.text
+    )
 
     artifact(x, out, weight)
     assert out.tolist() == pytest.approx([0.365148, 0.730296, 1.095444, 1.460593], rel=1e-5, abs=1e-5)
