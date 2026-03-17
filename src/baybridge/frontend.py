@@ -6,7 +6,7 @@ from math import prod
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
-from .dtypes import element_type, resolve_element_type_name
+from .dtypes import element_type, is_storage_only_dtype, resolve_element_type_name
 from .diagnostics import CompilationError, UnsupportedOperationError
 from .ir import AddressSpace, Layout, ScalarSpec, TensorSpec, normalize_address_space
 from .mfma import MFMADescriptor, resolve_mfma_descriptor
@@ -3635,6 +3635,10 @@ def gemm(
     transpose_b: bool = False,
 ) -> Any:
     if isinstance(a, RuntimeTensor) and isinstance(b, RuntimeTensor) and isinstance(c, RuntimeTensor):
+        if any(is_storage_only_dtype(tensor.dtype) for tensor in (a, b, c)):
+            raise TypeError(
+                "runtime baybridge.gemm does not support storage-only operand dtypes; compile the kernel for execution"
+            )
         if len(a.shape) != 2 or len(b.shape) != 2 or len(c.shape) != 2:
             raise ValueError("runtime baybridge.gemm currently requires rank-2 tensors")
         if transpose_a:
@@ -3684,7 +3688,7 @@ def gemm(
 def _default_accumulator_dtype(a_dtype: str, b_dtype: str) -> str:
     if a_dtype != b_dtype:
         raise ValueError(f"mma currently requires matching operand dtypes, got {a_dtype} and {b_dtype}")
-    if a_dtype in {"f16", "bf16"}:
+    if a_dtype in {"f16", "bf16", "fp8", "bf8"}:
         return "f32"
     return a_dtype
 

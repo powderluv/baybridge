@@ -11,6 +11,7 @@ from .dtypes import (
     dtype_constructor_name,
     element_type,
     is_float_dtype,
+    is_storage_only_dtype,
     normalize_dtype_name,
     promote_scalar_dtype,
 )
@@ -469,6 +470,8 @@ class RuntimeTensor:
         *,
         reduction_profile: Any = 0,
     ) -> "RuntimeTensor | Any":
+        if is_storage_only_dtype(self.dtype):
+            raise TypeError(f"baybridge dtype '{self.dtype}' is storage-only and does not support runtime reductions")
         reduction = _normalize_reduction_op(op)
         reduce_axes, keep_axes = _normalize_reduction_profile(reduction_profile, self.ndim)
         if not keep_axes:
@@ -484,7 +487,13 @@ class RuntimeTensor:
         return result
 
     def _binary_op(self, other: Any, op, *, reverse: bool = False, dtype: str | None = None) -> "RuntimeTensor":
+        if is_storage_only_dtype(self.dtype):
+            raise TypeError(f"baybridge dtype '{self.dtype}' is storage-only and does not support runtime arithmetic")
         if isinstance(other, RuntimeTensor):
+            if is_storage_only_dtype(other.dtype):
+                raise TypeError(
+                    f"baybridge dtype '{other.dtype}' is storage-only and does not support runtime arithmetic"
+                )
             result_shape = _broadcast_shape(self.shape, other.shape)
             lhs_tensor = self.broadcast_to(result_shape) if self.shape != result_shape else self
             rhs_tensor = other.broadcast_to(result_shape) if other.shape != result_shape else other

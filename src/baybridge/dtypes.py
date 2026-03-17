@@ -8,6 +8,8 @@ _WIDTH_TABLE = {
     "i8": 8,
     "i32": 32,
     "i64": 64,
+    "fp8": 8,
+    "bf8": 8,
     "f16": 16,
     "bf16": 16,
     "f32": 32,
@@ -16,6 +18,7 @@ _WIDTH_TABLE = {
 
 _FLOAT_DTYPES = {"f16", "bf16", "f32"}
 _INTEGER_DTYPES = {"i1", "i8", "i32", "i64", "index"}
+_STORAGE_ONLY_DTYPES = {"fp8", "bf8"}
 _ALIAS_TABLE = {
     "bool": "i1",
     "torch.bool": "i1",
@@ -32,6 +35,10 @@ _ALIAS_TABLE = {
     "torch.float16": "f16",
     "bfloat16": "bf16",
     "torch.bfloat16": "bf16",
+    "float8_e4m3fnuz": "fp8",
+    "torch.float8_e4m3fnuz": "fp8",
+    "float8_e5m2fnuz": "bf8",
+    "torch.float8_e5m2fnuz": "bf8",
     "float32": "f32",
     "torch.float32": "f32",
     "torch.float": "f32",
@@ -80,9 +87,17 @@ def is_integer_dtype(dtype: str) -> bool:
     return normalize_dtype_name(dtype) in _INTEGER_DTYPES
 
 
+def is_storage_only_dtype(dtype: str) -> bool:
+    return normalize_dtype_name(dtype) in _STORAGE_ONLY_DTYPES
+
+
 def promote_scalar_dtype(lhs: str, rhs: str) -> str:
     lhs = normalize_dtype_name(lhs)
     rhs = normalize_dtype_name(rhs)
+    if lhs in _STORAGE_ONLY_DTYPES or rhs in _STORAGE_ONLY_DTYPES:
+        raise TypeError(
+            f"baybridge dtype '{lhs if lhs in _STORAGE_ONLY_DTYPES else rhs}' is storage-only and does not support scalar arithmetic"
+        )
     if lhs == rhs:
         return lhs
     if is_float_dtype(lhs) or is_float_dtype(rhs):
@@ -96,6 +111,10 @@ def cast_scalar_value(value: Any, dtype: str) -> bool | int | float:
     dtype = normalize_dtype_name(dtype)
     if dtype == "i1":
         return bool(value)
+    if dtype in _STORAGE_ONLY_DTYPES:
+        raw = int(value)
+        width = _WIDTH_TABLE[dtype]
+        return raw % (1 << width)
     if is_float_dtype(dtype):
         return float(value)
     raw = int(value)
@@ -115,6 +134,8 @@ def dtype_constructor_name(dtype: str) -> str:
         "i8": "Int8",
         "i32": "Int32",
         "i64": "Int64",
+        "fp8": "Float8E4M3FNUZ",
+        "bf8": "BFloat8E5M2FNUZ",
         "f16": "Float16",
         "bf16": "BFloat16",
         "f32": "Float32",

@@ -205,6 +205,15 @@ def test_mma_rejects_mismatched_operand_dtypes(tmp_path) -> None:
         bb.compile(invalid_mma_operand_dtypes, cache_dir=tmp_path, backend="portable")
 
 
+def test_runtime_gemm_rejects_storage_only_fp8_operands() -> None:
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    with pytest.raises(TypeError, match="storage-only operand dtypes"):
+        bb.gemm(a, b, c)
+
+
 @bb.jit
 def invalid_fragment_tile(
     a: bb.TensorSpec(shape=(64, 64), dtype="f16"),

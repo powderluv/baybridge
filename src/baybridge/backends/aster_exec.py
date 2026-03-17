@@ -956,20 +956,34 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec MFMA currently requires global-memory tensors")
         if lhs_spec.dtype != rhs_spec.dtype or dst_spec.dtype != "f32":
             raise BackendNotImplementedError("aster_exec MFMA currently requires matching operand dtypes and f32 accumulation")
-        if lhs_spec.dtype not in {"f16", "bf16"}:
-            raise BackendNotImplementedError("aster_exec MFMA currently supports f16/f16 -> f32 and bf16/bf16 -> f32 only")
-        if lhs_spec.shape != (16, 16) or rhs_spec.shape != (16, 16) or dst_spec.shape != (16, 16):
-            raise BackendNotImplementedError("aster_exec MFMA currently supports exact 16x16x16 tiles only")
+        if lhs_spec.dtype not in {"f16", "bf16", "fp8", "bf8"}:
+            raise BackendNotImplementedError(
+                "aster_exec MFMA currently supports f16/f16 -> f32, bf16/bf16 -> f32, fp8/fp8 -> f32, and bf8/bf8 -> f32 only"
+            )
+        if lhs_spec.dtype in {"fp8", "bf8"}:
+            if target.arch != "gfx942":
+                raise BackendNotImplementedError("aster_exec fp8/bf8 MFMA currently supports gfx942 only")
+            if lhs_spec.shape != (16, 32) or rhs_spec.shape != (32, 16) or dst_spec.shape != (16, 16):
+                raise BackendNotImplementedError("aster_exec fp8/bf8 MFMA currently supports exact 16x16x32 tiles only")
+            mfma_inst = {
+                "fp8": "v_mfma_f32_16x16x32_fp8_fp8",
+                "bf8": "v_mfma_f32_16x16x32_bf8_bf8",
+            }[lhs_spec.dtype]
+            tile = (16, 16, 32)
+        else:
+            if lhs_spec.shape != (16, 16) or rhs_spec.shape != (16, 16) or dst_spec.shape != (16, 16):
+                raise BackendNotImplementedError("aster_exec MFMA currently supports exact 16x16x16 tiles only")
+            mfma_inst = {
+                "f16": "v_mfma_f32_16x16x16_f16",
+                "bf16": "v_mfma_f32_16x16x16_bf16",
+            }[lhs_spec.dtype]
+            tile = (16, 16, 16)
         if (
             not self._is_dense_contiguous(lhs_spec)
             or not self._is_dense_contiguous(rhs_spec)
             or not self._is_dense_contiguous(dst_spec)
         ):
             raise BackendNotImplementedError("aster_exec MFMA currently requires dense contiguous tensors")
-        mfma_inst = {
-            "f16": "v_mfma_f32_16x16x16_f16",
-            "bf16": "v_mfma_f32_16x16x16_bf16",
-        }[lhs_spec.dtype]
         return _Mfma16x16x16Match(
             lhs_name=lhs_arg.name,
             rhs_name=rhs_arg.name,
@@ -977,7 +991,7 @@ class AsterExecBackend:
             lhs_dtype=lhs_spec.dtype,
             rhs_dtype=rhs_spec.dtype,
             dst_dtype=dst_spec.dtype,
-            tile=(16, 16, 16),
+            tile=tile,
             mfma_inst=mfma_inst,
         )
 
@@ -993,7 +1007,7 @@ class AsterExecBackend:
         operation = ir.operations[0]
         tile = tuple(int(dim) for dim in operation.attrs.get("tile") or ())
         if tile != match.tile:
-            raise BackendNotImplementedError("aster_exec MFMA currently supports tile=(16,16,16) only")
+            raise BackendNotImplementedError(f"aster_exec MFMA currently supports tile={match.tile} only")
         if operation.inputs != (lhs_arg.name, rhs_arg.name, dst_arg.name):
             raise BackendNotImplementedError("aster_exec MFMA currently requires mma inputs to match the tensor argument order")
         if operation.attrs.get("transpose_a") or operation.attrs.get("transpose_b"):
@@ -1009,6 +1023,8 @@ class AsterExecBackend:
             raise BackendNotImplementedError("aster_exec fragment MFMA currently supports tensor arguments only")
         lhs_arg, rhs_arg, dst_arg = ir.arguments
         match = self._match_mfma_16x16x16_specs(lhs_arg, rhs_arg, dst_arg, target)
+        if match.lhs_dtype in {"fp8", "bf8"}:
+            raise BackendNotImplementedError("aster_exec fp8/bf8 MFMA currently supports direct gemm only")
         if not ir.operations or ir.operations[-1].op != "copy":
             raise BackendNotImplementedError("aster_exec fragment MFMA currently requires a final copy to the destination tensor")
         copy_op = ir.operations[-1]
@@ -1486,6 +1502,8 @@ class AsterExecBackend:
             return "float32"
         if dtype == "f16":
             return "float16"
+        if dtype in {"fp8", "bf8"}:
+            return "uint8"
         if dtype == "i32":
             return "int32"
         raise BackendNotImplementedError(f"aster_exec does not support dtype '{dtype}'")
@@ -1497,6 +1515,8 @@ class AsterExecBackend:
         return numpy.array(value.tolist(), dtype=self._numpy_dtype(dtype))
 
     def _dtype_size_bytes(self, dtype: str) -> int:
+        if dtype in {"fp8", "bf8"}:
+            return 1
         if dtype in {"f32", "i32"}:
             return 4
         if dtype == "f16":

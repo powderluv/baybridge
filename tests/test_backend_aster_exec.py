@@ -198,6 +198,24 @@ def aster_exec_mfma_bf16_gemm_kernel(
 
 
 @bb.kernel
+def aster_exec_mfma_fp8_gemm_kernel(
+    a: bb.TensorSpec(shape=(16, 32), dtype="fp8"),
+    b: bb.TensorSpec(shape=(32, 16), dtype="fp8"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    bb.gemm(a, b, c)
+
+
+@bb.kernel
+def aster_exec_mfma_bf8_gemm_kernel(
+    a: bb.TensorSpec(shape=(16, 32), dtype="bf8"),
+    b: bb.TensorSpec(shape=(32, 16), dtype="bf8"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    bb.gemm(a, b, c)
+
+
+@bb.kernel
 def aster_exec_fragment_mfma_kernel(
     a: bb.TensorSpec(shape=(16, 16), dtype="f16"),
     b: bb.TensorSpec(shape=(16, 16), dtype="f16"),
@@ -602,12 +620,72 @@ def _install_fake_aster(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
         "    if isinstance(lhs, int) and isinstance(rhs, int):\n"
         "        return lhs // rhs\n"
         "    return lhs / rhs\n"
+        "def _decode_fp8_scalar(raw):\n"
+        "    sign = -1.0 if (raw & 0x80) else 1.0\n"
+        "    exponent = (raw >> 3) & 0xF\n"
+        "    mantissa = raw & 0x7\n"
+        "    if exponent == 0:\n"
+        "        return sign * ((mantissa / 8.0) * (2.0 ** -7))\n"
+        "    return sign * ((1.0 + mantissa / 8.0) * (2.0 ** (exponent - 8)))\n"
+        "def _decode_bf8_scalar(raw):\n"
+        "    sign = -1.0 if (raw & 0x80) else 1.0\n"
+        "    exponent = (raw >> 2) & 0x1F\n"
+        "    mantissa = raw & 0x3\n"
+        "    if exponent == 0:\n"
+        "        return sign * ((mantissa / 4.0) * (2.0 ** -15))\n"
+        "    return sign * ((1.0 + mantissa / 4.0) * (2.0 ** (exponent - 16)))\n"
+        "def _decode_fp8(value):\n"
+        "    if isinstance(value, list):\n"
+        "        if not value:\n"
+        "            return value\n"
+        "        if isinstance(value[0], list):\n"
+        "            if not value[0] or not isinstance(value[0][0], int):\n"
+        "                return value\n"
+        "            return [[_decode_fp8_scalar(int(item)) for item in row] for row in value]\n"
+        "        if not isinstance(value[0], int):\n"
+        "            return value\n"
+        "        return [_decode_fp8_scalar(int(item)) for item in value]\n"
+        "    if not hasattr(value, 'dtype') or getattr(value.dtype, 'kind', '') != 'u' or getattr(value.dtype, 'itemsize', 0) != 1:\n"
+        "        return value\n"
+        "    import numpy as np\n"
+        "    raw = value.astype(np.uint8)\n"
+        "    sign = np.where((raw & 0x80) != 0, -1.0, 1.0).astype(np.float32)\n"
+        "    exponent = ((raw >> 3) & 0xF).astype(np.int32)\n"
+        "    mantissa = (raw & 0x7).astype(np.float32)\n"
+        "    normal = np.ldexp(1.0 + mantissa / 8.0, exponent - 8)\n"
+        "    subnormal = np.ldexp(mantissa / 8.0, -7)\n"
+        "    return sign * np.where(exponent == 0, subnormal, normal)\n"
+        "def _decode_bf8(value):\n"
+        "    if isinstance(value, list):\n"
+        "        if not value:\n"
+        "            return value\n"
+        "        if isinstance(value[0], list):\n"
+        "            if not value[0] or not isinstance(value[0][0], int):\n"
+        "                return value\n"
+        "            return [[_decode_bf8_scalar(int(item)) for item in row] for row in value]\n"
+        "        if not isinstance(value[0], int):\n"
+        "            return value\n"
+        "        return [_decode_bf8_scalar(int(item)) for item in value]\n"
+        "    if not hasattr(value, 'dtype') or getattr(value.dtype, 'kind', '') != 'u' or getattr(value.dtype, 'itemsize', 0) != 1:\n"
+        "        return value\n"
+        "    import numpy as np\n"
+        "    raw = value.astype(np.uint8)\n"
+        "    sign = np.where((raw & 0x80) != 0, -1.0, 1.0).astype(np.float32)\n"
+        "    exponent = ((raw >> 2) & 0x1F).astype(np.int32)\n"
+        "    mantissa = (raw & 0x3).astype(np.float32)\n"
+        "    normal = np.ldexp(1.0 + mantissa / 4.0, exponent - 16)\n"
+        "    subnormal = np.ldexp(mantissa / 4.0, -15)\n"
+        "    return sign * np.where(exponent == 0, subnormal, normal)\n"
         "def _decode_bf16(value):\n"
         "    if not hasattr(value, 'dtype') or getattr(value.dtype, 'kind', '') != 'u' or getattr(value.dtype, 'itemsize', 0) != 2:\n"
         "        return value\n"
         "    import numpy as np\n"
         "    return (value.astype(np.uint32) << 16).view(np.float32)\n"
         "def _matmul(lhs, rhs):\n"
+        "    lhs = _decode_fp8(lhs)\n"
+        "    rhs = _decode_fp8(rhs)\n"
+        "    lhs = _decode_bf8(lhs)\n"
+        "    rhs = _decode_bf8(rhs)\n"
         "    lhs = _decode_bf16(lhs)\n"
         "    rhs = _decode_bf16(rhs)\n"
         "    if hasattr(lhs, '__matmul__'):\n"
@@ -801,6 +879,44 @@ def test_aster_exec_lowers_mfma_bf16_gemm_kernel(monkeypatch: pytest.MonkeyPatch
     assert "global_store_dwordx4" in text
 
 
+def test_aster_exec_lowers_mfma_fp8_gemm_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_gemm_kernel,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x32_fp8_fp8" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "ds_read_b64" in text
+    assert "global_store_dwordx4" in text
+
+
+def test_aster_exec_lowers_mfma_bf8_gemm_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf8_gemm_kernel,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x32_bf8_bf8" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "ds_read_b64" in text
+    assert "global_store_dwordx4" in text
+
+
 def test_aster_exec_lowers_fragment_mfma_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_fake_aster(monkeypatch, tmp_path)
 
@@ -893,6 +1009,58 @@ def test_aster_exec_launches_mfma_bf16_gemm_kernel_with_fake_aster(
     artifact(a, b, c)
 
     assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+    assert artifact.lowered_path is not None
+    assert artifact.lowered_path.with_suffix(".hsaco").exists()
+
+
+def test_aster_exec_launches_mfma_fp8_gemm_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+    assert artifact.lowered_path is not None
+    assert artifact.lowered_path.with_suffix(".hsaco").exists()
+
+
+def test_aster_exec_launches_mfma_bf8_gemm_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
     assert artifact.lowered_path is not None
     assert artifact.lowered_path.with_suffix(".hsaco").exists()
 
@@ -1005,6 +1173,52 @@ def test_compile_auto_prefers_aster_exec_for_matching_mfma_bf16_gemm_kernel(
     assert artifact.backend_name == "aster_exec"
     artifact(a, b, c)
     assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_mfma_fp8_gemm_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_mfma_bf8_gemm_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch="gfx942"),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_compile_auto_prefers_aster_exec_for_matching_fragment_mfma_kernel(
@@ -1951,6 +2165,66 @@ def test_aster_exec_runs_mfma_bf16_gemm_on_amd_hardware(tmp_path: Path) -> None:
 
     artifact(a, b, c)
     assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_mfma_fp8_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    if target_arch != "gfx942":
+        pytest.skip("aster_exec fp8 MFMA currently supports gfx942 only")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_mfma_bf8_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    if target_arch != "gfx942":
+        pytest.skip("aster_exec bf8 MFMA currently supports gfx942 only")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_aster_exec_runs_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
@@ -3059,6 +3333,66 @@ def test_compile_auto_prefers_aster_exec_for_mfma_bf16_gemm_on_amd_hardware(tmp_
     assert artifact.backend_name == "aster_exec"
     artifact(a, b, c)
     assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_mfma_fp8_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    if target_arch != "gfx942":
+        pytest.skip("aster_exec fp8 MFMA currently supports gfx942 only")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="fp8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="fp8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_fp8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_mfma_bf8_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    if target_arch != "gfx942":
+        pytest.skip("aster_exec bf8 MFMA currently supports gfx942 only")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[0x40 for _ in range(32)] for _ in range(16)], dtype="bf8")
+    b = bb.tensor([[0x40 for _ in range(16)] for _ in range(32)], dtype="bf8")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf8_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[32.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_compile_auto_prefers_aster_exec_for_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
