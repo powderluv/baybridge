@@ -15,17 +15,31 @@ That split matters because some backends are integrated and tested, but still de
 
 Current repo state during this documentation pass:
 - branch: `main`
-- latest committed ASTER benchmark harness: `a11196a` `Add ASTER backend benchmark harness`
-- worktree is dirty because the benchmark harness and status doc now include an ASTER-specific microbenchmark path:
-  - `src/baybridge/backends/aster_exec.py`
-  - `tools/backend_benchmark_kernels.py`
-  - `tests/test_backend_benchmark_tools.py`
-  - `tests/test_backend_aster_exec.py`
-  - `docs/backend-status.md`
+- HEAD: `75d0f6a` `Extend WaveASM backend math lowering`
+- worktree: clean
+- full local suite:
+  - `348 passed, 151 skipped`
+- focused local WaveASM validation after the latest `gpu_text`/`waveasm_exec` math widening:
+  - `tests/test_backend_gpu.py tests/test_backend_waveasm_exec.py tests/test_backend_waveasm_ref.py`
+  - result: `34 passed, 2 skipped`
 
-Focused local validation after the shared tooling updates in this pass:
-- `tests/test_backend_benchmark_tools.py tests/test_backend_waveasm_ref.py -k 'benchmark_tools or compare_backends or emit_waveasm_repro'`
-- result: `14 passed, 1 skipped, 4 deselected`
+## Backend Test Inventory
+
+This is the checked-in backend-oriented test inventory, not the full project-wide suite:
+
+| Test file | Backend focus | Test count |
+| --- | --- | ---: |
+| `tests/test_backend_hipcc_exec.py` | `hipcc_exec` lowering and AMD execution | `14` |
+| `tests/test_backend_hipkittens_ref.py` | `hipkittens_ref` family matching and lowering | `13` |
+| `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
+| `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
+| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `41` |
+| `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
+| `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
+| `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
+| `tests/test_backend_aster_exec.py` | `aster_exec` lowering, auto-selection, AMD execution, MFMA, float8, broadcast/tail coverage | `144` |
+| `tests/test_backend_benchmark_tools.py` | benchmark sample factories and timing helpers | `4` |
+| `tests/test_hip_runtime.py` | HIP runtime bootstrap used by executable backends | `2` |
 
 ## Backend Inventory
 
