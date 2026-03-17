@@ -52,6 +52,16 @@ def hipkittens_f16_gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
     bb.gemm(a, b, c)
 
 
+@bb.kernel
+def aster_mfma_f16_gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c)
+
+
+@bb.kernel
+def aster_mfma_bf16_gemm_kernel(a: bb.Tensor, b: bb.Tensor, c: bb.Tensor):
+    bb.gemm(a, b, c)
+
+
 def _vector_f32(n: int, *, scale: float = 1.0, offset: float = 0.0) -> list[float]:
     return [scale * float(index % 251) + offset for index in range(n)]
 
@@ -211,4 +221,18 @@ def hipkittens_f16_gemm_args(**_kwargs):
     a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(32)], dtype="f16")
     b = bb.tensor([[1.0 if col == row else 0.0 for col in range(32)] for row in range(16)], dtype="f16")
     c = bb.zeros((32, 32), dtype="f32")
+    return {"args": (a, b, c), "result_indices": ()}
+
+
+def aster_mfma_f16_gemm_args(**_kwargs):
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+    return {"args": (a, b, c), "result_indices": ()}
+
+
+def aster_mfma_bf16_gemm_args(**_kwargs):
+    a = bb.tensor([[row * 16 + col + 1 for col in range(16)] for row in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 if col == row else 0.0 for col in range(16)] for row in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
     return {"args": (a, b, c), "result_indices": ()}

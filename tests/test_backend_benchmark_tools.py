@@ -26,6 +26,8 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     copy_f16_payload = kernels.aster_dense_copy_f16_args()
     broadcast_add_payload = kernels.aster_broadcast_add_f32_args()
     broadcast_add_i32_payload = kernels.aster_broadcast_add_i32_args()
+    mfma_f16_payload = kernels.aster_mfma_f16_gemm_args()
+    mfma_bf16_payload = kernels.aster_mfma_bf16_gemm_args()
 
     copy_args = copy_payload["args"]
     add_args = add_payload["args"]
@@ -34,6 +36,8 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     copy_f16_args = copy_f16_payload["args"]
     broadcast_add_args = broadcast_add_payload["args"]
     broadcast_add_i32_args = broadcast_add_i32_payload["args"]
+    mfma_f16_args = mfma_f16_payload["args"]
+    mfma_bf16_args = mfma_bf16_payload["args"]
 
     assert len(copy_args) == 2
     assert copy_args[0].shape == (kernels.ASTER_POINTWISE_N,)
@@ -87,6 +91,24 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert str(broadcast_add_i32_args[2].dtype) == "i32"
     assert broadcast_add_i32_payload["result_indices"] == ()
 
+    assert len(mfma_f16_args) == 3
+    assert mfma_f16_args[0].shape == (16, 16)
+    assert mfma_f16_args[1].shape == (16, 16)
+    assert mfma_f16_args[2].shape == (16, 16)
+    assert str(mfma_f16_args[0].dtype) == "f16"
+    assert str(mfma_f16_args[1].dtype) == "f16"
+    assert str(mfma_f16_args[2].dtype) == "f32"
+    assert mfma_f16_payload["result_indices"] == ()
+
+    assert len(mfma_bf16_args) == 3
+    assert mfma_bf16_args[0].shape == (16, 16)
+    assert mfma_bf16_args[1].shape == (16, 16)
+    assert mfma_bf16_args[2].shape == (16, 16)
+    assert str(mfma_bf16_args[0].dtype) == "bf16"
+    assert str(mfma_bf16_args[1].dtype) == "bf16"
+    assert str(mfma_bf16_args[2].dtype) == "f32"
+    assert mfma_bf16_payload["result_indices"] == ()
+
 
 def test_compare_backends_uses_hip_synchronizer_for_aster_exec(monkeypatch) -> None:
     compare_backends = _load_tool_module("compare_backends")
@@ -117,3 +139,5 @@ def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> N
 
     assert callable(kernels.dense_sub_f32_kernel)
     assert callable(kernels.dense_mul_f32_kernel)
+    assert callable(kernels.aster_mfma_f16_gemm_kernel)
+    assert callable(kernels.aster_mfma_bf16_gemm_kernel)

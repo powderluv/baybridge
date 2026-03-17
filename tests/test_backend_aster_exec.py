@@ -180,6 +180,88 @@ def aster_exec_copy_2d_f16_tail_kernel(
 
 
 @bb.kernel
+def aster_exec_mfma_gemm_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    bb.gemm(a, b, c)
+
+
+@bb.kernel
+def aster_exec_mfma_bf16_gemm_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    bb.gemm(a, b, c)
+
+
+@bb.kernel
+def aster_exec_fragment_mfma_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    a_frag = bb.make_fragment_a(a, tile=(16, 16, 16))
+    b_frag = bb.make_fragment_b(b, tile=(16, 16, 16))
+    acc = bb.mma(a_frag, b_frag, tile=(16, 16, 16), accumulator_dtype="f32")
+    bb.copy(acc, c)
+
+
+@bb.kernel
+def aster_exec_fragment_mfma_bf16_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    a_frag = bb.make_fragment_a(a, tile=(16, 16, 16))
+    b_frag = bb.make_fragment_b(b, tile=(16, 16, 16))
+    acc = bb.mma(a_frag, b_frag, tile=(16, 16, 16), accumulator_dtype="f32")
+    bb.copy(acc, c)
+
+
+@bb.kernel
+def aster_exec_tcgen05_fragment_mfma_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="f16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.tcgen05.MmaF16BF16Op(
+            "f16",
+            "f32",
+            (16, 16, 16),
+            bb.nvgpu.tcgen05.CtaGroup.ONE,
+            bb.nvgpu.tcgen05.OperandSource.TMEM,
+            bb.nvgpu.tcgen05.OperandMajorMode.K,
+            bb.nvgpu.tcgen05.OperandMajorMode.N,
+        )
+    )
+    a_frag = tiled_mma.partition_A(a)
+    b_frag = tiled_mma.partition_B(b)
+    acc = tiled_mma.make_fragment_C((16, 16))
+    bb.mma(a_frag, b_frag, c=acc, tile=(16, 16, 16), accumulator_dtype="f32")
+    bb.copy(acc, c)
+
+
+@bb.kernel
+def aster_exec_warp_fragment_mfma_bf16_kernel(
+    a: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    b: bb.TensorSpec(shape=(16, 16), dtype="bf16"),
+    c: bb.TensorSpec(shape=(16, 16), dtype="f32"),
+):
+    tiled_mma = bb.make_tiled_mma(
+        bb.nvgpu.warp.MmaF16BF16Op("bf16", "f32", (16, 16, 16))
+    )
+    a_frag = tiled_mma.partition_A(a)
+    b_frag = tiled_mma.partition_B(b)
+    acc = tiled_mma.make_fragment_C((16, 16))
+    bb.mma(a_frag, b_frag, c=acc, tile=(16, 16, 16), accumulator_dtype="f32")
+    bb.copy(acc, c)
+
+
+@bb.kernel
 def aster_exec_add_kernel(
     src: bb.TensorSpec(shape=(16,), dtype="f32"),
     other: bb.TensorSpec(shape=(16,), dtype="f32"),
@@ -520,8 +602,24 @@ def _install_fake_aster(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
         "    if isinstance(lhs, int) and isinstance(rhs, int):\n"
         "        return lhs // rhs\n"
         "    return lhs / rhs\n"
+        "def _decode_bf16(value):\n"
+        "    if not hasattr(value, 'dtype') or getattr(value.dtype, 'kind', '') != 'u' or getattr(value.dtype, 'itemsize', 0) != 2:\n"
+        "        return value\n"
+        "    import numpy as np\n"
+        "    return (value.astype(np.uint32) << 16).view(np.float32)\n"
+        "def _matmul(lhs, rhs):\n"
+        "    lhs = _decode_bf16(lhs)\n"
+        "    rhs = _decode_bf16(rhs)\n"
+        "    if hasattr(lhs, '__matmul__'):\n"
+        "        return lhs @ rhs\n"
+        "    rows = len(lhs)\n"
+        "    inner = len(lhs[0])\n"
+        "    cols = len(rhs[0])\n"
+        "    return [[sum(lhs[row][kk] * rhs[kk][col] for kk in range(inner)) for col in range(cols)] for row in range(rows)]\n"
         "def execute_hsaco(hsaco_path, kernel_name, input_arrays, output_arrays, grid_dim=(1,1,1), block_dim=(1,1,1), num_iterations=1):\n"
-        "    if len(input_arrays) == 2:\n"
+        "    if 'gemm' in kernel_name or 'mfma' in kernel_name:\n"
+        "        output_arrays[0][:] = _matmul(input_arrays[0], input_arrays[1])\n"
+        "    elif len(input_arrays) == 2:\n"
         "        is_array_like = all(hasattr(value, 'shape') or hasattr(value, 'tolist') for value in input_arrays)\n"
         "        is_integer_array = bool(is_array_like and getattr(input_arrays[0], 'dtype', None) is not None and getattr(input_arrays[0].dtype, 'kind', '') in ('i', 'u'))\n"
         "        if 'sub' in kernel_name:\n"
@@ -675,6 +773,60 @@ def test_aster_exec_lowers_copy_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert (artifact.debug_bundle_dir / "repro.sh").exists()
 
 
+def test_aster_exec_lowers_mfma_gemm_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(aster_exec_mfma_gemm_kernel, cache_dir=tmp_path / "cache", backend="aster_exec")
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x16_f16" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "ds_read_b64" in text
+    assert "global_store_dwordx4" in text
+
+
+def test_aster_exec_lowers_mfma_bf16_gemm_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(aster_exec_mfma_bf16_gemm_kernel, cache_dir=tmp_path / "cache", backend="aster_exec")
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x16_bf16" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "ds_read_b64" in text
+    assert "global_store_dwordx4" in text
+
+
+def test_aster_exec_lowers_fragment_mfma_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(aster_exec_fragment_mfma_kernel, cache_dir=tmp_path / "cache", backend="aster_exec")
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x16_f16" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "global_store_dwordx4" in text
+
+
+def test_aster_exec_lowers_fragment_mfma_bf16_kernel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+
+    artifact = bb.compile(aster_exec_fragment_mfma_bf16_kernel, cache_dir=tmp_path / "cache", backend="aster_exec")
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "v_mfma_f32_16x16x16_bf16" in text
+    assert "global_load_dwordx2" in text
+    assert "ds_write_b64" in text
+    assert "global_store_dwordx4" in text
+
+
 def test_aster_exec_launches_copy_kernel_with_fake_aster(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_fake_aster(monkeypatch, tmp_path)
     src = bb.tensor([float(index) for index in range(16)], dtype="f32")
@@ -695,6 +847,102 @@ def test_aster_exec_launches_copy_kernel_with_fake_aster(monkeypatch: pytest.Mon
     assert artifact.lowered_path.with_suffix(".hsaco").exists()
 
 
+def test_aster_exec_launches_mfma_gemm_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+    assert artifact.lowered_path is not None
+    assert artifact.lowered_path.with_suffix(".hsaco").exists()
+
+
+def test_aster_exec_launches_mfma_bf16_gemm_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+    assert artifact.lowered_path is not None
+    assert artifact.lowered_path.with_suffix(".hsaco").exists()
+
+
+def test_aster_exec_launches_fragment_mfma_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_launches_fragment_mfma_bf16_kernel_with_fake_aster(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
 def test_compile_auto_prefers_aster_exec_for_matching_copy_kernel(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -713,6 +961,138 @@ def test_compile_auto_prefers_aster_exec_for_matching_copy_kernel(
     assert artifact.backend_name == "aster_exec"
     artifact(src, dst)
     assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_mfma_gemm_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_mfma_bf16_gemm_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_fragment_mfma_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_fragment_mfma_bf16_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_tcgen05_fragment_mfma_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_tcgen05_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_matching_warp_fragment_mfma_bf16_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_aster(monkeypatch, tmp_path)
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_warp_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_compile_auto_prefers_aster_exec_for_matching_copy_tail_kernel(
@@ -1515,6 +1895,174 @@ def test_aster_exec_runs_copy_on_amd_hardware(tmp_path: Path) -> None:
     artifact(src, dst)
 
     assert dst.tolist() == src.tolist()
+
+
+def test_aster_exec_runs_mfma_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_mfma_bf16_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_fragment_mfma_bf16_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_tcgen05_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_tcgen05_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_aster_exec_runs_warp_fragment_mfma_bf16_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_warp_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+        backend="aster_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_aster_exec_runs_add_on_amd_hardware(tmp_path: Path) -> None:
@@ -2455,6 +3003,174 @@ def test_compile_auto_prefers_aster_exec_on_amd_hardware(tmp_path: Path) -> None
     assert artifact.backend_name == "aster_exec"
     artifact(src, dst)
     assert dst.tolist() == src.tolist()
+
+
+def test_compile_auto_prefers_aster_exec_for_mfma_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_mfma_bf16_gemm_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_mfma_bf16_gemm_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_fragment_mfma_bf16_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_tcgen05_fragment_mfma_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="f16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_tcgen05_fragment_mfma_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
+
+
+def test_compile_auto_prefers_aster_exec_for_warp_fragment_mfma_bf16_on_amd_hardware(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to exercise ASTER exec on hardware")
+    if "BAYBRIDGE_ASTER_ROOT" not in os.environ:
+        pytest.skip("set BAYBRIDGE_ASTER_ROOT to an ASTER source checkout")
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx942")
+    backend = AsterExecBackend()
+    if not backend.available(bb.AMDTarget(arch=target_arch)):
+        pytest.skip(f"aster_exec is not ready for target {target_arch}")
+
+    a = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    b = bb.tensor([[1.0 for _ in range(16)] for _ in range(16)], dtype="bf16")
+    c = bb.zeros((16, 16), dtype="f32")
+
+    artifact = bb.compile(
+        aster_exec_warp_fragment_mfma_bf16_kernel,
+        a,
+        b,
+        c,
+        target=bb.AMDTarget(arch=target_arch),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "aster_exec"
+    artifact(a, b, c)
+    assert c.tolist() == [[16.0 for _ in range(16)] for _ in range(16)]
 
 
 def test_compile_auto_prefers_aster_exec_for_copy_tail_on_amd_hardware(tmp_path: Path) -> None:

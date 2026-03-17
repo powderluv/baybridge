@@ -629,6 +629,67 @@ amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
 }}
 """
 
+_MFMA_16X16X16_TEMPLATE = """// baybridge.aster_exec
+!sx2 = !amdgcn.sgpr<[? + 2]>
+
+amdgcn.module @mod target = #amdgcn.target<{target}> isa = #amdgcn.isa<{isa}> {{
+  func.func private @alloc_vgpr() -> !amdgcn.vgpr
+  func.func private @alloc_vgprx2() -> (!amdgcn.vgpr<[? + 2]>)
+  func.func private @init_vgprx4(%cst: i32) -> (!amdgcn.vgpr<[? + 4]>)
+
+  amdgcn.kernel @{kernel_name} arguments <[
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_only>,
+    #amdgcn.buffer_arg<address_space = generic, access = read_write>
+  ]> attributes {{shared_memory_size = 1024 : i32}} {{
+    %a_ptr = amdgcn.load_arg 0 : !amdgcn.sgpr<[? + 2]>
+    %b_ptr = amdgcn.load_arg 1 : !amdgcn.sgpr<[? + 2]>
+    %c_ptr = amdgcn.load_arg 2 : !amdgcn.sgpr<[? + 2]>
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+
+    %threadidx_x = amdgcn.thread_id x : !amdgcn.vgpr<0>
+
+    %a_reg_range = func.call @alloc_vgprx2() : () -> (!amdgcn.vgpr<[? + 2]>)
+    %b_reg_range = func.call @alloc_vgprx2() : () -> (!amdgcn.vgpr<[? + 2]>)
+    %c0 = arith.constant 0 : i32
+    %c_reg_range = func.call @init_vgprx4(%c0) : (i32) -> (!amdgcn.vgpr<[? + 4]>)
+
+    %offset_a = amdgcn.alloca : !amdgcn.vgpr
+    %c3 = arith.constant 3 : i32
+    %thread_offset_f16 = amdgcn.vop2 v_lshlrev_b32_e32 outs %offset_a ins %c3, %threadidx_x
+      : !amdgcn.vgpr, i32, !amdgcn.vgpr<0>
+    %c0_i32 = arith.constant 0 : i32
+    %c512_i32 = arith.constant 512 : i32
+
+    %loaded_a, %tok_load_a = amdgcn.load global_load_dwordx2 dest %a_reg_range addr %a_ptr offset d(%thread_offset_f16) + c(%c0_i32) : dps(!amdgcn.vgpr<[? + 2]>) ins(!amdgcn.sgpr<[? + 2]>, !amdgcn.vgpr, i32) -> !amdgcn.read_token<flat>
+    %loaded_b, %tok_load_b = amdgcn.load global_load_dwordx2 dest %b_reg_range addr %b_ptr offset d(%thread_offset_f16) + c(%c0_i32) : dps(!amdgcn.vgpr<[? + 2]>) ins(!amdgcn.sgpr<[? + 2]>, !amdgcn.vgpr, i32) -> !amdgcn.read_token<flat>
+
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
+
+    %tok_ds_a = amdgcn.store ds_write_b64 data %loaded_a addr %thread_offset_f16 offset c(%c0_i32) : ins(!amdgcn.vgpr<[? + 2]>, !amdgcn.vgpr, i32) -> !amdgcn.write_token<shared>
+    %tok_ds_b = amdgcn.store ds_write_b64 data %loaded_b addr %thread_offset_f16 offset c(%c512_i32) : ins(!amdgcn.vgpr<[? + 2]>, !amdgcn.vgpr, i32) -> !amdgcn.write_token<shared>
+
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+
+    %loaded_a_from_lds, %tok_lds_a = amdgcn.load ds_read_b64 dest %a_reg_range addr %thread_offset_f16 offset c(%c0_i32) : dps(!amdgcn.vgpr<[? + 2]>) ins(!amdgcn.vgpr, i32) -> !amdgcn.read_token<shared>
+    %loaded_b_from_lds, %tok_lds_b = amdgcn.load ds_read_b64 dest %b_reg_range addr %thread_offset_f16 offset c(%c512_i32) : dps(!amdgcn.vgpr<[? + 2]>) ins(!amdgcn.vgpr, i32) -> !amdgcn.read_token<shared>
+
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
+
+    %c_mfma_result = amdgcn.vop3p.vop3p_mai #amdgcn.inst<{mfma_inst}> %c_reg_range, %loaded_a_from_lds, %loaded_b_from_lds, %c_reg_range
+      : <[? + 2]>, <[? + 2]>, !amdgcn.vgpr<[? + 4]> -> !amdgcn.vgpr<[? + 4]>
+
+    %c4 = arith.constant 4 : i32
+    %thread_offset_f32 = amdgcn.vop2 v_lshlrev_b32_e32 outs %offset_a ins %c4, %threadidx_x
+      : !amdgcn.vgpr, i32, !amdgcn.vgpr<0>
+    %tok_store_c = amdgcn.store global_store_dwordx4 data %c_mfma_result addr %c_ptr offset d(%thread_offset_f32) + c(%c0_i32) : ins(!amdgcn.vgpr<[? + 4]>, !amdgcn.sgpr<[? + 2]>, !amdgcn.vgpr, i32) -> !amdgcn.write_token<flat>
+
+    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
+    amdgcn.end_kernel
+  }}
+}}
+"""
+
 
 @dataclass(frozen=True)
 class _Copy1DMatch:
@@ -679,6 +740,18 @@ class _BinaryScalarMatch:
     lhs_broadcast: bool = False
 
 
+@dataclass(frozen=True)
+class _Mfma16x16x16Match:
+    lhs_name: str
+    rhs_name: str
+    dst_name: str
+    lhs_dtype: str
+    rhs_dtype: str
+    dst_dtype: str
+    tile: tuple[int, int, int]
+    mfma_inst: str
+
+
 class AsterExecBackend:
     name = "aster_exec"
     artifact_extension = ".aster.mlir"
@@ -718,6 +791,8 @@ class AsterExecBackend:
             text = self._render_copy_scalar(match, ir.name, target)
         elif isinstance(match, _Binary1DMatch):
             text = self._render_binary_1d(match, ir.name, target)
+        elif isinstance(match, _Mfma16x16x16Match):
+            text = self._render_mfma_16x16x16(match, ir.name, target)
         else:
             text = self._render_binary_scalar(match, ir.name, target)
         return LoweredModule(
@@ -770,6 +845,22 @@ class AsterExecBackend:
                     expected_dtype=match.dtype,
                     argument_name=match.dst_name,
                 )
+                input_dtypes = [match.dtype]
+                dst_dtype = match.dtype
+                block_dim = (1, 1, 1)
+            elif isinstance(match, _Mfma16x16x16Match):
+                input_values = [
+                    self._as_runtime_tensor(args[0], expected_dtype=match.lhs_dtype, argument_name=match.lhs_name),
+                    self._as_runtime_tensor(args[1], expected_dtype=match.rhs_dtype, argument_name=match.rhs_name),
+                ]
+                dst_owner, dst_value = self._prepare_output(
+                    args[2],
+                    expected_dtype=match.dst_dtype,
+                    argument_name=match.dst_name,
+                )
+                input_dtypes = [match.lhs_dtype, match.rhs_dtype]
+                dst_dtype = match.dst_dtype
+                block_dim = (64, 1, 1)
             else:
                 input_values = [
                     self._as_runtime_tensor(args[0], expected_dtype=match.dtype, argument_name=match.lhs_name),
@@ -780,6 +871,9 @@ class AsterExecBackend:
                     expected_dtype=match.dtype,
                     argument_name=match.dst_name,
                 )
+                input_dtypes = [match.dtype, match.dtype]
+                dst_dtype = match.dtype
+                block_dim = (1, 1, 1)
             try:
                 numpy = importlib.import_module("numpy")
             except ModuleNotFoundError:
@@ -788,23 +882,22 @@ class AsterExecBackend:
                 dst_array = dst_value.tolist()
                 input_arrays = [input_value.tolist() for input_value in input_values]
             else:
-                dtype = match.dtype
                 input_arrays = [
-                    numpy.array(input_value.tolist(), dtype=self._numpy_dtype(dtype)) for input_value in input_values
+                    self._numpy_array_for_dtype(numpy, input_value, dtype)
+                    for input_value, dtype in zip(input_values, input_dtypes, strict=True)
                 ]
-                dst_array = numpy.array(dst_value.tolist(), dtype=self._numpy_dtype(dtype))
+                dst_array = self._numpy_array_for_dtype(numpy, dst_value, dst_dtype)
             modules["hip"].execute_hsaco(
                 str(hsaco_path),
                 ir.name,
                 input_arrays,
                 [dst_array],
                 grid_dim=(1, 1, 1),
-                block_dim=(1, 1, 1),
+                block_dim=block_dim,
                 num_iterations=1,
             )
             copied_data = dst_array.tolist() if hasattr(dst_array, "tolist") else dst_array
-            dtype = match.dtype
-            copied = tensor(copied_data, dtype=dtype)
+            copied = tensor(copied_data, dtype=dst_dtype)
             self._copy_back(dst_owner, copied)
 
         return launcher
@@ -818,15 +911,177 @@ class AsterExecBackend:
     ) -> Path:
         return self._bridge.write_repro_bundle(ir, target, lowered_module, lowered_path)
 
-    def _match_kernel(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch | _CopyScalarMatch | _Binary1DMatch | _BinaryScalarMatch:
+    def _match_kernel(
+        self,
+        ir: PortableKernelIR,
+        target: AMDTarget,
+    ) -> _Copy1DMatch | _CopyScalarMatch | _Binary1DMatch | _BinaryScalarMatch | _Mfma16x16x16Match:
         if len(ir.arguments) == 2:
             return self._match_copy_1d(ir, target)
         if len(ir.arguments) == 3:
-            return self._match_binary_1d(ir, target)
+            last_error: BackendNotImplementedError | None = None
+            for matcher in (
+                self._match_mfma_16x16x16,
+                self._match_fragment_mfma_16x16x16_copyout,
+                self._match_binary_1d,
+            ):
+                try:
+                    return matcher(ir, target)
+                except BackendNotImplementedError as exc:
+                    last_error = exc
+                    continue
+            if last_error is not None:
+                raise last_error
+            raise BackendNotImplementedError("aster_exec could not match this three-argument kernel")
         try:
             return self._match_copy_1d(ir, target)
         except BackendNotImplementedError:
             return self._match_binary_1d(ir, target)
+
+    def _match_mfma_16x16x16_specs(
+        self,
+        lhs_arg: Any,
+        rhs_arg: Any,
+        dst_arg: Any,
+        target: AMDTarget,
+    ) -> _Mfma16x16x16Match:
+        if target.arch not in {"gfx942", "gfx950"}:
+            raise BackendNotImplementedError(f"aster_exec does not support target arch '{target.arch}'")
+        if target.wave_size != 64:
+            raise BackendNotImplementedError("aster_exec currently requires wave_size=64")
+        lhs_spec = lhs_arg.spec
+        rhs_spec = rhs_arg.spec
+        dst_spec = dst_arg.spec
+        if lhs_spec.address_space.value != "global" or rhs_spec.address_space.value != "global" or dst_spec.address_space.value != "global":
+            raise BackendNotImplementedError("aster_exec MFMA currently requires global-memory tensors")
+        if lhs_spec.dtype != rhs_spec.dtype or dst_spec.dtype != "f32":
+            raise BackendNotImplementedError("aster_exec MFMA currently requires matching operand dtypes and f32 accumulation")
+        if lhs_spec.dtype not in {"f16", "bf16"}:
+            raise BackendNotImplementedError("aster_exec MFMA currently supports f16/f16 -> f32 and bf16/bf16 -> f32 only")
+        if lhs_spec.shape != (16, 16) or rhs_spec.shape != (16, 16) or dst_spec.shape != (16, 16):
+            raise BackendNotImplementedError("aster_exec MFMA currently supports exact 16x16x16 tiles only")
+        if (
+            not self._is_dense_contiguous(lhs_spec)
+            or not self._is_dense_contiguous(rhs_spec)
+            or not self._is_dense_contiguous(dst_spec)
+        ):
+            raise BackendNotImplementedError("aster_exec MFMA currently requires dense contiguous tensors")
+        mfma_inst = {
+            "f16": "v_mfma_f32_16x16x16_f16",
+            "bf16": "v_mfma_f32_16x16x16_bf16",
+        }[lhs_spec.dtype]
+        return _Mfma16x16x16Match(
+            lhs_name=lhs_arg.name,
+            rhs_name=rhs_arg.name,
+            dst_name=dst_arg.name,
+            lhs_dtype=lhs_spec.dtype,
+            rhs_dtype=rhs_spec.dtype,
+            dst_dtype=dst_spec.dtype,
+            tile=(16, 16, 16),
+            mfma_inst=mfma_inst,
+        )
+
+    def _match_mfma_16x16x16(self, ir: PortableKernelIR, target: AMDTarget) -> _Mfma16x16x16Match:
+        if len(ir.arguments) != 3:
+            raise BackendNotImplementedError("aster_exec MFMA currently supports exactly three tensor arguments")
+        if len(ir.operations) != 1 or ir.operations[0].op != "mma":
+            raise BackendNotImplementedError("aster_exec MFMA currently supports a single mma operation only")
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            raise BackendNotImplementedError("aster_exec MFMA currently supports tensor arguments only")
+        lhs_arg, rhs_arg, dst_arg = ir.arguments
+        match = self._match_mfma_16x16x16_specs(lhs_arg, rhs_arg, dst_arg, target)
+        operation = ir.operations[0]
+        tile = tuple(int(dim) for dim in operation.attrs.get("tile") or ())
+        if tile != match.tile:
+            raise BackendNotImplementedError("aster_exec MFMA currently supports tile=(16,16,16) only")
+        if operation.inputs != (lhs_arg.name, rhs_arg.name, dst_arg.name):
+            raise BackendNotImplementedError("aster_exec MFMA currently requires mma inputs to match the tensor argument order")
+        if operation.attrs.get("transpose_a") or operation.attrs.get("transpose_b"):
+            raise BackendNotImplementedError("aster_exec MFMA currently supports only non-transposed operands")
+        if operation.attrs.get("accumulate", True) is not True:
+            raise BackendNotImplementedError("aster_exec MFMA currently requires accumulate=True")
+        return match
+
+    def _match_fragment_mfma_16x16x16_copyout(self, ir: PortableKernelIR, target: AMDTarget) -> _Mfma16x16x16Match:
+        if len(ir.arguments) != 3:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently supports exactly three tensor arguments")
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently supports tensor arguments only")
+        lhs_arg, rhs_arg, dst_arg = ir.arguments
+        match = self._match_mfma_16x16x16_specs(lhs_arg, rhs_arg, dst_arg, target)
+        if not ir.operations or ir.operations[-1].op != "copy":
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires a final copy to the destination tensor")
+        copy_op = ir.operations[-1]
+        if len(copy_op.inputs) != 2 or copy_op.inputs[1] != dst_arg.name:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires copying the accumulator tensor directly to the destination")
+        acc_name = copy_op.inputs[0]
+        make_tensor_ops = [operation for operation in ir.operations if operation.op == "make_tensor" and operation.outputs == (acc_name,)]
+        if len(make_tensor_ops) != 1:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires a single explicit accumulator tensor")
+        acc_op = make_tensor_ops[0]
+        if acc_op.attrs.get("dtype") != "f32" or acc_op.attrs.get("address_space") != "register":
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires an f32 register accumulator")
+        mma_ops = [operation for operation in ir.operations if operation.op == "mma"]
+        if len(mma_ops) != 1:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires exactly one mma op")
+        mma_op = mma_ops[0]
+        if tuple(int(dim) for dim in mma_op.attrs.get("tile") or ()) != match.tile:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently supports tile=(16,16,16) only")
+        if mma_op.attrs.get("transpose_a") or mma_op.attrs.get("transpose_b"):
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently supports only non-transposed operands")
+        if mma_op.attrs.get("accumulate", True) is not True:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires accumulate=True")
+        lhs_fragment_name, rhs_fragment_name, mma_acc_name = mma_op.inputs
+        if mma_acc_name != acc_name:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires the mma accumulator to be the explicit register tensor")
+        fragment_ops = {operation.outputs[0]: operation for operation in ir.operations if operation.op == "fragment" and operation.outputs}
+        lhs_fragment = fragment_ops.get(lhs_fragment_name)
+        rhs_fragment = fragment_ops.get(rhs_fragment_name)
+        if lhs_fragment is None or rhs_fragment is None:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires fragment views for both operands")
+        if lhs_fragment.attrs.get("role") != "a" or rhs_fragment.attrs.get("role") != "b":
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires a/b fragment roles")
+        if tuple(int(dim) for dim in lhs_fragment.attrs.get("tile") or ()) != match.tile:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires the lhs fragment tile to match the supported MFMA tile")
+        if tuple(int(dim) for dim in rhs_fragment.attrs.get("tile") or ()) != match.tile:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires the rhs fragment tile to match the supported MFMA tile")
+        if lhs_fragment.attrs.get("llvm_intrinsic") != {
+            "f16": "llvm.amdgcn.mfma.f32.16x16x16f16",
+            "bf16": "llvm.amdgcn.mfma.f32.16x16x16bf16",
+        }[match.lhs_dtype]:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires a matching lhs fragment intrinsic")
+        if rhs_fragment.attrs.get("llvm_intrinsic") != lhs_fragment.attrs.get("llvm_intrinsic"):
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires matching fragment intrinsics")
+        partition_ops = {operation.outputs[0]: operation for operation in ir.operations if operation.op == "partition" and operation.outputs}
+        lhs_partition = partition_ops.get(lhs_fragment.inputs[0])
+        rhs_partition = partition_ops.get(rhs_fragment.inputs[0])
+        if lhs_partition is None or rhs_partition is None:
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires partitioned global tiles feeding both fragments")
+        if lhs_partition.inputs[:1] != (lhs_arg.name,) or rhs_partition.inputs[:1] != (rhs_arg.name,):
+            raise BackendNotImplementedError("aster_exec fragment MFMA currently requires partitions to come directly from the tensor arguments")
+        for partition_op, expected_dtype in ((lhs_partition, match.lhs_dtype), (rhs_partition, match.rhs_dtype)):
+            result_spec = partition_op.attrs.get("result", {})
+            layout = result_spec.get("layout", {})
+            if tuple(result_spec.get("shape", ())) != (16, 16):
+                raise BackendNotImplementedError("aster_exec fragment MFMA currently requires 16x16 partition tiles")
+            if result_spec.get("dtype") != expected_dtype or result_spec.get("address_space") != "global":
+                raise BackendNotImplementedError("aster_exec fragment MFMA currently requires global operand tiles with matching dtypes")
+            if tuple(layout.get("stride", ())) != (16, 1):
+                raise BackendNotImplementedError("aster_exec fragment MFMA currently requires dense contiguous partition tiles")
+            if tuple(int(dim) for dim in partition_op.attrs.get("tile") or ()) != (16, 16):
+                raise BackendNotImplementedError("aster_exec fragment MFMA currently requires tile=(16,16) partitioning")
+            if partition_op.attrs.get("policy") != "blocked":
+                raise BackendNotImplementedError("aster_exec fragment MFMA currently requires blocked partition policy")
+        return _Mfma16x16x16Match(
+            lhs_name=lhs_arg.name,
+            rhs_name=rhs_arg.name,
+            dst_name=dst_arg.name,
+            lhs_dtype=match.lhs_dtype,
+            rhs_dtype=match.rhs_dtype,
+            dst_dtype=match.dst_dtype,
+            tile=match.tile,
+            mfma_inst=match.mfma_inst,
+        )
 
     def _match_copy_1d(self, ir: PortableKernelIR, target: AMDTarget) -> _Copy1DMatch:
         if target.arch not in {"gfx942", "gfx950"}:
@@ -1095,6 +1350,14 @@ class AsterExecBackend:
             op_line=self._render_binary_vgpr_op(match, "%result", "%tmp", "%lhs", "%rhs"),
         )
 
+    def _render_mfma_16x16x16(self, match: _Mfma16x16x16Match, kernel_name: str, target: AMDTarget) -> str:
+        return _MFMA_16X16X16_TEMPLATE.format(
+            target=target.arch,
+            isa=self._target_isa(target),
+            kernel_name=kernel_name,
+            mfma_inst=match.mfma_inst,
+        )
+
     def _render_binary_vgpr_op(
         self,
         match: _Binary1DMatch | _BinaryScalarMatch,
@@ -1226,6 +1489,12 @@ class AsterExecBackend:
         if dtype == "i32":
             return "int32"
         raise BackendNotImplementedError(f"aster_exec does not support dtype '{dtype}'")
+
+    def _numpy_array_for_dtype(self, numpy: Any, value: RuntimeTensor, dtype: str) -> Any:
+        if dtype == "bf16":
+            float_array = numpy.array(value.tolist(), dtype="float32")
+            return (float_array.view(numpy.uint32) >> 16).astype(numpy.uint16)
+        return numpy.array(value.tolist(), dtype=self._numpy_dtype(dtype))
 
     def _dtype_size_bytes(self, dtype: str) -> int:
         if dtype in {"f32", "i32"}:

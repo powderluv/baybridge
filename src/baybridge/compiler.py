@@ -163,15 +163,15 @@ def _resolve_backend_for_ir(
         hipkittens_backend = HipKittensExecBackend()
         if hipkittens_backend.available(target) and hipkittens_backend.supports(ir, target):
             return hipkittens_backend.name, hipkittens_backend
-        hipkittens_ref_backend = HipKittensRefBackend()
-        if hipkittens_ref_backend.supports(ir, target):
-            return hipkittens_ref_backend.name, hipkittens_ref_backend
         aster_exec_backend = AsterExecBackend()
         if aster_exec_backend.supports_auto_selection(ir, target, sample_args):
             return aster_exec_backend.name, aster_exec_backend
         flydsl_exec_backend = FlyDslExecBackend()
         if flydsl_exec_backend.supports_auto_selection(ir, target, sample_args):
             return flydsl_exec_backend.name, flydsl_exec_backend
+        hipkittens_ref_backend = HipKittensRefBackend()
+        if hipkittens_ref_backend.supports(ir, target):
+            return hipkittens_ref_backend.name, hipkittens_ref_backend
     return _resolve_backend(_DEFAULT_BACKEND)
 
 

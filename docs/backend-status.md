@@ -43,7 +43,7 @@ Focused local validation after the shared tooling updates in this pass:
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow pointwise/shared-memory subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
-| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul`; scalar broadcast from dense single-element tensors for supported binary ops; 1D and 2D dense tensors | `div` is intentionally not supported; standalone benchmark-shell execution is still less stable than focused pytest execution |
+| `aster_exec` | exec | narrow ASTER executable backend | validated on `gfx950`, `gfx942` | dense contiguous copy: `f32/i32/f16`; dense contiguous binary: `f32/i32 add/sub/mul`; scalar broadcast from dense single-element tensors for supported binary ops; exact MFMA GEMM and fragment-copyout families for `f16/f16 -> f32` and `bf16/bf16 -> f32` on `16x16x16`; 1D and 2D dense tensors | `div` is intentionally not supported; MFMA support is intentionally exact-shape and exact-descriptor only |
 
 ## Execution Coverage Matrix
 
@@ -57,7 +57,7 @@ Focused local validation after the shared tooling updates in this pass:
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
 | Tensor reductions | Yes | No | Executable in Baybridge-side lowering; real upstream validation is still narrower | No | No |
 | Shared-memory staging | Yes | No | Integrated, but real upstream shared-memory validation is still incomplete | No | Experimental only |
-| GEMM | No dedicated path | Yes, narrow validated subset | No | No | No |
+| GEMM | No dedicated path | Yes, narrow validated subset | No | Yes, exact `16x16x16` MFMA subset only | No |
 | Attention / norm families | No dedicated path | ref only | ref only | ref only | ref only |
 
 ## Benchmark Method
@@ -75,6 +75,7 @@ Benchmark notes:
 - pointwise benchmark size: `65536` elements
 - GEMM benchmark shape: `32x16 * 16x32 -> 32x32`
 - ASTER microbenchmark size: `4096` elements
+- ASTER MFMA benchmark shape: `16x16 * 16x16 -> 16x16`
 
 ## Performance Snapshot
 
@@ -167,6 +168,44 @@ They are intentionally broken out from the common `65536`-element table above be
 | Dense `i32` broadcast add, `4096` elements | `hipcc_exec` | `3.33` | Dense source plus single-element RHS tensor |
 | Dense `i32` broadcast add, `4096` elements | `aster_exec` | `11.37` | Broadcast now validated on the aligned scalar-broadcast path |
 
+## ASTER MFMA Snapshot
+
+These are real checked-in-tool measurements for the validated ASTER MFMA path, using:
+- kernel/sample module: [`tools/backend_benchmark_kernels.py`](/home/nod/github/baybridge/tools/backend_benchmark_kernels.py)
+- runner: [`tools/compare_backends.py`](/home/nod/github/baybridge/tools/compare_backends.py)
+- ASTER-specific sample factories:
+  - `aster_mfma_f16_gemm_args`
+  - `aster_mfma_bf16_gemm_args`
+
+This is intentionally separated from the HipKittens GEMM row in the main table. The currently validated checked-in executable shapes do not overlap cleanly:
+- `hipkittens_exec` is validated on its own tile families
+- `aster_exec` is validated on exact `16x16x16` MFMA GEMM and equivalent fragment-copyout forms
+
+The timings below are for the direct `bb.gemm(...)` form. The checked-in fragment-copyout forms route through the same ASTER executable family and were not timed separately.
+
+### `mi355` (`gfx950`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| MFMA GEMM `f16/f16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `3.63` | Exact `16x16x16` ASTER MFMA path |
+| MFMA GEMM `bf16/bf16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `3.08` | Exact `16x16x16` ASTER MFMA path |
+
+### `mi300` (`gfx942`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| MFMA GEMM `f16/f16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `2.47` | Exact `16x16x16` ASTER MFMA path |
+| MFMA GEMM `bf16/bf16 -> f32`, `16x16 * 16x16 -> 16x16` | `aster_exec` | `2.45` | Exact `16x16x16` ASTER MFMA path |
+
+## ASTER MFMA Cold vs Warm Snapshot
+
+Cold-start timing here is the first recorded execution in the `--repeat 7` run. Warm median is the median of the following six steady-state executions.
+
+| Family | `mi355` cold ms | `mi355` warm median ms | `mi300` cold ms | `mi300` warm median ms |
+| --- | ---: | ---: | ---: | ---: |
+| MFMA GEMM `f16/f16 -> f32`, `16x16x16` | `1211.51` | `3.63` | `295.70` | `2.47` |
+| MFMA GEMM `bf16/bf16 -> f32`, `16x16x16` | `292.94` | `3.08` | `296.97` | `2.45` |
+
 ## ASTER Ratio Summary
 
 Warm median ratio of `aster_exec / hipcc_exec` on the matched `4096`-element ASTER microbenchmarks.
@@ -223,10 +262,15 @@ The remaining boundary is semantic, not environmental:
 - dense contiguous copy: `f32/i32/f16`
 - dense contiguous pointwise binary: `f32/i32 add/sub/mul`
 - dense scalar-broadcast binary for the same supported ops
+- exact MFMA GEMM and fragment-copyout forms for:
+  - `f16/f16 -> f32`, `16x16x16`
+  - `bf16/bf16 -> f32`, `16x16x16`
 
 Two important boundaries remain:
 - `div` is intentionally unsupported in `aster_exec` because ASTER's current pass pipeline rejects the LSIR divide path in Baybridge's kernel form
-- ASTER performance is currently published through a dedicated `4096`-element checked-in microbenchmark path, not the common `65536`-element table
+- ASTER performance is currently published through two dedicated checked-in paths, not the common `65536`-element table:
+  - `4096`-element dense copy/binary/broadcast microbenchmarks
+  - exact `16x16x16` MFMA GEMM microbenchmarks
 - the very large first-run cost is not Baybridge tracing time alone:
   - Baybridge compiles to ASTER MLIR before timing
   - then [aster_exec.py](/home/nod/github/baybridge/src/baybridge/backends/aster_exec.py) still does ASTER-side lazy work on first launch:
@@ -236,9 +280,10 @@ Two important boundaries remain:
 
 So ASTER should currently be treated as:
 - validated for its checked-in focused tests
-- useful for executable copy and add/sub/mul coverage
+- useful for executable copy, add/sub/mul, scalar-broadcast, and exact MFMA GEMM coverage
 - benchmarkable through the checked-in ASTER microbenchmark harness above
 - currently closest to `hipcc_exec` on `f16` copy in this microbench set, and furthest behind on scalar broadcast add
+- currently shows much stronger warm behavior on the exact MFMA GEMM path than on the ASTER pointwise/broadcast families
 - still carries a very large cold-start penalty on most `f32/i32` kernels, which is why the doc now separates cold and warm timing explicitly
 - not yet a drop-in replacement for the common large-shape benchmark table used by `hipcc_exec` and `hipkittens_exec`
 
@@ -255,7 +300,7 @@ Reasons:
 
 - General executable backend: `hipcc_exec`
 - Narrow GEMM backend on matching shapes: `hipkittens_exec`
-- ASTER: use `aster_ref` for inspection until the standalone runtime environment is more stable
+- ASTER: use `aster_exec` for the exact validated MFMA or dense pointwise families; otherwise `aster_ref`
 - FlyDSL: use `flydsl_ref` or `flydsl_exec` only when the active venv has a real FlyDSL build plus GPU-capable `torch`
 - WaveASM: keep `waveasm_exec` disabled by default and use `waveasm_ref` repro bundles instead
 
@@ -306,6 +351,23 @@ BAYBRIDGE_ASTER_ROOT=$HOME/tmp/ASTER \
 .venv/bin/python tools/compare_backends.py \
   tools/backend_benchmark_kernels.py dense_add_f32_kernel \
   --sample-factory aster_dense_add_f32_args \
+  --backends aster_exec \
+  --target gfx950 \
+  --execute \
+  --repeat 7
+```
+
+ASTER MFMA microbenchmark example on `mi355`:
+
+```bash
+cd ~/tmp/baybridge-codex
+PATH=$PWD/.venv/bin:$PATH \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=src \
+BAYBRIDGE_ASTER_ROOT=$HOME/tmp/ASTER \
+.venv/bin/python tools/compare_backends.py \
+  tools/backend_benchmark_kernels.py aster_mfma_bf16_gemm_kernel \
+  --sample-factory aster_mfma_bf16_gemm_args \
   --backends aster_exec \
   --target gfx950 \
   --execute \
