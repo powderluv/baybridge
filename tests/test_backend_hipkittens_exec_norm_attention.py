@@ -279,6 +279,38 @@ def test_hipkittens_exec_lowers_exact_attention_gfx942(tmp_path: Path, monkeypat
     assert "baybridge_attention_gfx942<<<" in text
 
 
+def test_hipkittens_exec_lowers_exact_causal_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    artifact = bb.compile(
+        exact_causal_attention_kernel,
+        *_make_attention_inputs(),
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "// reference: kernels/attn/gqa_causal/kernel.cpp" in text
+    assert "dispatch_micro<ATTN_D>(g);" in text
+
+
+def test_hipkittens_exec_lowers_exact_causal_attention_gfx942(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    artifact = bb.compile(
+        exact_causal_attention_kernel,
+        *_make_attention_inputs(),
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx942"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "// reference: generated:gfx942_attention" in text
+    assert "constexpr bool ATTN_CAUSAL = true;" in text
+
+
 def test_compile_auto_prefers_hipkittens_exec_for_exact_layernorm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
 
@@ -328,6 +360,21 @@ def test_compile_auto_prefers_hipkittens_exec_for_attention_on_gfx942(tmp_path: 
 
     artifact = bb.compile(
         exact_attention_kernel,
+        *_make_attention_inputs(),
+        cache_dir=tmp_path,
+        target=bb.AMDTarget(arch="gfx942"),
+    )
+
+    assert artifact.backend_name == "hipkittens_exec"
+
+
+def test_compile_auto_prefers_hipkittens_exec_for_causal_attention_on_gfx942(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_root(tmp_path, monkeypatch)
+
+    artifact = bb.compile(
+        exact_causal_attention_kernel,
         *_make_attention_inputs(),
         cache_dir=tmp_path,
         target=bb.AMDTarget(arch="gfx942"),
@@ -449,6 +496,63 @@ def test_hipkittens_exec_runs_exact_attention(tmp_path: Path) -> None:
     k_expanded = k.repeat_interleave(group_size, dim=2)
     v_expanded = v.repeat_interleave(group_size, dim=2)
     scores = torch.einsum("bqhd,bkhd->bhqk", q.float(), k_expanded.float()) * scale
+    probs = torch.softmax(scores, dim=-1)
+    ref_out = torch.einsum("bhqk,bkhd->bqhd", probs, v_expanded.float()).to(torch.bfloat16)
+    ref_lse = torch.logsumexp(scores, dim=-1).unsqueeze(2)
+
+    assert torch.allclose(out.float(), ref_out.float(), atol=3e-1, rtol=3e-1)
+    assert torch.allclose(lse, ref_lse, atol=3e-1, rtol=3e-1)
+
+
+def test_hipkittens_exec_runs_exact_causal_attention(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    if os.environ.get("BAYBRIDGE_RUN_EXEC_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_EXEC_TESTS=1 to run executable HipKittens backend tests")
+    if not os.environ.get("BAYBRIDGE_HIPKITTENS_ROOT"):
+        pytest.skip("set BAYBRIDGE_HIPKITTENS_ROOT to a HipKittens checkout to run executable HipKittens backend tests")
+    if not torch.cuda.is_available():
+        pytest.skip("ROCm torch is required for the exact attention HipKittens test")
+
+    target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
+    if not _exec_backend_available(target_arch):
+        pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
+
+    torch.manual_seed(0)
+    q = torch.randn((1, 256, 8, 128), dtype=torch.bfloat16, device="cuda")
+    k = torch.randn((1, 256, 2, 128), dtype=torch.bfloat16, device="cuda")
+    v = torch.randn((1, 256, 2, 128), dtype=torch.bfloat16, device="cuda")
+    out = torch.zeros((1, 256, 8, 128), dtype=torch.bfloat16, device="cuda")
+    lse = torch.zeros((1, 8, 1, 256), dtype=torch.float32, device="cuda")
+
+    qh = bb.from_dlpack(q)
+    kh = bb.from_dlpack(k)
+    vh = bb.from_dlpack(v)
+    outh = bb.from_dlpack(out)
+    lseh = bb.from_dlpack(lse)
+
+    artifact = bb.compile(
+        exact_causal_attention_kernel,
+        qh,
+        kh,
+        vh,
+        outh,
+        lseh,
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch=target_arch),
+    )
+    artifact(qh, kh, vh, outh, lseh)
+
+    group_size = 8 // 2
+    scale = 1.0 / math.sqrt(128.0)
+    k_expanded = k.repeat_interleave(group_size, dim=2)
+    v_expanded = v.repeat_interleave(group_size, dim=2)
+    scores = torch.einsum("bqhd,bkhd->bhqk", q.float(), k_expanded.float()) * scale
+    mask = torch.triu(
+        torch.ones((scores.shape[-2], scores.shape[-1]), device=scores.device, dtype=torch.bool),
+        diagonal=1,
+    )
+    scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
     probs = torch.softmax(scores, dim=-1)
     ref_out = torch.einsum("bhqk,bkhd->bqhd", probs, v_expanded.float()).to(torch.bfloat16)
     ref_lse = torch.logsumexp(scores, dim=-1).unsqueeze(2)
