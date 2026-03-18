@@ -151,6 +151,21 @@ def flydsl_exec_math_kernel(
     dst_atan2.store(bb.math.atan2(values, other_values))
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_exec_unary_math_kernel(
+    src: bb.Tensor,
+    dst_exp: bb.Tensor,
+    dst_log: bb.Tensor,
+    dst_cos: bb.Tensor,
+    dst_erf: bb.Tensor,
+):
+    values = src.load()
+    dst_exp.store(bb.math.exp(values))
+    dst_log.store(bb.math.log(values))
+    dst_cos.store(bb.math.cos(values))
+    dst_erf.store(bb.math.erf(values))
+
+
 @bb.kernel
 def flydsl_exec_unsupported_kernel(src: bb.Tensor, dst: bb.Tensor):
     tile = bb.local_tile(src, tiler=(2, 4, 2), coord=(1, 0, None), proj=(1, None, 1))
@@ -170,7 +185,33 @@ def _install_fake_flydsl(
     package = package_root / "flydsl"
     package.mkdir(parents=True, exist_ok=True)
     if with_mlir:
-        (package / "_mlir").mkdir(parents=True, exist_ok=True)
+        mlir_package = package / "_mlir"
+        dialects_package = mlir_package / "dialects"
+        dialects_package.mkdir(parents=True, exist_ok=True)
+        (mlir_package / "__init__.py").write_text("", encoding="utf-8")
+        (dialects_package / "__init__.py").write_text("", encoding="utf-8")
+        (dialects_package / "math.py").write_text(
+            "import math\n"
+            "def exp(value):\n"
+            "    return math.exp(value)\n"
+            "def log(value):\n"
+            "    return math.log(value)\n"
+            "def cos(value):\n"
+            "    return math.cos(value)\n"
+            "def erf(value):\n"
+            "    return math.erf(value)\n"
+            "def atan2(lhs, rhs):\n"
+            "    return math.atan2(lhs, rhs)\n"
+            "def exp2(value):\n"
+            "    return 2.0 ** value\n"
+            "def log2(value):\n"
+            "    return math.log2(value)\n"
+            "def log10(value):\n"
+            "    return math.log10(value)\n"
+            "def sqrt(value):\n"
+            "    return math.sqrt(value)\n",
+            encoding="utf-8",
+        )
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "expr.py").write_text(
         "def _normalize_shape(shape):\n"
@@ -1115,6 +1156,60 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_math_b
     assert artifact.backend_name != "flydsl_exec"
 
 
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_unary_math_bundle_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src_obj = FakeDLPackTensor([1.0, 2.0, 4.0])
+    dst_exp_obj = FakeDLPackTensor([0.0, 0.0, 0.0])
+    dst_log_obj = FakeDLPackTensor([0.0, 0.0, 0.0])
+    dst_cos_obj = FakeDLPackTensor([0.0, 0.0, 0.0])
+    dst_erf_obj = FakeDLPackTensor([0.0, 0.0, 0.0])
+
+    artifact = bb.compile(
+        flydsl_exec_unary_math_kernel,
+        bb.from_dlpack(src_obj),
+        bb.from_dlpack(dst_exp_obj),
+        bb.from_dlpack(dst_log_obj),
+        bb.from_dlpack(dst_cos_obj),
+        bb.from_dlpack(dst_erf_obj),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+
+
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_unary_math_bundle_second_shape_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src_obj = FakeDLPackTensor([1.0, 2.0, 4.0, 8.0])
+    dst_exp_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    dst_log_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    dst_cos_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    dst_erf_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+
+    artifact = bb.compile(
+        flydsl_exec_unary_math_kernel,
+        bb.from_dlpack(src_obj),
+        bb.from_dlpack(dst_exp_obj),
+        bb.from_dlpack(dst_log_obj),
+        bb.from_dlpack(dst_cos_obj),
+        bb.from_dlpack(dst_erf_obj),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+
+
 def test_compile_auto_prefers_flydsl_exec_for_validated_realish_reduce_bundle_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1310,6 +1405,37 @@ def test_flydsl_exec_realish_built_root_emits_upstream_tensor_factory_pattern_wi
     assert "fx.copy_atom_call(copyAtom, r_dst_zero, fx.slice(t_dst_zero, (None, col_idx)))" in text
     assert "fx.copy_atom_call(copyAtom, r_dst_one, fx.slice(t_dst_one, (None, col_idx)))" in text
     assert "fx.copy_atom_call(copyAtom, r_dst_full, fx.slice(t_dst_full, (None, col_idx)))" in text
+
+
+def test_flydsl_exec_realish_built_root_emits_upstream_unary_math_pattern_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 4.0]))
+    dst_exp = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0]))
+    dst_log = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0]))
+    dst_cos = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0]))
+    dst_erf = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0]))
+
+    artifact = bb.compile(
+        flydsl_exec_unary_math_kernel,
+        src,
+        dst_exp,
+        dst_log,
+        dst_cos,
+        dst_erf,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    text = artifact.lowered_module.text
+    assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, math_idx)), r_src)" in text
+    assert "fx.memref_store_vec(mlir_math.exp(v_src), r_dst_exp)" in text
+    assert "fx.memref_store_vec(mlir_math.erf(v_src), r_dst_erf)" in text
 
 
 def test_flydsl_exec_adapts_tensor_handles_via_from_dlpack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2219,7 +2345,7 @@ def test_flydsl_exec_math_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> No
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
     _skip_if_real_runtime_tensor_exec_unavailable(backend)
-    pytest.xfail("generic real FlyDSL math lowering still relies on unsupported tensor-copy indexing")
+    pytest.xfail("real FlyDSL lowering still does not support atan2 cleanly in the current upstream pipeline")
 
     src = bb.tensor([1.0, 2.0, 4.0], dtype="f32")
     other = bb.tensor([1.0, 2.0, 8.0], dtype="f32")
@@ -2254,7 +2380,76 @@ def test_flydsl_exec_math_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> No
     )
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_real_math_bundle_second_shape_if_enabled(tmp_path: Path) -> None:
+def test_flydsl_exec_unary_math_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    src = bb.tensor([1.0, 2.0, 4.0], dtype="f32")
+    dst_exp = bb.zeros((3,), dtype="f32")
+    dst_log = bb.zeros((3,), dtype="f32")
+    dst_cos = bb.zeros((3,), dtype="f32")
+    dst_erf = bb.zeros((3,), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_unary_math_kernel,
+        src,
+        dst_exp,
+        dst_log,
+        dst_cos,
+        dst_erf,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    artifact(src, dst_exp, dst_log, dst_cos, dst_erf)
+    assert dst_exp.tolist() == pytest.approx([math.exp(1.0), math.exp(2.0), math.exp(4.0)], rel=1e-6, abs=1e-6)
+    assert dst_log.tolist() == pytest.approx([math.log(1.0), math.log(2.0), math.log(4.0)], rel=1e-6, abs=1e-6)
+    assert dst_cos.tolist() == pytest.approx([math.cos(1.0), math.cos(2.0), math.cos(4.0)], rel=1e-6, abs=1e-6)
+    assert dst_erf.tolist() == pytest.approx([math.erf(1.0), math.erf(2.0), math.erf(4.0)], rel=1e-6, abs=1e-6)
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_unary_math_bundle_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    src = bb.tensor([1.0, 2.0, 4.0], dtype="f32")
+    dst_exp = bb.zeros((3,), dtype="f32")
+    dst_log = bb.zeros((3,), dtype="f32")
+    dst_cos = bb.zeros((3,), dtype="f32")
+    dst_erf = bb.zeros((3,), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_unary_math_kernel,
+        src,
+        dst_exp,
+        dst_log,
+        dst_cos,
+        dst_erf,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst_exp, dst_log, dst_cos, dst_erf)
+    assert dst_exp.tolist() == pytest.approx(
+        [math.exp(1.0), math.exp(2.0), math.exp(4.0)],
+        rel=1e-6,
+        abs=1e-6,
+    )
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_unary_math_bundle_second_shape_if_enabled(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
@@ -2265,26 +2460,28 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_real_math_bundle_second_sh
     _skip_if_real_runtime_tensor_exec_unavailable(backend)
 
     src = bb.tensor([1.0, 2.0, 4.0, 8.0], dtype="f32")
-    other = bb.tensor([1.0, 2.0, 8.0, 16.0], dtype="f32")
     dst_exp = bb.zeros((4,), dtype="f32")
     dst_log = bb.zeros((4,), dtype="f32")
     dst_cos = bb.zeros((4,), dtype="f32")
     dst_erf = bb.zeros((4,), dtype="f32")
-    dst_atan2 = bb.zeros((4,), dtype="f32")
 
     artifact = bb.compile(
-        flydsl_exec_math_kernel,
+        flydsl_exec_unary_math_kernel,
         src,
-        other,
         dst_exp,
         dst_log,
         dst_cos,
         dst_erf,
-        dst_atan2,
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst_exp, dst_log, dst_cos, dst_erf)
+    assert dst_exp.tolist() == pytest.approx(
+        [math.exp(1.0), math.exp(2.0), math.exp(4.0), math.exp(8.0)],
+        rel=1e-6,
+        abs=1e-6,
+    )
 
 
 def test_flydsl_exec_shared_stage_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:

@@ -478,6 +478,7 @@ class FlyDslBridge:
             or self._match_real_exec_broadcast_add_2d(ir) is not None
             or self._match_real_exec_reduce_bundle_2d(ir) is not None
             or self._match_real_exec_tensor_factory_2d(ir) is not None
+            or self._match_real_exec_math_bundle_1d(ir) is not None
             or self._match_real_exec_shared_stage_1d(ir) is not None
         )
 
@@ -497,6 +498,9 @@ class FlyDslBridge:
         matched_tensor_factory = self._match_real_exec_tensor_factory_2d(ir)
         if matched_tensor_factory is not None:
             return self._render_real_exec_tensor_factory_2d(ir, *matched_tensor_factory)
+        matched_math_bundle = self._match_real_exec_math_bundle_1d(ir)
+        if matched_math_bundle is not None:
+            return self._render_real_exec_math_bundle_1d(ir, *matched_math_bundle)
         matched_shared_stage = self._match_real_exec_shared_stage_1d(ir)
         if matched_shared_stage is not None:
             return self._render_real_exec_copy_1d(ir, *matched_shared_stage)
@@ -899,16 +903,22 @@ class FlyDslBridge:
         ]
         return "\n".join(f"    {line}" for line in body_lines), prologue
 
-    def _match_real_exec_math_bundle_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
-        if len(ir.arguments) != 7:
+    def _match_real_exec_math_bundle_1d(self, ir: PortableKernelIR) -> tuple[str] | None:
+        if len(ir.arguments) != 5:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
-        src_arg, other_arg, *dst_args = ir.arguments
+        if tuple(ir.launch.grid) != (1, 1, 1):
+            return None
+        if tuple(ir.launch.block) != (1, 1, 1):
+            return None
+        src_arg, *dst_args = ir.arguments
         shape = tuple(src_arg.spec.shape)
         if len(shape) != 1:
             return None
-        for argument in ir.arguments:
+        if shape[0] <= 0:
+            return None
+        for argument in (src_arg, *dst_args):
             spec = argument.spec
             if tuple(spec.shape) != shape:
                 return None
@@ -917,27 +927,23 @@ class FlyDslBridge:
             if spec.address_space.value != "global":
                 return None
         ops = ir.operations
-        if len(ops) != 14:
+        if len(ops) != 10:
             return None
-        if [op.op for op in ops[:4]] != ["make_tensor", "copy", "make_tensor", "copy"]:
+        if [op.op for op in ops[:2]] != ["make_tensor", "copy"]:
             return None
         src_tensor = ops[0].outputs[0]
-        other_tensor = ops[2].outputs[0]
         if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
-            return None
-        if tuple(ops[3].inputs) != (other_arg.name, other_tensor):
             return None
         expected_math = [
             ("math_exp", (src_tensor,), dst_args[0].name),
             ("math_log", (src_tensor,), dst_args[1].name),
             ("math_cos", (src_tensor,), dst_args[2].name),
             ("math_erf", (src_tensor,), dst_args[3].name),
-            ("math_atan2", (src_tensor, other_tensor), dst_args[4].name),
         ]
         for (math_op_name, expected_inputs, dst_name), math_op, copy_op in zip(
             expected_math,
-            ops[4::2],
-            ops[5::2],
+            ops[2::2],
+            ops[3::2],
             strict=True,
         ):
             if math_op.op != math_op_name:
@@ -946,7 +952,51 @@ class FlyDslBridge:
                 return None
             if tuple(copy_op.inputs) != (math_op.outputs[0], dst_name):
                 return None
-        return src_arg.name, other_arg.name
+        return (src_arg.name,)
+
+    def _render_real_exec_math_bundle_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+    ) -> tuple[str, list[str]]:
+        src_spec = ir.arguments[0].spec
+        if not isinstance(src_spec, TensorSpec):
+            raise ValueError("validated real FlyDSL math lowering requires tensor specs")
+        extent = src_spec.shape[0]
+        dst_exp_name = ir.arguments[1].name
+        dst_log_name = ir.arguments[2].name
+        dst_cos_name = ir.arguments[3].name
+        dst_erf_name = ir.arguments[4].name
+        prologue = [
+            "from flydsl._mlir.dialects import math as mlir_math",
+            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout(1, 1))",
+            f"t_{dst_exp_name} = fx.logical_divide({dst_exp_name}, fx.make_layout(1, 1))",
+            f"t_{dst_log_name} = fx.logical_divide({dst_log_name}, fx.make_layout(1, 1))",
+            f"t_{dst_cos_name} = fx.logical_divide({dst_cos_name}, fx.make_layout(1, 1))",
+            f"t_{dst_erf_name} = fx.logical_divide({dst_erf_name}, fx.make_layout(1, 1))",
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_exp_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_log_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_cos_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_erf_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+        ]
+        body_lines = [
+            f"for math_i0 in range({extent}):",
+            "    math_idx = fx.Int32(math_i0)",
+            f"    fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, math_idx)), r_{src_name})",
+            f"    v_{src_name} = fx.memref_load_vec(r_{src_name})",
+            f"    fx.memref_store_vec(mlir_math.exp(v_{src_name}), r_{dst_exp_name})",
+            f"    fx.memref_store_vec(mlir_math.log(v_{src_name}), r_{dst_log_name})",
+            f"    fx.memref_store_vec(mlir_math.cos(v_{src_name}), r_{dst_cos_name})",
+            f"    fx.memref_store_vec(mlir_math.erf(v_{src_name}), r_{dst_erf_name})",
+            f"    fx.copy_atom_call(copyAtom, r_{dst_exp_name}, fx.slice(t_{dst_exp_name}, (None, math_idx)))",
+            f"    fx.copy_atom_call(copyAtom, r_{dst_log_name}, fx.slice(t_{dst_log_name}, (None, math_idx)))",
+            f"    fx.copy_atom_call(copyAtom, r_{dst_cos_name}, fx.slice(t_{dst_cos_name}, (None, math_idx)))",
+            f"    fx.copy_atom_call(copyAtom, r_{dst_erf_name}, fx.slice(t_{dst_erf_name}, (None, math_idx)))",
+        ]
+        return "\n".join(f"    {line}" for line in body_lines), prologue
 
     def _match_real_exec_reduce_bundle_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
         if len(ir.arguments) != 3:
