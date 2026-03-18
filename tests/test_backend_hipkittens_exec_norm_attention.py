@@ -258,6 +258,27 @@ def test_hipkittens_exec_lowers_exact_attention(tmp_path: Path, monkeypatch: pyt
     assert "dispatch_micro<ATTN_D>(g);" in text
 
 
+def test_hipkittens_exec_lowers_exact_attention_gfx942(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_root(tmp_path, monkeypatch)
+    artifact = bb.compile(
+        exact_attention_kernel,
+        *_make_attention_inputs(),
+        cache_dir=tmp_path,
+        backend="hipkittens_exec",
+        target=bb.AMDTarget(arch="gfx942"),
+    )
+
+    assert artifact.lowered_module is not None
+    text = artifact.lowered_module.text
+    assert "// reference: generated:gfx942_attention" in text
+    assert "constexpr int ATTN_B = 1;" in text
+    assert "constexpr int ATTN_H = 8;" in text
+    assert "constexpr int ATTN_H_KV = 2;" in text
+    assert "constexpr int ATTN_N = 256;" in text
+    assert "constexpr int ATTN_D = 128;" in text
+    assert "baybridge_attention_gfx942<<<" in text
+
+
 def test_compile_auto_prefers_hipkittens_exec_for_exact_layernorm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
 
@@ -302,7 +323,7 @@ def test_compile_auto_prefers_hipkittens_exec_for_exact_attention(tmp_path: Path
     assert artifact.backend_name == "hipkittens_exec"
 
 
-def test_compile_falls_back_to_hipkittens_ref_for_attention_on_gfx942(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_auto_prefers_hipkittens_exec_for_attention_on_gfx942(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
 
     artifact = bb.compile(
@@ -312,7 +333,7 @@ def test_compile_falls_back_to_hipkittens_ref_for_attention_on_gfx942(tmp_path: 
         target=bb.AMDTarget(arch="gfx942"),
     )
 
-    assert artifact.backend_name == "hipkittens_ref"
+    assert artifact.backend_name == "hipkittens_exec"
 
 
 def test_hipkittens_exec_runs_exact_layernorm(tmp_path: Path) -> None:
@@ -394,8 +415,6 @@ def test_hipkittens_exec_runs_exact_attention(tmp_path: Path) -> None:
         pytest.skip("ROCm torch is required for the exact attention HipKittens test")
 
     target_arch = os.environ.get("BAYBRIDGE_EXEC_ARCH", "gfx950")
-    if target_arch != "gfx950":
-        pytest.skip("hipkittens_exec fused attention is currently wired only for gfx950")
     if not _exec_backend_available(target_arch):
         pytest.skip(f"hipkittens_exec is not toolchain-ready for target {target_arch}")
 

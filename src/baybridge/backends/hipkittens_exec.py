@@ -825,8 +825,8 @@ class HipKittensExecBackend:
         operation: Any,
     ) -> HipKittensAttentionExecMatch:
         root = self._configured_root()
-        if target.arch != "gfx950":
-            raise BackendNotImplementedError("hipkittens_exec fused attention is currently wired only for gfx950")
+        if target.arch not in {"gfx950", "gfx942"}:
+            raise BackendNotImplementedError("hipkittens_exec fused attention is currently wired only for gfx950 and gfx942")
         if len(operation.inputs) != 5:
             raise BackendNotImplementedError("hipkittens_exec attention expects q, k, v, out, and lse tensors")
         q_name, k_name, v_name, out_name, lse_name = operation.inputs
@@ -862,11 +862,14 @@ class HipKittensExecBackend:
                 f"hipkittens_exec attention currently requires sequence length divisible by 64 and >= 256, got {seqlen}"
             )
         causal = bool(operation.attrs.get("causal", False))
-        relative_path = "kernels/attn/gqa_causal/kernel.cpp" if causal else "kernels/attn/gqa/kernel.cpp"
-        if root is not None and not (root / relative_path).exists():
-            raise BackendNotImplementedError(
-                f"hipkittens_exec attention requires {relative_path} in the configured HipKittens root"
-            )
+        if target.arch == "gfx950":
+            relative_path = "kernels/attn/gqa_causal/kernel.cpp" if causal else "kernels/attn/gqa/kernel.cpp"
+            if root is not None and not (root / relative_path).exists():
+                raise BackendNotImplementedError(
+                    f"hipkittens_exec attention requires {relative_path} in the configured HipKittens root"
+                )
+        else:
+            relative_path = "generated:gfx942_attention"
         return HipKittensAttentionExecMatch(
             q_name=q_name,
             k_name=k_name,
@@ -1169,6 +1172,8 @@ class HipKittensExecBackend:
         match: HipKittensAttentionExecMatch,
         root: Path | None,
     ) -> str:
+        if target.arch == "gfx942":
+            return self._render_attention_cpp_gfx942(entry_point, target, match, root)
         if root is None:
             raise BackendNotImplementedError(
                 f"set {_HIPKITTENS_ENV} to a HipKittens checkout before launching hipkittens_exec attention kernels"
@@ -1211,6 +1216,113 @@ class HipKittensExecBackend:
             "}\n"
         )
         return preamble + source_text + wrapper
+
+    def _render_attention_cpp_gfx942(
+        self,
+        entry_point: str,
+        target: AMDTarget,
+        match: HipKittensAttentionExecMatch,
+        root: Path | None,
+    ) -> str:
+        batch, seqlen, heads, head_dim = match.q_shape
+        _, _, kv_heads, _ = match.kv_shape
+        causal_literal = "true" if match.causal else "false"
+        root_hint = (
+            f"// HipKittens root: {root}\n" if root is not None else f"// Set {_HIPKITTENS_ENV} to a HipKittens checkout before launch\n"
+        )
+        return (
+            "// Baybridge HipKittens executable backend\n"
+            "// family: attention\n"
+            f"// target: {target.arch}\n"
+            "// reference: generated:gfx942_attention\n"
+            f"// q/out shape: {match.q_shape}\n"
+            f"// k/v shape: {match.kv_shape}\n"
+            f"// lse shape: {match.lse_shape}\n"
+            f"{root_hint}"
+            "#include <cstdint>\n"
+            "#include <cmath>\n"
+            "#include <hip/hip_runtime.h>\n"
+            "#include <hip/hip_bfloat16.h>\n\n"
+            f"constexpr int ATTN_B = {batch};\n"
+            f"constexpr int ATTN_N = {seqlen};\n"
+            f"constexpr int ATTN_H = {heads};\n"
+            f"constexpr int ATTN_H_KV = {kv_heads};\n"
+            f"constexpr int ATTN_D = {head_dim};\n"
+            f"constexpr bool ATTN_CAUSAL = {causal_literal};\n"
+            "constexpr int ATTN_GROUP_SIZE = ATTN_H / ATTN_H_KV;\n\n"
+            "__device__ inline size_t q_offset(int b, int n, int h, int d) {\n"
+            "    return static_cast<size_t>((((b * ATTN_N) + n) * ATTN_H + h) * ATTN_D + d);\n"
+            "}\n"
+            "__device__ inline size_t kv_offset(int b, int n, int h, int d) {\n"
+            "    return static_cast<size_t>((((b * ATTN_N) + n) * ATTN_H_KV + h) * ATTN_D + d);\n"
+            "}\n"
+            "__device__ inline size_t lse_offset(int b, int h, int n) {\n"
+            "    return static_cast<size_t>(((b * ATTN_H) + h) * ATTN_N + n);\n"
+            "}\n\n"
+            "__global__ void baybridge_attention_gfx942(\n"
+            "    const hip_bfloat16* q,\n"
+            "    const hip_bfloat16* k,\n"
+            "    const hip_bfloat16* v,\n"
+            "    hip_bfloat16* out,\n"
+            "    float* lse) {\n"
+            "    const int query_idx = blockIdx.x;\n"
+            "    const int head = blockIdx.y;\n"
+            "    const int batch = blockIdx.z;\n"
+            "    if (threadIdx.x != 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    const int kv_head = head / ATTN_GROUP_SIZE;\n"
+            "    const float scale = 1.0f / sqrtf(static_cast<float>(ATTN_D));\n"
+            "    float scores[ATTN_N];\n"
+            "    float max_score = -INFINITY;\n"
+            "    for (int key_idx = 0; key_idx < ATTN_N; ++key_idx) {\n"
+            "        float score = 0.0f;\n"
+            "        if (!ATTN_CAUSAL || key_idx <= query_idx) {\n"
+            "            for (int dim_idx = 0; dim_idx < ATTN_D; ++dim_idx) {\n"
+            "                const float qv = static_cast<float>(q[q_offset(batch, query_idx, head, dim_idx)]);\n"
+            "                const float kv = static_cast<float>(k[kv_offset(batch, key_idx, kv_head, dim_idx)]);\n"
+            "                score += qv * kv;\n"
+            "            }\n"
+            "            score *= scale;\n"
+            "        } else {\n"
+            "            score = -INFINITY;\n"
+            "        }\n"
+            "        scores[key_idx] = score;\n"
+            "        if (score > max_score) {\n"
+            "            max_score = score;\n"
+            "        }\n"
+            "    }\n"
+            "    float denom = 0.0f;\n"
+            "    for (int key_idx = 0; key_idx < ATTN_N; ++key_idx) {\n"
+            "        const float weight = isinf(scores[key_idx]) && scores[key_idx] < 0.0f ? 0.0f : expf(scores[key_idx] - max_score);\n"
+            "        scores[key_idx] = weight;\n"
+            "        denom += weight;\n"
+            "    }\n"
+            "    lse[lse_offset(batch, head, query_idx)] = logf(denom) + max_score;\n"
+            "    for (int dim_idx = 0; dim_idx < ATTN_D; ++dim_idx) {\n"
+            "        float acc = 0.0f;\n"
+            "        for (int key_idx = 0; key_idx < ATTN_N; ++key_idx) {\n"
+            "            if (scores[key_idx] == 0.0f) {\n"
+            "                continue;\n"
+            "            }\n"
+            "            const float vv = static_cast<float>(v[kv_offset(batch, key_idx, kv_head, dim_idx)]);\n"
+            "            acc += (scores[key_idx] / denom) * vv;\n"
+            "        }\n"
+            "        out[q_offset(batch, query_idx, head, dim_idx)] = hip_bfloat16(acc);\n"
+            "    }\n"
+            "}\n\n"
+            "extern \"C\" int launch_"
+            f"{entry_point}(const std::uint16_t* {match.q_name}, const std::uint16_t* {match.k_name}, const std::uint16_t* {match.v_name}, "
+            f"std::uint16_t* {match.out_name}, float* {match.lse_name}) {{\n"
+            f"    auto* q_ptr = reinterpret_cast<const hip_bfloat16*>({match.q_name});\n"
+            f"    auto* k_ptr = reinterpret_cast<const hip_bfloat16*>({match.k_name});\n"
+            f"    auto* v_ptr = reinterpret_cast<const hip_bfloat16*>({match.v_name});\n"
+            f"    auto* out_ptr = reinterpret_cast<hip_bfloat16*>({match.out_name});\n"
+            f"    auto* lse_ptr = reinterpret_cast<float*>({match.lse_name});\n"
+            "    baybridge_attention_gfx942<<<dim3(ATTN_N, ATTN_H, ATTN_B), dim3(1, 1, 1)>>>(q_ptr, k_ptr, v_ptr, out_ptr, lse_ptr);\n"
+            "    return static_cast<int>(hipDeviceSynchronize());\n"
+            "}\n"
+        )
 
     def _render_rt_type(
         self,
