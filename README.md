@@ -257,6 +257,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
       - hardware-validated today: add, sub, mul, div
     - 1D `f32` copy
     - exact generic-lowering kernels that are now hardware-validated:
+      - 1D `f32` shared-memory staging copy on `(4,)`
       - 2D `f32` broadcast add for `(2,1) + (1,3) -> (2,3)`
       - 2D `f32` reduce bundle for `(2,3) -> (1,)` and `(2,3) -> (2,)`
       - 2D `f32` tensor-factory bundle on `(2,2)`

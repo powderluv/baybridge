@@ -756,8 +756,15 @@ def test_compare_backends_script_skips_unvalidated_real_flydsl_exec(
         },
     )
     payload = json.loads(result.stdout)
-    assert payload["results"][0]["execute_status"] == "skipped_unvalidated_real_flydsl_exec"
-    assert "BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1" in payload["results"][0]["execute_note"]
+    assert payload["results"][0]["execute_status"] == "ok"
+    assert payload["results"][0]["result_summaries"] == {
+        "1": {
+            "dtype": "f32",
+            "shape": [4],
+            "type": "FakeDLPackTensor",
+            "value": [1.0, 2.0, 3.0, 4.0],
+        }
+    }
 
 
 def test_compare_backends_script_executes_with_real_flydsl_device_tensors_if_enabled(tmp_path: Path) -> None:

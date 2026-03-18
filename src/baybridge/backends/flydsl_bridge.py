@@ -475,6 +475,7 @@ class FlyDslBridge:
         return (
             self._match_real_exec_pointwise_binary_1d(ir) is not None
             or self._match_real_exec_copy_1d(ir) is not None
+            or self._match_real_exec_shared_stage_1d(ir) is not None
             or self._match_real_exec_broadcast_add_2d(ir) is not None
             or self._match_real_exec_tensor_factory_2d(ir) is not None
             or self._match_real_exec_math_bundle_1d(ir) is not None
@@ -488,6 +489,9 @@ class FlyDslBridge:
         matched_copy = self._match_real_exec_copy_1d(ir)
         if matched_copy is not None:
             return self._render_real_exec_copy_1d(ir, *matched_copy)
+        matched_shared_stage = self._match_real_exec_shared_stage_1d(ir)
+        if matched_shared_stage is not None:
+            return self._render_real_exec_copy_1d(ir, *matched_shared_stage)
         return None
 
     def _match_real_exec_pointwise_binary_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str, str] | None:
@@ -675,6 +679,67 @@ class FlyDslBridge:
         if not isinstance(add_result, dict) or tuple(add_result.get("shape", ())) != (2, 3):
             return None
         return lhs_arg.name, rhs_arg.name, dst_arg.name
+
+    def _match_real_exec_shared_stage_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
+        if len(ir.arguments) != 2:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, dst_arg = ir.arguments
+        for argument in (src_arg, dst_arg):
+            spec = argument.spec
+            if spec.shape != (4,):
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 9:
+            return None
+        if [op.op for op in ops] != [
+            "thread_idx",
+            "thread_idx",
+            "thread_idx",
+            "make_tensor",
+            "load",
+            "store",
+            "barrier",
+            "load",
+            "store",
+        ]:
+            return None
+        thread_x = ops[0]
+        if thread_x.attrs.get("axis") != "x":
+            return None
+        for op, axis in zip(ops[:3], ("x", "y", "z"), strict=True):
+            if op.attrs.get("axis") != axis or len(op.outputs) != 1:
+                return None
+        shared_tensor = ops[3]
+        if shared_tensor.attrs.get("address_space") != "shared":
+            return None
+        if tuple(shared_tensor.attrs.get("shape", ())) != (4,):
+            return None
+        if shared_tensor.attrs.get("dtype") != "f32":
+            return None
+        shared_name = shared_tensor.outputs[0]
+        thread_index_name = thread_x.outputs[0]
+        src_load = ops[4]
+        smem_store = ops[5]
+        barrier = ops[6]
+        smem_load = ops[7]
+        dst_store = ops[8]
+        if tuple(src_load.inputs) != (src_arg.name, thread_index_name):
+            return None
+        if tuple(smem_store.inputs) != (src_load.outputs[0], shared_name, thread_index_name):
+            return None
+        if barrier.attrs.get("kind") != "block":
+            return None
+        if tuple(smem_load.inputs) != (shared_name, thread_index_name):
+            return None
+        if tuple(dst_store.inputs) != (smem_load.outputs[0], dst_arg.name, thread_index_name):
+            return None
+        return src_arg.name, dst_arg.name
 
     def _match_real_exec_tensor_factory_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
         if len(ir.arguments) != 3:

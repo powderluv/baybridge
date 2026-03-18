@@ -501,6 +501,9 @@ def test_flydsl_exec_lowers_python_module(tmp_path: Path) -> None:
     if "src[thread_idx_x_1]" in text:
         assert "dst[thread_idx_x_1] =" in text
         assert " + " in text
+    elif "fx.memref_load(src, (thread_idx_x_1,))" in text:
+        assert "fx.memref_load(other, (thread_idx_x_1,))" in text
+        assert "fx.memref_store(add_6, dst, (thread_idx_x_1,))" in text
     else:
         assert "fx.logical_divide(src, fx.make_layout(4, 1))" in text
         assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, tid)), r_src)" in text
@@ -736,7 +739,7 @@ def test_compile_auto_prefers_flydsl_exec_for_validated_realish_built_root_witho
     sys.modules.pop("torch", None)
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_built_root_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_shared_stage_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -744,8 +747,10 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_built_
     _install_fake_flydsl(fake_root, built=True, with_mlir=True)
     monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
 
-    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]))
-    dst = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0, 0.0, 0.0]))
+    src_obj = FakeDLPackTensor([1.0, 2.0, 3.0, 4.0])
+    dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+    src = bb.from_dlpack(src_obj)
+    dst = bb.from_dlpack(dst_obj)
 
     artifact = bb.compile(
         flydsl_exec_shared_stage_kernel,
@@ -754,7 +759,9 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_built_
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst)
+    assert dst_obj.tolist() == [1.0, 2.0, 3.0, 4.0]
     sys.modules.pop("torch", None)
 
 
@@ -1037,20 +1044,21 @@ def test_flydsl_exec_realish_built_root_requires_opt_in(
     _install_fake_flydsl(fake_root, built=True, with_mlir=True)
     monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
 
-    src = bb.from_dlpack(FakeDLPackTensor([1.0, 2.0, 3.0, 4.0]))
-    dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
-    dst = bb.from_dlpack(dst_obj)
+    lhs = bb.from_dlpack(FakeDLPackTensor([[1.0], [2.0]]))
+    rhs = bb.from_dlpack(FakeDLPackTensor([[10.0, 20.0, 30.0, 40.0]]))
+    dst = bb.from_dlpack(FakeDLPackTensor([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]))
 
     artifact = bb.compile(
-        flydsl_exec_shared_stage_kernel,
-        src,
+        flydsl_exec_broadcast_add_kernel,
+        lhs,
+        rhs,
         dst,
         cache_dir=tmp_path / "cache",
         backend="flydsl_exec",
     )
 
     with pytest.raises(bb.BackendNotImplementedError, match="BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1"):
-        artifact(src, dst)
+        artifact(lhs, rhs, dst)
 
 
 def test_flydsl_exec_realish_built_root_emits_upstream_pointwise_pattern_when_opted_in(
@@ -1640,6 +1648,33 @@ def test_compile_auto_prefers_flydsl_exec_for_real_broadcast_add_if_enabled(tmp_
     assert artifact.backend_name == "flydsl_exec"
     artifact(lhs, rhs, dst)
     assert dst.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_shared_stage_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    torch = _load_real_torch()
+    _skip_if_real_torch_device_unavailable(torch)
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_exec_unavailable(backend)
+
+    src = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device="cuda")
+    dst = torch.zeros(4, dtype=torch.float32, device="cuda")
+
+    artifact = bb.compile(
+        flydsl_exec_shared_stage_kernel,
+        bb.from_dlpack(src),
+        bb.from_dlpack(dst),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst)
+    assert dst.tolist() == [1.0, 2.0, 3.0, 4.0]
 
 
 def test_flydsl_exec_reduce_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
