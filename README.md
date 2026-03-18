@@ -256,6 +256,11 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
     - 1D `f32` pointwise binary ops through the copy-atom/register path
       - hardware-validated today: add, sub, mul, div
     - 1D `f32` copy
+    - exact generic-lowering kernels that are now hardware-validated:
+      - 2D `f32` broadcast add for `(2,1) + (1,3) -> (2,3)`
+      - 2D `f32` reduce bundle for `(2,3) -> (1,)` and `(2,3) -> (2,)`
+      - 2D `f32` tensor-factory bundle on `(2,2)`
+      - 1D `f32` math bundle on `(3,)` covering `exp`, `log`, `cos`, `erf`, and `atan2`
   - broader real upstream FlyDSL execution is still gated behind:
     - `BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1`
   - reason:

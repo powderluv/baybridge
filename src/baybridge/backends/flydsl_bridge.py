@@ -472,7 +472,14 @@ class FlyDslBridge:
         )
 
     def has_validated_real_exec(self, ir: PortableKernelIR) -> bool:
-        return self._match_real_exec_pointwise_binary_1d(ir) is not None or self._match_real_exec_copy_1d(ir) is not None
+        return (
+            self._match_real_exec_pointwise_binary_1d(ir) is not None
+            or self._match_real_exec_copy_1d(ir) is not None
+            or self._match_real_exec_broadcast_add_2d(ir) is not None
+            or self._match_real_exec_tensor_factory_2d(ir) is not None
+            or self._match_real_exec_math_bundle_1d(ir) is not None
+            or self._match_real_exec_reduce_bundle_2d(ir) is not None
+        )
 
     def _render_real_exec_python_specialized(self, ir: PortableKernelIR) -> tuple[str, list[str]] | None:
         matched = self._match_real_exec_pointwise_binary_1d(ir)
@@ -606,6 +613,206 @@ class FlyDslBridge:
             f"    fx.copy_atom_call(copyAtom, r_{src_name}, fx.slice(t_{dst_name}, (None, fx.Int32(copy_i0))))",
         ]
         return "\n".join(f"    {line}" for line in body_lines), prologue
+
+    def _match_real_exec_broadcast_add_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
+        if len(ir.arguments) != 3:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        lhs_arg, rhs_arg, dst_arg = ir.arguments
+        expected = {
+            lhs_arg.name: ((2, 1), "f32"),
+            rhs_arg.name: ((1, 3), "f32"),
+            dst_arg.name: ((2, 3), "f32"),
+        }
+        for argument in (lhs_arg, rhs_arg, dst_arg):
+            spec = argument.spec
+            expected_shape, expected_dtype = expected[argument.name]
+            if spec.shape != expected_shape:
+                return None
+            if spec.dtype != expected_dtype:
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 8:
+            return None
+        if [op.op for op in ops] != [
+            "make_tensor",
+            "copy",
+            "make_tensor",
+            "copy",
+            "broadcast_to",
+            "broadcast_to",
+            "tensor_add",
+            "copy",
+        ]:
+            return None
+        lhs_tensor = ops[0].outputs[0]
+        rhs_tensor = ops[2].outputs[0]
+        lhs_broadcast = ops[4].outputs[0]
+        rhs_broadcast = ops[5].outputs[0]
+        result_tensor = ops[6].outputs[0]
+        if tuple(ops[1].inputs) != (lhs_arg.name, lhs_tensor):
+            return None
+        if tuple(ops[3].inputs) != (rhs_arg.name, rhs_tensor):
+            return None
+        if tuple(ops[4].inputs) != (lhs_tensor,):
+            return None
+        if tuple(ops[5].inputs) != (rhs_tensor,):
+            return None
+        if tuple(ops[6].inputs) != (lhs_broadcast, rhs_broadcast):
+            return None
+        if tuple(ops[7].inputs) != (result_tensor, dst_arg.name):
+            return None
+        lhs_result = ops[4].attrs.get("result")
+        rhs_result = ops[5].attrs.get("result")
+        add_result = ops[6].attrs.get("result")
+        if not isinstance(lhs_result, dict) or tuple(lhs_result.get("shape", ())) != (2, 3):
+            return None
+        if not isinstance(rhs_result, dict) or tuple(rhs_result.get("shape", ())) != (2, 3):
+            return None
+        if not isinstance(add_result, dict) or tuple(add_result.get("shape", ())) != (2, 3):
+            return None
+        return lhs_arg.name, rhs_arg.name, dst_arg.name
+
+    def _match_real_exec_tensor_factory_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
+        if len(ir.arguments) != 3:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        dst_zero_arg, dst_one_arg, dst_full_arg = ir.arguments
+        for argument in (dst_zero_arg, dst_one_arg, dst_full_arg):
+            spec = argument.spec
+            if spec.shape != (2, 2):
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 12:
+            return None
+        expected_pattern = ["make_tensor", "constant", "fill", "copy"] * 3
+        if [op.op for op in ops] != expected_pattern:
+            return None
+        expected_args = [
+            (dst_zero_arg.name, 0),
+            (dst_one_arg.name, 1),
+            (dst_full_arg.name, 7.0),
+        ]
+        for offset, (dst_name, fill_value) in zip((0, 4, 8), expected_args, strict=True):
+            tensor_op, constant_op, fill_op, copy_op = ops[offset : offset + 4]
+            tensor_name = tensor_op.outputs[0]
+            constant_name = constant_op.outputs[0]
+            if tuple(fill_op.inputs) != (tensor_name, constant_name):
+                return None
+            if tuple(copy_op.inputs) != (tensor_name, dst_name):
+                return None
+            result = constant_op.attrs.get("result")
+            if not isinstance(result, dict) or result.get("dtype") != "f32":
+                return None
+            if constant_op.attrs.get("value") != fill_value:
+                return None
+        return dst_zero_arg.name, dst_one_arg.name, dst_full_arg.name
+
+    def _match_real_exec_math_bundle_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
+        if len(ir.arguments) != 7:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, other_arg, *dst_args = ir.arguments
+        for argument in ir.arguments:
+            spec = argument.spec
+            if spec.shape != (3,):
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 14:
+            return None
+        if [op.op for op in ops[:4]] != ["make_tensor", "copy", "make_tensor", "copy"]:
+            return None
+        src_tensor = ops[0].outputs[0]
+        other_tensor = ops[2].outputs[0]
+        if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
+            return None
+        if tuple(ops[3].inputs) != (other_arg.name, other_tensor):
+            return None
+        expected_math = [
+            ("math_exp", (src_tensor,), dst_args[0].name),
+            ("math_log", (src_tensor,), dst_args[1].name),
+            ("math_cos", (src_tensor,), dst_args[2].name),
+            ("math_erf", (src_tensor,), dst_args[3].name),
+            ("math_atan2", (src_tensor, other_tensor), dst_args[4].name),
+        ]
+        for (math_op_name, expected_inputs, dst_name), math_op, copy_op in zip(
+            expected_math,
+            ops[4::2],
+            ops[5::2],
+            strict=True,
+        ):
+            if math_op.op != math_op_name:
+                return None
+            if tuple(math_op.inputs) != expected_inputs:
+                return None
+            if tuple(copy_op.inputs) != (math_op.outputs[0], dst_name):
+                return None
+        return src_arg.name, other_arg.name
+
+    def _match_real_exec_reduce_bundle_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
+        if len(ir.arguments) != 3:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, dst_scalar_arg, dst_rows_arg = ir.arguments
+        expected = {
+            src_arg.name: ((2, 3), "f32"),
+            dst_scalar_arg.name: ((1,), "f32"),
+            dst_rows_arg.name: ((2,), "f32"),
+        }
+        for argument in ir.arguments:
+            spec = argument.spec
+            expected_shape, expected_dtype = expected[argument.name]
+            if spec.shape != expected_shape:
+                return None
+            if spec.dtype != expected_dtype:
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 9:
+            return None
+        if [op.op for op in ops] != [
+            "make_tensor",
+            "copy",
+            "constant",
+            "reduce_add",
+            "constant",
+            "store",
+            "constant",
+            "reduce_add",
+            "copy",
+        ]:
+            return None
+        src_tensor = ops[0].outputs[0]
+        if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
+            return None
+        if tuple(ops[3].inputs) != (src_tensor, ops[2].outputs[0]):
+            return None
+        if tuple(ops[5].inputs) != (ops[3].outputs[0], dst_scalar_arg.name, ops[4].outputs[0]):
+            return None
+        if tuple(ops[7].inputs) != (src_tensor, ops[6].outputs[0]):
+            return None
+        if tuple(ops[8].inputs) != (ops[7].outputs[0], dst_rows_arg.name):
+            return None
+        if ops[3].attrs.get("reduction_profile") != 0:
+            return None
+        if ops[7].attrs.get("reduction_profile") != [None, 1]:
+            return None
+        return src_arg.name, dst_scalar_arg.name, dst_rows_arg.name
 
     def _render_exec_body(self, ir: PortableKernelIR) -> list[str]:
         tensor_specs = self._collect_exec_tensor_specs(ir)
