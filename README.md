@@ -259,6 +259,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
     - 2D `f32` broadcast add through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
     - 2D `f32` reduction bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
       - hardware-validated today: full reduction to `(1,)` plus row reduction to `(M,)`
+    - 2D `f32` tensor-factory bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
     - 1D `f32` shared-memory staging copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent`
   - broader real upstream FlyDSL execution is still gated behind:
     - `BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1`

@@ -477,6 +477,7 @@ class FlyDslBridge:
             or self._match_real_exec_copy_1d(ir) is not None
             or self._match_real_exec_broadcast_add_2d(ir) is not None
             or self._match_real_exec_reduce_bundle_2d(ir) is not None
+            or self._match_real_exec_tensor_factory_2d(ir) is not None
             or self._match_real_exec_shared_stage_1d(ir) is not None
         )
 
@@ -493,6 +494,9 @@ class FlyDslBridge:
         matched_reduce = self._match_real_exec_reduce_bundle_2d(ir)
         if matched_reduce is not None:
             return self._render_real_exec_reduce_bundle_2d(ir, *matched_reduce)
+        matched_tensor_factory = self._match_real_exec_tensor_factory_2d(ir)
+        if matched_tensor_factory is not None:
+            return self._render_real_exec_tensor_factory_2d(ir, *matched_tensor_factory)
         matched_shared_stage = self._match_real_exec_shared_stage_1d(ir)
         if matched_shared_stage is not None:
             return self._render_real_exec_copy_1d(ir, *matched_shared_stage)
@@ -806,9 +810,15 @@ class FlyDslBridge:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
+        if tuple(ir.launch.grid) != (1, 1, 1):
+            return None
+        if tuple(ir.launch.block) != (1, 1, 1):
+            return None
         dst_zero_arg, dst_one_arg, dst_full_arg = ir.arguments
         shape = tuple(dst_zero_arg.spec.shape)
         if len(shape) != 2:
+            return None
+        if shape[0] <= 0 or shape[1] <= 0:
             return None
         for argument in (dst_zero_arg, dst_one_arg, dst_full_arg):
             spec = argument.spec
@@ -843,6 +853,51 @@ class FlyDslBridge:
             if constant_op.attrs.get("value") != fill_value:
                 return None
         return dst_zero_arg.name, dst_one_arg.name, dst_full_arg.name
+
+    def _render_real_exec_tensor_factory_2d(
+        self,
+        ir: PortableKernelIR,
+        dst_zero_name: str,
+        dst_one_name: str,
+        dst_full_name: str,
+    ) -> tuple[str, list[str]]:
+        dst_spec = ir.arguments[0].spec
+        if not isinstance(dst_spec, TensorSpec):
+            raise ValueError("validated real FlyDSL tensor-factory lowering requires tensor specs")
+        rows, cols = dst_spec.shape
+        prologue = [
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            f"r_{dst_zero_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_one_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_full_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            "vec1f32 = fx.T.vector(1, element_type=fx.T.f32())",
+            "c_zero = fx.arith.constant(0.0, type=fx.T.f32())",
+            "c_one = fx.arith.constant(1.0, type=fx.T.f32())",
+            "c_full = fx.arith.constant(7.0, type=fx.T.f32())",
+            "v_zero = fx.vector.from_elements(vec1f32, [c_zero])",
+            "v_one = fx.vector.from_elements(vec1f32, [c_one])",
+            "v_full = fx.vector.from_elements(vec1f32, [c_full])",
+            f"fx.memref_store_vec(v_zero, r_{dst_zero_name})",
+            f"fx.memref_store_vec(v_one, r_{dst_one_name})",
+            f"fx.memref_store_vec(v_full, r_{dst_full_name})",
+        ]
+        body_lines = [
+            f"for row_i in range({rows}):",
+            "    row_idx = fx.Int32(row_i)",
+            f"    row_{dst_zero_name} = fx.slice({dst_zero_name}, (row_idx, None))",
+            f"    row_{dst_one_name} = fx.slice({dst_one_name}, (row_idx, None))",
+            f"    row_{dst_full_name} = fx.slice({dst_full_name}, (row_idx, None))",
+            f"    t_{dst_zero_name} = fx.logical_divide(row_{dst_zero_name}, fx.make_layout(1, 1))",
+            f"    t_{dst_one_name} = fx.logical_divide(row_{dst_one_name}, fx.make_layout(1, 1))",
+            f"    t_{dst_full_name} = fx.logical_divide(row_{dst_full_name}, fx.make_layout(1, 1))",
+            f"    for col_i in range({cols}):",
+            "        col_idx = fx.Int32(col_i)",
+            f"        fx.copy_atom_call(copyAtom, r_{dst_zero_name}, fx.slice(t_{dst_zero_name}, (None, col_idx)))",
+            f"        fx.copy_atom_call(copyAtom, r_{dst_one_name}, fx.slice(t_{dst_one_name}, (None, col_idx)))",
+            f"        fx.copy_atom_call(copyAtom, r_{dst_full_name}, fx.slice(t_{dst_full_name}, (None, col_idx)))",
+        ]
+        return "\n".join(f"    {line}" for line in body_lines), prologue
 
     def _match_real_exec_math_bundle_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
         if len(ir.arguments) != 7:

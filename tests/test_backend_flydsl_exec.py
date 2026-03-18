@@ -275,6 +275,13 @@ def _install_fake_flydsl(
         "    @staticmethod\n"
         "    def i64():\n"
         "        return 'i64'\n"
+        "    @staticmethod\n"
+        "    def vec(width, elem_type):\n"
+        "        return ('vec', width, elem_type)\n"
+        "    @staticmethod\n"
+        "    def vector(*shape, element_type=None, scalable=None, scalable_dims=None):\n"
+        "        del scalable, scalable_dims\n"
+        "        return ('vec',) + tuple(shape) + (element_type,)\n"
         "T = _T()\n"
         "Float32 = 'f32'\n"
         "def make_layout(shape, stride):\n"
@@ -359,6 +366,10 @@ def _install_fake_flydsl(
         "        raise TypeError('unsupported destination for copy_atom_call')\n"
         "class _Arith:\n"
         "    @staticmethod\n"
+        "    def constant(value, type=None, index=False):\n"
+        "        del type, index\n"
+        "        return value\n"
+        "    @staticmethod\n"
         "    def addf(lhs, rhs):\n"
         "        return lhs + rhs\n"
         "    @staticmethod\n"
@@ -371,6 +382,12 @@ def _install_fake_flydsl(
         "    def divf(lhs, rhs):\n"
         "        return lhs / rhs\n"
         "arith = _Arith()\n"
+        "class _Vector:\n"
+        "    @staticmethod\n"
+        "    def from_elements(vec_ty, elements):\n"
+        "        del vec_ty\n"
+        "        return elements[0] if len(elements) == 1 else list(elements)\n"
+        "vector = _Vector()\n"
         "class Tensor: pass\n"
         "Int32 = int\n"
         "class Stream:\n"
@@ -982,7 +999,7 @@ def test_compile_auto_prefers_flydsl_exec_for_validated_realish_broadcast_add_se
     assert artifact.backend_name == "flydsl_exec"
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_tensor_factory_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_tensor_factory_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1006,10 +1023,10 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_tensor
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_tensor_factory_second_shape_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_tensor_factory_second_shape_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1033,7 +1050,7 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_tensor
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
 def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_math_bundle_without_opt_in(
@@ -1263,9 +1280,36 @@ def test_flydsl_exec_realish_built_root_emits_upstream_reduce_pattern_without_op
 
     text = artifact.lowered_module.text
     assert "row_src = fx.slice(src, (row_idx, None))" in text
-    assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, fx.Int32(0))), r_dst_rows)" in text
-    assert "fx.copy_atom_call(copyAtom, r_dst_rows, fx.slice(t_dst_rows, (None, row_idx)))" in text
-    assert "fx.copy_atom_call(copyAtom, r_dst_scalar, fx.slice(t_dst_scalar, (None, fx.Int32(0))))" in text
+
+
+def test_flydsl_exec_realish_built_root_emits_upstream_tensor_factory_pattern_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    dst_zero = bb.from_dlpack(FakeDLPackTensor([[9.0, 9.0], [9.0, 9.0]]))
+    dst_one = bb.from_dlpack(FakeDLPackTensor([[0.0, 0.0], [0.0, 0.0]]))
+    dst_full = bb.from_dlpack(FakeDLPackTensor([[0.0, 0.0], [0.0, 0.0]]))
+
+    artifact = bb.compile(
+        flydsl_exec_tensor_factory_kernel,
+        dst_zero,
+        dst_one,
+        dst_full,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    text = artifact.lowered_module.text
+    assert "row_dst_zero = fx.slice(dst_zero, (row_idx, None))" in text
+    assert "row_dst_one = fx.slice(dst_one, (row_idx, None))" in text
+    assert "row_dst_full = fx.slice(dst_full, (row_idx, None))" in text
+    assert "fx.copy_atom_call(copyAtom, r_dst_zero, fx.slice(t_dst_zero, (None, col_idx)))" in text
+    assert "fx.copy_atom_call(copyAtom, r_dst_one, fx.slice(t_dst_one, (None, col_idx)))" in text
+    assert "fx.copy_atom_call(copyAtom, r_dst_full, fx.slice(t_dst_full, (None, col_idx)))" in text
 
 
 def test_flydsl_exec_adapts_tensor_handles_via_from_dlpack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2088,7 +2132,6 @@ def test_flydsl_exec_tensor_factory_runs_with_real_flydsl_if_enabled(tmp_path: P
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
     _skip_if_real_runtime_tensor_exec_unavailable(backend)
-    pytest.xfail("generic real FlyDSL tensor-factory lowering still relies on unsupported tensor-copy indexing")
 
     dst_zero = bb.tensor([[9.0, 9.0], [9.0, 9.0]], dtype="f32")
     dst_one = bb.zeros((2, 2), dtype="f32")
@@ -2109,7 +2152,36 @@ def test_flydsl_exec_tensor_factory_runs_with_real_flydsl_if_enabled(tmp_path: P
     assert dst_full.tolist() == [[7.0, 7.0], [7.0, 7.0]]
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_real_tensor_factory_second_shape_if_enabled(tmp_path: Path) -> None:
+def test_compile_auto_prefers_flydsl_exec_for_real_tensor_factory_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    dst_zero = bb.tensor([[9.0, 9.0], [9.0, 9.0]], dtype="f32")
+    dst_one = bb.zeros((2, 2), dtype="f32")
+    dst_full = bb.zeros((2, 2), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_tensor_factory_kernel,
+        dst_zero,
+        dst_one,
+        dst_full,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(dst_zero, dst_one, dst_full)
+    assert dst_zero.tolist() == [[0, 0], [0, 0]]
+    assert dst_one.tolist() == [[1, 1], [1, 1]]
+    assert dst_full.tolist() == [[7.0, 7.0], [7.0, 7.0]]
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_tensor_factory_second_shape_if_enabled(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
@@ -2131,7 +2203,11 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_real_tensor_factory_second
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(dst_zero, dst_one, dst_full)
+    assert dst_zero.tolist() == [[0], [0], [0]]
+    assert dst_one.tolist() == [[1], [1], [1]]
+    assert dst_full.tolist() == [[7.0], [7.0], [7.0]]
 
 
 def test_flydsl_exec_math_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:

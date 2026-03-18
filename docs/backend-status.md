@@ -15,10 +15,9 @@ That split matters because some backends are integrated and tested, but still de
 
 Current repo state during this documentation pass:
 - branch: `main`
-- HEAD: `75d0f6a` `Extend WaveASM backend math lowering`
 - worktree: clean
 - full local suite:
-  - `348 passed, 151 skipped`
+  - `374 passed, 166 skipped`
 - focused local WaveASM validation after the latest `gpu_text`/`waveasm_exec` math widening:
   - `tests/test_backend_gpu.py tests/test_backend_waveasm_exec.py tests/test_backend_waveasm_ref.py`
   - result: `34 passed, 2 skipped`
@@ -33,7 +32,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `tests/test_backend_hipkittens_ref.py` | `hipkittens_ref` family matching and lowering | `13` |
 | `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
 | `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
-| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `62` |
+| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `64` |
 | `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
 | `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
 | `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
@@ -53,7 +52,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `hipkittens_ref` | ref | reference/source backend for HipKittens families | local, `gfx950`, `gfx942` | GEMM, attention-family, norm-family matching | Not executable |
 | `hipkittens_exec` | exec | narrow AMD-native GEMM backend | `gfx950`, `gfx942` | BF16/F16 GEMM on supported tile families, including validated BF16 transpose families | Opt-in or auto-selected only for matching GEMM kernels |
 | `flydsl_ref` | ref | reference FlyDSL lowering | local, `gfx950`, `gfx942` | elementwise, reductions, tiled/layout, MFMA-oriented family matching | Not executable |
-| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; 2D `f32` broadcast add through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking |
+| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; 2D `f32` broadcast add through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` tensor-factory bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking |
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow single-buffer pointwise/shared-memory/math subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
@@ -71,6 +70,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
 | 2D `f32` tensor broadcast add | Yes | No | Real validated when `grid == block == (1, 1, 1)` | Yes | No |
 | 2D `f32` tensor reduction bundle | Yes | No | Real validated when `grid == block == (1, 1, 1)` | No | No |
+| 2D `f32` tensor-factory bundle | Yes | No | Real validated when `grid == block == (1, 1, 1)` | No | No |
 | Tensor reductions | Yes | No | Executable in Baybridge-side lowering; real upstream validation is still narrower outside the validated 2D `f32` bundle | No | No |
 | Shared-memory staging | Yes | No | Exact 1D `f32` shared-stage copy is validated when `block.x == extent`; broader real upstream shared-memory validation is still incomplete | No | Experimental only |
 | GEMM | No dedicated path | Yes, narrow validated subset | No | Yes, exact `16x16x16` MFMA subset plus direct `fp8`/`bf8` exact and mixed `16x16x32` on `gfx942` only | No |
