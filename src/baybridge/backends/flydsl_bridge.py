@@ -476,10 +476,6 @@ class FlyDslBridge:
             self._match_real_exec_pointwise_binary_1d(ir) is not None
             or self._match_real_exec_copy_1d(ir) is not None
             or self._match_real_exec_shared_stage_1d(ir) is not None
-            or self._match_real_exec_broadcast_add_2d(ir) is not None
-            or self._match_real_exec_tensor_factory_2d(ir) is not None
-            or self._match_real_exec_math_bundle_1d(ir) is not None
-            or self._match_real_exec_reduce_bundle_2d(ir) is not None
         )
 
     def _render_real_exec_python_specialized(self, ir: PortableKernelIR) -> tuple[str, list[str]] | None:
@@ -624,19 +620,19 @@ class FlyDslBridge:
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
         lhs_arg, rhs_arg, dst_arg = ir.arguments
-        expected = {
-            lhs_arg.name: ((2, 1), "f32"),
-            rhs_arg.name: ((1, 3), "f32"),
-            dst_arg.name: ((2, 3), "f32"),
-        }
+        if len(lhs_arg.spec.shape) != 2 or len(rhs_arg.spec.shape) != 2 or len(dst_arg.spec.shape) != 2:
+            return None
         for argument in (lhs_arg, rhs_arg, dst_arg):
             spec = argument.spec
-            expected_shape, expected_dtype = expected[argument.name]
-            if spec.shape != expected_shape:
-                return None
-            if spec.dtype != expected_dtype:
+            if spec.dtype != "f32":
                 return None
             if spec.address_space.value != "global":
+                return None
+        dst_shape = tuple(dst_arg.spec.shape)
+        for src_shape in (tuple(lhs_arg.spec.shape), tuple(rhs_arg.spec.shape)):
+            if len(src_shape) != len(dst_shape):
+                return None
+            if any(src_dim not in (1, dst_dim) for src_dim, dst_dim in zip(src_shape, dst_shape, strict=True)):
                 return None
         ops = ir.operations
         if len(ops) != 8:
@@ -672,11 +668,11 @@ class FlyDslBridge:
         lhs_result = ops[4].attrs.get("result")
         rhs_result = ops[5].attrs.get("result")
         add_result = ops[6].attrs.get("result")
-        if not isinstance(lhs_result, dict) or tuple(lhs_result.get("shape", ())) != (2, 3):
+        if not isinstance(lhs_result, dict) or tuple(lhs_result.get("shape", ())) != dst_shape:
             return None
-        if not isinstance(rhs_result, dict) or tuple(rhs_result.get("shape", ())) != (2, 3):
+        if not isinstance(rhs_result, dict) or tuple(rhs_result.get("shape", ())) != dst_shape:
             return None
-        if not isinstance(add_result, dict) or tuple(add_result.get("shape", ())) != (2, 3):
+        if not isinstance(add_result, dict) or tuple(add_result.get("shape", ())) != dst_shape:
             return None
         return lhs_arg.name, rhs_arg.name, dst_arg.name
 
@@ -686,10 +682,19 @@ class FlyDslBridge:
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
         src_arg, dst_arg = ir.arguments
+        if src_arg.spec.shape != dst_arg.spec.shape:
+            return None
+        if len(src_arg.spec.shape) != 1:
+            return None
+        extent = src_arg.spec.shape[0]
+        if extent <= 0:
+            return None
+        if tuple(ir.launch.grid) != (1, 1, 1):
+            return None
+        if ir.launch.block[0] != extent:
+            return None
         for argument in (src_arg, dst_arg):
             spec = argument.spec
-            if spec.shape != (4,):
-                return None
             if spec.dtype != "f32":
                 return None
             if spec.address_space.value != "global":
@@ -718,7 +723,7 @@ class FlyDslBridge:
         shared_tensor = ops[3]
         if shared_tensor.attrs.get("address_space") != "shared":
             return None
-        if tuple(shared_tensor.attrs.get("shape", ())) != (4,):
+        if tuple(shared_tensor.attrs.get("shape", ())) != (extent,):
             return None
         if shared_tensor.attrs.get("dtype") != "f32":
             return None
@@ -747,9 +752,12 @@ class FlyDslBridge:
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
         dst_zero_arg, dst_one_arg, dst_full_arg = ir.arguments
+        shape = tuple(dst_zero_arg.spec.shape)
+        if len(shape) != 2:
+            return None
         for argument in (dst_zero_arg, dst_one_arg, dst_full_arg):
             spec = argument.spec
-            if spec.shape != (2, 2):
+            if tuple(spec.shape) != shape:
                 return None
             if spec.dtype != "f32":
                 return None
@@ -787,9 +795,12 @@ class FlyDslBridge:
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
         src_arg, other_arg, *dst_args = ir.arguments
+        shape = tuple(src_arg.spec.shape)
+        if len(shape) != 1:
+            return None
         for argument in ir.arguments:
             spec = argument.spec
-            if spec.shape != (3,):
+            if tuple(spec.shape) != shape:
                 return None
             if spec.dtype != "f32":
                 return None
@@ -833,17 +844,15 @@ class FlyDslBridge:
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
         src_arg, dst_scalar_arg, dst_rows_arg = ir.arguments
-        expected = {
-            src_arg.name: ((2, 3), "f32"),
-            dst_scalar_arg.name: ((1,), "f32"),
-            dst_rows_arg.name: ((2,), "f32"),
-        }
+        if len(src_arg.spec.shape) != 2:
+            return None
+        if tuple(dst_scalar_arg.spec.shape) != (1,):
+            return None
+        if tuple(dst_rows_arg.spec.shape) != (src_arg.spec.shape[0],):
+            return None
         for argument in ir.arguments:
             spec = argument.spec
-            expected_shape, expected_dtype = expected[argument.name]
-            if spec.shape != expected_shape:
-                return None
-            if spec.dtype != expected_dtype:
+            if spec.dtype != "f32":
                 return None
             if spec.address_space.value != "global":
                 return None
