@@ -256,12 +256,15 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
     - 1D `f32` pointwise binary ops through the copy-atom/register path
       - hardware-validated today: add, sub, mul, div
     - 1D `f32` copy
+    - 2D `f32` broadcast add through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
+    - 2D `f32` reduction bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
+      - hardware-validated today: full reduction to `(1,)` plus row reduction to `(M,)`
     - 1D `f32` shared-memory staging copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent`
   - broader real upstream FlyDSL execution is still gated behind:
     - `BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1`
   - reason:
     - Baybridge's current generic lowering still does not match FlyDSL's real buffer/tile access model
-    - the validated add/copy path uses a specialized upstream-compatible lowering
+    - the validated subset uses specialized upstream-compatible lowerings
   - `tools/compare_backends.py --execute` reports that gate as `skipped_unvalidated_real_flydsl_exec`
   - intended as the first executable FlyDSL bridge, not full FlyDSL coverage yet
 - `backend="hipkittens_ref"`

@@ -290,6 +290,13 @@ def _install_fake_flydsl(
         "    return _LogicalView(value, _tile_from_layout(layout))\n"
         "def slice(value, selector):\n"
         "    selector = _normalize_indices(selector)\n"
+        "    if not isinstance(value, (_LogicalView, _TileView)) and any(item is None for item in selector):\n"
+        "        ref = value\n"
+        "        for item in selector:\n"
+        "            if item is None:\n"
+        "                return ref\n"
+        "            ref = ref[int(item)]\n"
+        "        return ref\n"
         "    index = selector[-1]\n"
         "    if isinstance(value, _LogicalView):\n"
         "        if isinstance(value.base, _ElementView):\n"
@@ -476,8 +483,6 @@ def _load_real_torch():
 
 
 def _skip_if_real_runtime_tensor_exec_unavailable(backend: FlyDslExecBackend) -> None:
-    if not backend.real_exec_enabled():
-        pytest.skip(backend.real_exec_note())
     if not backend._runtime_tensor_device_available():
         pytest.skip("real FlyDSL RuntimeTensor execution requires a GPU-capable torch build")
 
@@ -923,7 +928,7 @@ def test_compile_auto_prefers_flydsl_exec_for_validated_realish_div_without_opt_
     sys.modules.pop("torch", None)
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_broadcast_add_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_broadcast_add_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -947,10 +952,10 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_broadc
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_broadcast_add_second_shape_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_broadcast_add_second_shape_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -974,7 +979,7 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_broadc
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
 def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_tensor_factory_without_opt_in(
@@ -1093,7 +1098,7 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_math_b
     assert artifact.backend_name != "flydsl_exec"
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_reduce_bundle_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_reduce_bundle_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1117,10 +1122,10 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_reduce
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_reduce_bundle_second_shape_without_opt_in(
+def test_compile_auto_prefers_flydsl_exec_for_validated_realish_reduce_bundle_second_shape_without_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1144,7 +1149,7 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_unvalidated_realish_reduce
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
 
 
 def test_flydsl_exec_realish_built_root_requires_opt_in(
@@ -1205,6 +1210,62 @@ def test_flydsl_exec_realish_built_root_emits_upstream_pointwise_pattern_when_op
     assert "fx.logical_divide(src, fx.make_layout(4, 1))" in text
     assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, tid)), r_src)" in text
     assert "fx.arith.addf(" in text
+
+
+def test_flydsl_exec_realish_built_root_emits_upstream_broadcast_pattern_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    lhs = bb.from_dlpack(FakeDLPackTensor([[1.0], [2.0]]))
+    rhs = bb.from_dlpack(FakeDLPackTensor([[10.0, 20.0, 30.0]]))
+    dst = bb.from_dlpack(FakeDLPackTensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]))
+
+    artifact = bb.compile(
+        flydsl_exec_broadcast_add_kernel,
+        lhs,
+        rhs,
+        dst,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    text = artifact.lowered_module.text
+    assert "row_lhs = fx.slice(lhs, (row_idx, None))" in text
+    assert "row_rhs = fx.slice(rhs, (fx.Int32(0), None))" in text
+    assert "fx.copy_atom_call(copyAtom, fx.slice(t_lhs, (None, fx.Int32(0))), r_lhs)" in text
+    assert "fx.copy_atom_call(copyAtom, fx.slice(t_rhs, (None, col_idx)), r_rhs)" in text
+
+
+def test_flydsl_exec_realish_built_root_emits_upstream_reduce_pattern_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl_realish"
+    _install_fake_flydsl(fake_root, built=True, with_mlir=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src = bb.from_dlpack(FakeDLPackTensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+    dst_scalar = bb.from_dlpack(FakeDLPackTensor([0.0]))
+    dst_rows = bb.from_dlpack(FakeDLPackTensor([0.0, 0.0]))
+
+    artifact = bb.compile(
+        flydsl_exec_reduce_kernel,
+        src,
+        dst_scalar,
+        dst_rows,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    text = artifact.lowered_module.text
+    assert "row_src = fx.slice(src, (row_idx, None))" in text
+    assert "fx.copy_atom_call(copyAtom, fx.slice(t_src, (None, fx.Int32(0))), r_dst_rows)" in text
+    assert "fx.copy_atom_call(copyAtom, r_dst_rows, fx.slice(t_dst_rows, (None, row_idx)))" in text
+    assert "fx.copy_atom_call(copyAtom, r_dst_scalar, fx.slice(t_dst_scalar, (None, fx.Int32(0))))" in text
 
 
 def test_flydsl_exec_adapts_tensor_handles_via_from_dlpack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1738,7 +1799,7 @@ def test_compile_auto_prefers_flydsl_exec_for_real_runtime_tensors_if_enabled(tm
     assert dst.tolist() == [11.0, 22.0, 33.0, 44.0]
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_real_broadcast_add_if_enabled(tmp_path: Path) -> None:
+def test_compile_auto_prefers_flydsl_exec_for_real_broadcast_add_if_enabled(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
@@ -1763,10 +1824,12 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_real_broadcast_add_if_enab
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(lhs, rhs, dst)
+    assert dst.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_real_broadcast_add_second_shape_if_enabled(tmp_path: Path) -> None:
+def test_compile_auto_prefers_flydsl_exec_for_real_broadcast_add_second_shape_if_enabled(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
@@ -1791,7 +1854,9 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_real_broadcast_add_second_
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(lhs, rhs, dst)
+    assert dst.tolist() == [[11.0, 21.0], [12.0, 22.0], [13.0, 23.0]]
 
 
 def test_compile_auto_prefers_flydsl_exec_for_real_shared_stage_if_enabled(tmp_path: Path) -> None:
@@ -1857,7 +1922,6 @@ def test_flydsl_exec_reduce_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> 
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
     _skip_if_real_runtime_tensor_exec_unavailable(backend)
-    pytest.xfail("generic real FlyDSL reduce lowering still relies on unsupported tensor-copy indexing")
 
     src = bb.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype="f32")
     dst_scalar = bb.zeros((1,), dtype="f32")
@@ -1877,7 +1941,63 @@ def test_flydsl_exec_reduce_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> 
     assert dst_rows.tolist() == [6.0, 15.0]
 
 
-def test_compile_does_not_auto_prefer_flydsl_exec_for_real_reduce_bundle_second_shape_if_enabled(tmp_path: Path) -> None:
+def test_flydsl_exec_reduce_second_shape_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    src = bb.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype="f32")
+    dst_scalar = bb.zeros((1,), dtype="f32")
+    dst_rows = bb.zeros((3,), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_reduce_kernel,
+        src,
+        dst_scalar,
+        dst_rows,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+    artifact(src, dst_scalar, dst_rows)
+
+    assert dst_scalar.tolist() == [21.0]
+    assert dst_rows.tolist() == [3.0, 7.0, 11.0]
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_reduce_bundle_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    src = bb.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype="f32")
+    dst_scalar = bb.zeros((1,), dtype="f32")
+    dst_rows = bb.zeros((2,), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_reduce_kernel,
+        src,
+        dst_scalar,
+        dst_rows,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst_scalar, dst_rows)
+    assert dst_scalar.tolist() == [21.0]
+    assert dst_rows.tolist() == [6.0, 15.0]
+
+
+def test_compile_auto_prefers_flydsl_exec_for_real_reduce_bundle_second_shape_if_enabled(tmp_path: Path) -> None:
     if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
         pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
 
@@ -1899,7 +2019,10 @@ def test_compile_does_not_auto_prefer_flydsl_exec_for_real_reduce_bundle_second_
         cache_dir=tmp_path / "cache",
     )
 
-    assert artifact.backend_name != "flydsl_exec"
+    assert artifact.backend_name == "flydsl_exec"
+    artifact(src, dst_scalar, dst_rows)
+    assert dst_scalar.tolist() == [21.0]
+    assert dst_rows.tolist() == [3.0, 7.0, 11.0]
 
 
 def test_flydsl_exec_broadcast_add_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
@@ -1911,7 +2034,6 @@ def test_flydsl_exec_broadcast_add_runs_with_real_flydsl_if_enabled(tmp_path: Pa
     if not environment.ready:
         pytest.skip("real FlyDSL environment is not importable")
     _skip_if_real_runtime_tensor_exec_unavailable(backend)
-    pytest.xfail("generic real FlyDSL broadcast lowering still relies on unsupported tensor-copy indexing")
 
     lhs = bb.tensor([[1.0], [2.0]], dtype="f32")
     rhs = bb.tensor([[10.0, 20.0, 30.0]], dtype="f32")
@@ -1928,6 +2050,33 @@ def test_flydsl_exec_broadcast_add_runs_with_real_flydsl_if_enabled(tmp_path: Pa
     artifact(lhs, rhs, dst)
 
     assert dst.tolist() == [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
+
+
+def test_flydsl_exec_broadcast_add_second_shape_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
+    if os.environ.get("BAYBRIDGE_RUN_REAL_FLYDSL_TESTS") != "1":
+        pytest.skip("set BAYBRIDGE_RUN_REAL_FLYDSL_TESTS=1 to probe a real FlyDSL environment")
+
+    backend = FlyDslExecBackend()
+    environment = backend._bridge.exec_environment()
+    if not environment.ready:
+        pytest.skip("real FlyDSL environment is not importable")
+    _skip_if_real_runtime_tensor_exec_unavailable(backend)
+
+    lhs = bb.tensor([[1.0], [2.0], [3.0]], dtype="f32")
+    rhs = bb.tensor([[10.0, 20.0]], dtype="f32")
+    dst = bb.zeros((3, 2), dtype="f32")
+
+    artifact = bb.compile(
+        flydsl_exec_broadcast_add_kernel,
+        lhs,
+        rhs,
+        dst,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+    artifact(lhs, rhs, dst)
+
+    assert dst.tolist() == [[11.0, 21.0], [12.0, 22.0], [13.0, 23.0]]
 
 
 def test_flydsl_exec_tensor_factory_runs_with_real_flydsl_if_enabled(tmp_path: Path) -> None:
