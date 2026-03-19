@@ -255,6 +255,16 @@ def test_compare_backends_returns_no_synchronizer_for_non_exec_backend() -> None
     assert compare_backends._make_execution_synchronizer("gpu_mlir", ()) is None
 
 
+def test_compare_backends_summarizes_cold_and_warm_timings() -> None:
+    compare_backends = _load_tool_module("compare_backends")
+
+    summary = compare_backends._summarize_timings_ms([10.0, 4.0, 6.0, 8.0])
+
+    assert summary["cold_ms"] == 10.0
+    assert summary["warm_timings_ms"] == [4.0, 6.0, 8.0]
+    assert summary["warm_median_ms"] == 6.0
+
+
 def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> None:
     kernels = _load_tool_module("backend_benchmark_kernels")
 

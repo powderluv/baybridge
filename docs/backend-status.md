@@ -88,6 +88,7 @@ Benchmark notes:
 - timings are wall-clock `artifact(*args)` times in milliseconds
 - compile is done once before measurement
 - each run uses `--repeat 7`
+- `tools/compare_backends.py` now emits `cold_ms`, `warm_timings_ms`, and `warm_median_ms` directly
 - the first execution is usually a clear cold-start outlier
 - the tables below report the median of the six warm runs after dropping the first cold-start outlier
 - pointwise benchmark size: `65536` elements

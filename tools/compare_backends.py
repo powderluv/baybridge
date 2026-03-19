@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -102,6 +103,17 @@ def _summarize_value(value):
     if isinstance(value, dict):
         return {key: _summarize_value(item) for key, item in value.items()}
     return value
+
+
+def _summarize_timings_ms(timings_ms: list[float]) -> dict[str, float | list[float]]:
+    if not timings_ms:
+        return {"cold_ms": 0.0, "warm_median_ms": 0.0, "warm_timings_ms": []}
+    warm_timings = timings_ms[1:] if len(timings_ms) > 1 else list(timings_ms)
+    return {
+        "cold_ms": float(timings_ms[0]),
+        "warm_timings_ms": warm_timings,
+        "warm_median_ms": float(statistics.median(warm_timings)),
+    }
 
 
 def _is_runtime_tensor_like(value) -> bool:
@@ -345,6 +357,7 @@ def main() -> int:
                 indices = tuple(index for index, value in enumerate(run_args) if hasattr(value, "tolist"))
             entry["execute_status"] = "ok"
             entry["timings_ms"] = timings_ms
+            entry.update(_summarize_timings_ms(timings_ms))
             entry["result_summaries"] = {
                 str(index): _summarize_value(run_args[index]) for index in indices
             }

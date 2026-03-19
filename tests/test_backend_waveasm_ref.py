@@ -383,6 +383,9 @@ def test_compare_backends_script_can_execute_flydsl(monkeypatch: pytest.MonkeyPa
     assert payload[0]["status"] == "ok"
     assert payload[0]["execute_status"] == "ok"
     assert len(payload[0]["timings_ms"]) == 1
+    assert payload[0]["cold_ms"] == payload[0]["timings_ms"][0]
+    assert payload[0]["warm_timings_ms"] == payload[0]["timings_ms"]
+    assert payload[0]["warm_median_ms"] == payload[0]["timings_ms"][0]
     assert payload[0]["result_summaries"]["2"]["value"] == [11.0, 22.0, 33.0, 44.0]
 
 
@@ -620,6 +623,9 @@ def test_compare_backends_script_can_execute_flydsl_with_runtime_tensors(
     )
     payload = json.loads(result.stdout)
     assert payload[0]["execute_status"] == "ok"
+    assert payload[0]["cold_ms"] == payload[0]["timings_ms"][0]
+    assert payload[0]["warm_timings_ms"] == payload[0]["timings_ms"]
+    assert payload[0]["warm_median_ms"] == payload[0]["timings_ms"][0]
     assert payload[0]["result_summaries"]["2"]["value"] == [11.0, 22.0, 33.0, 44.0]
     sys.modules.pop("torch", None)
 
