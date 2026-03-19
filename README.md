@@ -255,7 +255,8 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - real upstream FlyDSL execution is currently validated for a narrow subset:
     - 1D `f32` pointwise binary ops through the copy-atom/register path
       - hardware-validated today: add, sub, mul, div
-      - canonical linear indexed add of the form `block_idx.x * block_dim.x + thread_idx.x` is also hardware-validated today
+      - canonical linear indexed pointwise binary ops of the form `block_idx.x * block_dim.x + thread_idx.x` are also hardware-validated today:
+        - add, sub, mul, div
     - 1D `f32` copy
     - 1D `f32` unary math bundle through the copy-atom/register path
       - hardware-validated today:

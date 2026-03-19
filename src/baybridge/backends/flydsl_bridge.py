@@ -474,7 +474,7 @@ class FlyDslBridge:
     def has_validated_real_exec(self, ir: PortableKernelIR) -> bool:
         return (
             self._match_real_exec_pointwise_binary_1d(ir) is not None
-            or self._match_real_exec_indexed_add_1d(ir) is not None
+            or self._match_real_exec_indexed_pointwise_binary_1d(ir) is not None
             or self._match_real_exec_copy_1d(ir) is not None
             or self._match_real_exec_broadcast_binary_2d(ir) is not None
             or self._match_real_exec_reduce_bundle_2d(ir) is not None
@@ -491,9 +491,9 @@ class FlyDslBridge:
         matched = self._match_real_exec_pointwise_binary_1d(ir)
         if matched is not None:
             return self._render_real_exec_pointwise_binary_1d(ir, *matched)
-        matched_indexed_add = self._match_real_exec_indexed_add_1d(ir)
-        if matched_indexed_add is not None:
-            return self._render_real_exec_pointwise_binary_1d(ir, *matched_indexed_add)
+        matched_indexed_binary = self._match_real_exec_indexed_pointwise_binary_1d(ir)
+        if matched_indexed_binary is not None:
+            return self._render_real_exec_pointwise_binary_1d(ir, *matched_indexed_binary)
         matched_copy = self._match_real_exec_copy_1d(ir)
         if matched_copy is not None:
             return self._render_real_exec_copy_1d(ir, *matched_copy)
@@ -564,7 +564,10 @@ class FlyDslBridge:
             return None
         return src_arg.name, other_arg.name, dst_arg.name, thread_index_name, add_op.op
 
-    def _match_real_exec_indexed_add_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str, str] | None:
+    def _match_real_exec_indexed_pointwise_binary_1d(
+        self,
+        ir: PortableKernelIR,
+    ) -> tuple[str, str, str, str, str] | None:
         if len(ir.arguments) != 3:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
@@ -604,7 +607,7 @@ class FlyDslBridge:
             return None
         if load_a.op != "load" or load_b.op != "load" or store_op.op != "store":
             return None
-        if add_op.op != "add":
+        if add_op.op not in {"add", "sub", "mul", "div"}:
             return None
         if tuple(mul_op.inputs) != (block_x, block_dim_x):
             return None

@@ -32,7 +32,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `tests/test_backend_hipkittens_ref.py` | `hipkittens_ref` family matching and lowering | `13` |
 | `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
 | `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
-| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `116` |
+| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `125` |
 | `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
 | `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
 | `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
@@ -52,7 +52,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `hipkittens_ref` | ref | reference/source backend for HipKittens families | local, `gfx950`, `gfx942` | GEMM, attention-family, norm-family matching | Not executable |
 | `hipkittens_exec` | exec | narrow AMD-native GEMM backend | `gfx950`, `gfx942` | BF16/F16 GEMM on supported tile families, including validated BF16 transpose families | Opt-in or auto-selected only for matching GEMM kernels |
 | `flydsl_ref` | ref | reference FlyDSL lowering | local, `gfx950`, `gfx942` | elementwise, reductions, tiled/layout, MFMA-oriented family matching | Not executable |
-| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; canonical linear indexed 1D `f32` add of the form `block_idx.x * block_dim.x + thread_idx.x`; 1D `f32` unary math bundles for `exp/log/cos/erf`, `exp2/log2/log10/sqrt`, `sin`, and `rsqrt`; 2D `f32` broadcast binary `add/sub/mul/div` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundles for `add` and `mul` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` unary math bundle for `exp/log/cos/erf` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` tensor-factory bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking; `acos`, `asin`, `atan`, and `atan2` are still outside the validated real subset |
+| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; canonical linear indexed 1D `f32` pointwise binary `add/sub/mul/div` of the form `block_idx.x * block_dim.x + thread_idx.x`; 1D `f32` unary math bundles for `exp/log/cos/erf`, `exp2/log2/log10/sqrt`, `sin`, and `rsqrt`; 2D `f32` broadcast binary `add/sub/mul/div` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundles for `add` and `mul` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` unary math bundle for `exp/log/cos/erf` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` tensor-factory bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking; `acos`, `asin`, `atan`, and `atan2` are still outside the validated real subset |
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow single-buffer pointwise/shared-memory/math subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
@@ -65,7 +65,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | Dense contiguous `f32` copy | Yes | No | Real validated 1D only | Yes | Experimental only |
 | Dense contiguous `i32` copy | Yes | No | No | Yes | Experimental only |
 | Dense contiguous `f16` copy | Yes | No | No | Yes | Experimental only |
-| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only; canonical linear indexed `add` is also validated | Add/sub/mul only | Experimental only |
+| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only; canonical linear indexed `add/sub/mul/div` are also validated | Add/sub/mul only | Experimental only |
 | Dense contiguous `f32` unary math bundle | Yes | No | Real validated 1D only for `exp/log/cos/erf`, `exp2/log2/log10/sqrt`, `sin`, and `rsqrt`; `acos/asin/atan/atan2` still unvalidated | No | Experimental only |
 | Dense contiguous `i32` binary `add/sub/mul/div` | Yes | No | No | Add/sub/mul only | No |
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
@@ -343,6 +343,7 @@ The remaining boundary is semantic, not environmental:
 - dense `f32` copy is benchmarkable
 - specialized 1D unary, shared-stage, and 2D broadcast/reduction/unary/tensor-factory families are benchmarkable through the checked-in exact kernels above
 - the canonical linear indexed-add benchmark is now benchmarkable through the validated real path
+- the same canonical indexed real path is now also hardware-validated for `sub`, `mul`, and `div`
 - broader indexed families are still narrower than the general `hipcc_exec` path
 
 ### ASTER
