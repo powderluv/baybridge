@@ -2272,6 +2272,47 @@ def test_flydsl_exec_adapts_tensor_handles_via_from_dlpack(monkeypatch: pytest.M
     assert str(fake_root.resolve()) in artifact.lowered_module.text
 
 
+def test_flydsl_exec_reuses_from_dlpack_adaptation_for_repeated_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_root = tmp_path / "fake_flydsl"
+    _install_fake_flydsl(fake_root, built=True)
+    monkeypatch.setenv("BAYBRIDGE_FLYDSL_ROOT", str(fake_root))
+
+    src_obj = FakeDLPackTensor([1.0, 2.0, 3.0, 4.0])
+    other_obj = FakeDLPackTensor([10.0, 20.0, 30.0, 40.0])
+    dst_obj = FakeDLPackTensor([0.0, 0.0, 0.0, 0.0])
+
+    src = bb.from_dlpack(src_obj)
+    other = bb.from_dlpack(other_obj)
+    dst = bb.from_dlpack(dst_obj)
+
+    artifact = bb.compile(
+        flydsl_exec_add_kernel,
+        src,
+        other,
+        dst,
+        cache_dir=tmp_path / "cache",
+        backend="flydsl_exec",
+    )
+
+    import sys
+
+    compiler_module = sys.modules.get("flydsl.compiler")
+    assert compiler_module is not None
+    before = len(compiler_module.from_dlpack_calls)
+
+    artifact(src, other, dst)
+    after_first = len(compiler_module.from_dlpack_calls)
+    artifact(src, other, dst)
+    after_second = len(compiler_module.from_dlpack_calls)
+
+    assert after_first - before == 3
+    assert after_second == after_first
+    assert dst_obj.tolist() == [11.0, 22.0, 33.0, 44.0]
+
+
 def test_flydsl_exec_adapts_runtime_tensors_via_torch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_root = tmp_path / "fake_flydsl"
     fake_torch_root = tmp_path / "fake_torch"
