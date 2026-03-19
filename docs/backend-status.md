@@ -32,7 +32,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `tests/test_backend_hipkittens_ref.py` | `hipkittens_ref` family matching and lowering | `13` |
 | `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
 | `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
-| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `69` |
+| `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `116` |
 | `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
 | `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
 | `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
@@ -52,7 +52,7 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `hipkittens_ref` | ref | reference/source backend for HipKittens families | local, `gfx950`, `gfx942` | GEMM, attention-family, norm-family matching | Not executable |
 | `hipkittens_exec` | exec | narrow AMD-native GEMM backend | `gfx950`, `gfx942` | BF16/F16 GEMM on supported tile families, including validated BF16 transpose families | Opt-in or auto-selected only for matching GEMM kernels |
 | `flydsl_ref` | ref | reference FlyDSL lowering | local, `gfx950`, `gfx942` | elementwise, reductions, tiled/layout, MFMA-oriented family matching | Not executable |
-| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; 1D `f32` unary math bundle for `exp/log/cos/erf`; 2D `f32` broadcast add through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` tensor-factory bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking; `atan2` is still outside the validated real subset |
+| `flydsl_exec` | exec | narrow real FlyDSL execution path | validated subset on `gfx950`, `gfx942` | real validated subset: 1D `f32` copy; 1D `f32` pointwise `add/sub/mul/div`; canonical linear indexed 1D `f32` add of the form `block_idx.x * block_dim.x + thread_idx.x`; 1D `f32` unary math bundles for `exp/log/cos/erf`, `exp2/log2/log10/sqrt`, `sin`, and `rsqrt`; 2D `f32` broadcast binary `add/sub/mul/div` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` reduction bundles for `add` and `mul` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` unary math bundle for `exp/log/cos/erf` through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 2D `f32` tensor-factory bundle through the specialized row-slice/copy-atom path when `grid == block == (1, 1, 1)`; 1D `f32` shared-stage copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent` | Requires real FlyDSL env and a GPU-capable `torch` in the active venv for easy DLPack benchmarking; `acos`, `asin`, `atan`, and `atan2` are still outside the validated real subset |
 | `waveasm_ref` | ref | WaveASM-oriented MLIR and repro bundle emission | local | supported GPU-MLIR subset | Emits `.waveasm_repro` bundles |
 | `waveasm_exec` | exec, experimental | WaveASM HSACO build + HIP module launch | experimental on `gfx950`, `gfx942` | narrow single-buffer pointwise/shared-memory/math subset only | Gated by `BAYBRIDGE_EXPERIMENTAL_WAVEASM_EXEC=1`; upstream correctness issue still blocks real support |
 | `aster_ref` | ref | ASTER-oriented MLIR and repro bundle emission | local, `gfx950`, `gfx942` | ASTER reference lowering for supported families | Emits `.aster_repro` bundles |
@@ -65,12 +65,13 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | Dense contiguous `f32` copy | Yes | No | Real validated 1D only | Yes | Experimental only |
 | Dense contiguous `i32` copy | Yes | No | No | Yes | Experimental only |
 | Dense contiguous `f16` copy | Yes | No | No | Yes | Experimental only |
-| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only | Add/sub/mul only | Experimental only |
-| Dense contiguous `f32` unary math bundle | Yes | No | Real validated 1D only for `exp/log/cos/erf`; `atan2` still unvalidated | No | Experimental only |
+| Dense contiguous `f32` binary `add/sub/mul/div` | Yes | No | Real validated 1D only; canonical linear indexed `add` is also validated | Add/sub/mul only | Experimental only |
+| Dense contiguous `f32` unary math bundle | Yes | No | Real validated 1D only for `exp/log/cos/erf`, `exp2/log2/log10/sqrt`, `sin`, and `rsqrt`; `acos/asin/atan/atan2` still unvalidated | No | Experimental only |
 | Dense contiguous `i32` binary `add/sub/mul/div` | Yes | No | No | Add/sub/mul only | No |
 | Scalar broadcasted binary on dense tensors | Yes | No | No | Yes | No |
-| 2D `f32` tensor broadcast add | Yes | No | Real validated when `grid == block == (1, 1, 1)` | Yes | No |
-| 2D `f32` tensor reduction bundle | Yes | No | Real validated when `grid == block == (1, 1, 1)` | No | No |
+| 2D `f32` tensor broadcast binary `add/sub/mul/div` | Yes | No | Real validated when `grid == block == (1, 1, 1)` | Yes for scalar-broadcast forms only | No |
+| 2D `f32` tensor reduction bundle | Yes | No | Real validated for `add` and `mul` when `grid == block == (1, 1, 1)` | No | No |
+| 2D `f32` unary math bundle | Yes | No | Real validated for `exp/log/cos/erf` when `grid == block == (1, 1, 1)` | No | No |
 | 2D `f32` tensor-factory bundle | Yes | No | Real validated when `grid == block == (1, 1, 1)` | No | No |
 | Tensor reductions | Yes | No | Executable in Baybridge-side lowering; real upstream validation is still narrower outside the validated 2D `f32` bundle | No | No |
 | Shared-memory staging | Yes | No | Exact 1D `f32` shared-stage copy is validated when `block.x == extent`; broader real upstream shared-memory validation is still incomplete | No | Experimental only |
@@ -90,6 +91,9 @@ Benchmark notes:
 - the first execution is usually a clear cold-start outlier
 - the tables below report the median of the six warm runs after dropping the first cold-start outlier
 - pointwise benchmark size: `65536` elements
+- FlyDSL specialized 1D microbenchmark size: `4096` elements
+- FlyDSL specialized 2D microbenchmark shape: `64x64`
+- FlyDSL specialized shared-stage microbenchmark size: `256` elements
 - GEMM benchmark shape: `32x16 * 16x32 -> 32x32`
 - ASTER microbenchmark size: `4096` elements
 - ASTER MFMA benchmark shapes:
@@ -105,7 +109,7 @@ Benchmark notes:
 | Dense `f32` copy, `65536` elements | `hipcc_exec` | `29.03` | Runtime benchmark completed cleanly |
 | Dense `f32` copy, `65536` elements | `flydsl_exec` | `907.73` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `33.52` | Used the FlyDSL-compatible indexed kernel form |
-| Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
+| Indexed `f32` add, `65536` elements | `flydsl_exec` | `890.75` | Real upstream FlyDSL canonical linear indexed-add path measured with ROCm torch-backed inputs |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `0.84` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
@@ -117,10 +121,62 @@ Benchmark notes:
 | Dense `f32` copy, `65536` elements | `hipcc_exec` | `46.91` | Runtime benchmark completed cleanly |
 | Dense `f32` copy, `65536` elements | `flydsl_exec` | `1370.14` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `58.01` | Used the FlyDSL-compatible indexed kernel form |
-| Indexed `f32` add, `65536` elements | `flydsl_exec` | n/a | Correctly skipped as `skipped_unvalidated_real_flydsl_exec` |
+| Indexed `f32` add, `65536` elements | `flydsl_exec` | `1377.69` | Real upstream FlyDSL canonical linear indexed-add path measured with ROCm torch-backed inputs |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
+
+## FlyDSL Specialized Microbenchmark Snapshot
+
+These are real checked-in-tool measurements for the current validated specialized `flydsl_exec` subset, using:
+- kernel/sample module: [`tools/backend_benchmark_kernels.py`](/home/nod/github/baybridge/tools/backend_benchmark_kernels.py)
+- runner: [`tools/compare_backends.py`](/home/nod/github/baybridge/tools/compare_backends.py)
+- FlyDSL-specific sample factories:
+  - `flydsl_unary_sin_f32_args`
+  - `flydsl_unary_rsqrt_f32_args`
+  - `flydsl_broadcast_add_2d_args`
+  - `flydsl_reduce_add_2d_args`
+  - `flydsl_unary_math_2d_args`
+
+They are intentionally broken out from the common `65536`-element table above because the real validated specialized FlyDSL paths here are exact 1D `4096`-element or 2D `64x64` families, not Baybridge's broader default pointwise benchmark shape.
+
+### `mi355` (`gfx950`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| Unary `f32` `sin`, `4096` elements | `hipcc_exec` | `3.05` | Same kernel/sample factory as FlyDSL baseline |
+| Unary `f32` `sin`, `4096` elements | `flydsl_exec` | `910.98` | Real upstream FlyDSL specialized unary path |
+| Unary `f32` `rsqrt`, `4096` elements | `hipcc_exec` | `1.78` | Same kernel/sample factory as FlyDSL baseline |
+| Unary `f32` `rsqrt`, `4096` elements | `flydsl_exec` | `899.95` | Real upstream FlyDSL specialized unary path |
+| 2D `f32` broadcast add, `64x64` | `hipcc_exec` | `0.94` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` broadcast add, `64x64` | `flydsl_exec` | `895.86` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,)` | `hipcc_exec` | `1.01` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,)` | `flydsl_exec` | `952.02` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 2D `f32` unary math bundle `exp/log/cos/erf`, `64x64` | `hipcc_exec` | `5.99` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` unary math bundle `exp/log/cos/erf`, `64x64` | `flydsl_exec` | `888.14` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 1D `f32` shared-stage copy, `256` elements | `hipcc_exec` | `0.18` | Same kernel/sample factory as FlyDSL baseline |
+| 1D `f32` shared-stage copy, `256` elements | `flydsl_exec` | `890.66` | Real upstream FlyDSL specialized shared-stage copy path |
+| 2D `f32` tensor-factory bundle, `64x64` | `hipcc_exec` | `2.58` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` tensor-factory bundle, `64x64` | `flydsl_exec` | `893.77` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+
+### `mi300` (`gfx942`)
+
+| Family | Backend | Warm median ms | Notes |
+| --- | --- | ---: | --- |
+| Unary `f32` `sin`, `4096` elements | `hipcc_exec` | `4.29` | Same kernel/sample factory as FlyDSL baseline |
+| Unary `f32` `sin`, `4096` elements | `flydsl_exec` | `1370.69` | Real upstream FlyDSL specialized unary path |
+| Unary `f32` `rsqrt`, `4096` elements | `hipcc_exec` | `2.92` | Same kernel/sample factory as FlyDSL baseline |
+| Unary `f32` `rsqrt`, `4096` elements | `flydsl_exec` | `1385.15` | Real upstream FlyDSL specialized unary path |
+| 2D `f32` broadcast add, `64x64` | `hipcc_exec` | `1.47` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` broadcast add, `64x64` | `flydsl_exec` | `1374.75` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,)` | `hipcc_exec` | `1.55` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,)` | `flydsl_exec` | `1375.22` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 2D `f32` unary math bundle `exp/log/cos/erf`, `64x64` | `hipcc_exec` | `8.91` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` unary math bundle `exp/log/cos/erf`, `64x64` | `flydsl_exec` | `1374.18` | Real upstream FlyDSL specialized row-slice/copy-atom path |
+| 1D `f32` shared-stage copy, `256` elements | `hipcc_exec` | `0.26` | Same kernel/sample factory as FlyDSL baseline |
+| 1D `f32` shared-stage copy, `256` elements | `flydsl_exec` | `1374.15` | Real upstream FlyDSL specialized shared-stage copy path |
+| 2D `f32` tensor-factory bundle, `64x64` | `hipcc_exec` | `4.22` | Same kernel/sample factory as FlyDSL baseline |
+| 2D `f32` tensor-factory bundle, `64x64` | `flydsl_exec` | `1366.74` | Real upstream FlyDSL specialized row-slice/copy-atom path |
 
 ## ASTER Microbenchmark Snapshot
 
@@ -281,11 +337,13 @@ Current benchmark shells on both `mi355` and `mi300` now have:
 - `torch 2.10.0+rocm7.1`
 - `torch.cuda.is_available() == True`
 
-That is enough for the benchmark harness to measure the validated real `flydsl_exec` copy path.
+That is enough for the benchmark harness to measure the validated real `flydsl_exec` copy path and the current checked-in specialized FlyDSL microbench families.
 
 The remaining boundary is semantic, not environmental:
 - dense `f32` copy is benchmarkable
-- the indexed add benchmark is still correctly skipped because Baybridge keeps that real upstream path behind the unvalidated-exec gate
+- specialized 1D unary, shared-stage, and 2D broadcast/reduction/unary/tensor-factory families are benchmarkable through the checked-in exact kernels above
+- the canonical linear indexed-add benchmark is now benchmarkable through the validated real path
+- broader indexed families are still narrower than the general `hipcc_exec` path
 
 ### ASTER
 

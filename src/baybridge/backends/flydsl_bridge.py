@@ -474,11 +474,16 @@ class FlyDslBridge:
     def has_validated_real_exec(self, ir: PortableKernelIR) -> bool:
         return (
             self._match_real_exec_pointwise_binary_1d(ir) is not None
+            or self._match_real_exec_indexed_add_1d(ir) is not None
             or self._match_real_exec_copy_1d(ir) is not None
-            or self._match_real_exec_broadcast_add_2d(ir) is not None
+            or self._match_real_exec_broadcast_binary_2d(ir) is not None
             or self._match_real_exec_reduce_bundle_2d(ir) is not None
             or self._match_real_exec_tensor_factory_2d(ir) is not None
+            or self._match_real_exec_math_bundle_2d(ir) is not None
             or self._match_real_exec_math_bundle_1d(ir) is not None
+            or self._match_real_exec_math_bundle2_1d(ir) is not None
+            or self._match_real_exec_math_bundle3_1d(ir) is not None
+            or self._match_real_exec_rsqrt_1d(ir) is not None
             or self._match_real_exec_shared_stage_1d(ir) is not None
         )
 
@@ -486,21 +491,36 @@ class FlyDslBridge:
         matched = self._match_real_exec_pointwise_binary_1d(ir)
         if matched is not None:
             return self._render_real_exec_pointwise_binary_1d(ir, *matched)
+        matched_indexed_add = self._match_real_exec_indexed_add_1d(ir)
+        if matched_indexed_add is not None:
+            return self._render_real_exec_pointwise_binary_1d(ir, *matched_indexed_add)
         matched_copy = self._match_real_exec_copy_1d(ir)
         if matched_copy is not None:
             return self._render_real_exec_copy_1d(ir, *matched_copy)
-        matched_broadcast = self._match_real_exec_broadcast_add_2d(ir)
+        matched_broadcast = self._match_real_exec_broadcast_binary_2d(ir)
         if matched_broadcast is not None:
-            return self._render_real_exec_broadcast_add_2d(ir, *matched_broadcast)
+            return self._render_real_exec_broadcast_binary_2d(ir, *matched_broadcast)
         matched_reduce = self._match_real_exec_reduce_bundle_2d(ir)
         if matched_reduce is not None:
             return self._render_real_exec_reduce_bundle_2d(ir, *matched_reduce)
         matched_tensor_factory = self._match_real_exec_tensor_factory_2d(ir)
         if matched_tensor_factory is not None:
             return self._render_real_exec_tensor_factory_2d(ir, *matched_tensor_factory)
+        matched_math_bundle_2d = self._match_real_exec_math_bundle_2d(ir)
+        if matched_math_bundle_2d is not None:
+            return self._render_real_exec_math_bundle_2d(ir, *matched_math_bundle_2d)
         matched_math_bundle = self._match_real_exec_math_bundle_1d(ir)
         if matched_math_bundle is not None:
             return self._render_real_exec_math_bundle_1d(ir, *matched_math_bundle)
+        matched_math_bundle2 = self._match_real_exec_math_bundle2_1d(ir)
+        if matched_math_bundle2 is not None:
+            return self._render_real_exec_math_bundle2_1d(ir, *matched_math_bundle2)
+        matched_math_bundle3 = self._match_real_exec_math_bundle3_1d(ir)
+        if matched_math_bundle3 is not None:
+            return self._render_real_exec_math_bundle3_1d(ir, *matched_math_bundle3)
+        matched_rsqrt = self._match_real_exec_rsqrt_1d(ir)
+        if matched_rsqrt is not None:
+            return self._render_real_exec_rsqrt_1d(ir, *matched_rsqrt)
         matched_shared_stage = self._match_real_exec_shared_stage_1d(ir)
         if matched_shared_stage is not None:
             return self._render_real_exec_copy_1d(ir, *matched_shared_stage)
@@ -543,6 +563,63 @@ class FlyDslBridge:
         if tuple(store_op.inputs) != (add_op.outputs[0], dst_arg.name, thread_index_name):
             return None
         return src_arg.name, other_arg.name, dst_arg.name, thread_index_name, add_op.op
+
+    def _match_real_exec_indexed_add_1d(self, ir: PortableKernelIR) -> tuple[str, str, str, str, str] | None:
+        if len(ir.arguments) != 3:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        src_arg, other_arg, dst_arg = ir.arguments
+        for argument in (src_arg, other_arg, dst_arg):
+            spec = argument.spec
+            if len(spec.shape) != 1:
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 15:
+            return None
+        if [op.op for op in ops[:3]] != ["thread_idx", "thread_idx", "thread_idx"]:
+            return None
+        if [op.op for op in ops[3:6]] != ["block_idx", "block_idx", "block_idx"]:
+            return None
+        if [op.op for op in ops[6:9]] != ["block_dim", "block_dim", "block_dim"]:
+            return None
+        for op, axis in zip(ops[:3], ("x", "y", "z"), strict=True):
+            if op.attrs.get("axis") != axis or len(op.outputs) != 1:
+                return None
+        for op, axis in zip(ops[3:6], ("x", "y", "z"), strict=True):
+            if op.attrs.get("axis") != axis or len(op.outputs) != 1:
+                return None
+        for op, axis in zip(ops[6:9], ("x", "y", "z"), strict=True):
+            if op.attrs.get("axis") != axis or len(op.outputs) != 1:
+                return None
+        thread_x = ops[0].outputs[0]
+        block_x = ops[3].outputs[0]
+        block_dim_x = ops[6].outputs[0]
+        mul_op, add_index_op, load_a, load_b, add_op, store_op = ops[9:]
+        if mul_op.op != "mul" or add_index_op.op != "add":
+            return None
+        if load_a.op != "load" or load_b.op != "load" or store_op.op != "store":
+            return None
+        if add_op.op != "add":
+            return None
+        if tuple(mul_op.inputs) != (block_x, block_dim_x):
+            return None
+        if tuple(add_index_op.inputs) != (mul_op.outputs[0], thread_x):
+            return None
+        linear_index_name = add_index_op.outputs[0]
+        if tuple(load_a.inputs) != (src_arg.name, linear_index_name):
+            return None
+        if tuple(load_b.inputs) != (other_arg.name, linear_index_name):
+            return None
+        if tuple(add_op.inputs) != (load_a.outputs[0], load_b.outputs[0]):
+            return None
+        if tuple(store_op.inputs) != (add_op.outputs[0], dst_arg.name, linear_index_name):
+            return None
+        return src_arg.name, other_arg.name, dst_arg.name, linear_index_name, add_op.op
 
     def _render_real_exec_pointwise_binary_1d(
         self,
@@ -630,7 +707,7 @@ class FlyDslBridge:
         ]
         return "\n".join(f"    {line}" for line in body_lines), prologue
 
-    def _match_real_exec_broadcast_add_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
+    def _match_real_exec_broadcast_binary_2d(self, ir: PortableKernelIR) -> tuple[str, str, str, str] | None:
         if len(ir.arguments) != 3:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
@@ -657,16 +734,19 @@ class FlyDslBridge:
         ops = ir.operations
         if len(ops) != 8:
             return None
-        if [op.op for op in ops] != [
+        op_names = [op.op for op in ops]
+        if op_names[:6] != [
             "make_tensor",
             "copy",
             "make_tensor",
             "copy",
             "broadcast_to",
             "broadcast_to",
-            "tensor_add",
-            "copy",
         ]:
+            return None
+        if op_names[6] not in {"tensor_add", "tensor_sub", "tensor_mul", "tensor_div"}:
+            return None
+        if op_names[7] != "copy":
             return None
         lhs_tensor = ops[0].outputs[0]
         rhs_tensor = ops[2].outputs[0]
@@ -694,20 +774,27 @@ class FlyDslBridge:
             return None
         if not isinstance(add_result, dict) or tuple(add_result.get("shape", ())) != dst_shape:
             return None
-        return lhs_arg.name, rhs_arg.name, dst_arg.name
+        return lhs_arg.name, rhs_arg.name, dst_arg.name, ops[6].op
 
-    def _render_real_exec_broadcast_add_2d(
+    def _render_real_exec_broadcast_binary_2d(
         self,
         ir: PortableKernelIR,
         lhs_name: str,
         rhs_name: str,
         dst_name: str,
+        binary_op_name: str,
     ) -> tuple[str, list[str]]:
         lhs_spec = ir.arguments[0].spec
         rhs_spec = ir.arguments[1].spec
         dst_spec = ir.arguments[2].spec
         if not isinstance(lhs_spec, TensorSpec) or not isinstance(rhs_spec, TensorSpec) or not isinstance(dst_spec, TensorSpec):
             raise ValueError("validated real FlyDSL broadcast-add lowering requires tensor specs")
+        arith_expr = {
+            "tensor_add": "fx.arith.addf",
+            "tensor_sub": "fx.arith.subf",
+            "tensor_mul": "fx.arith.mulf",
+            "tensor_div": "fx.arith.divf",
+        }[binary_op_name]
         dst_rows, dst_cols = dst_spec.shape
         lhs_row_expr = "fx.Int32(0)" if lhs_spec.shape[0] == 1 else "row_idx"
         rhs_row_expr = "fx.Int32(0)" if rhs_spec.shape[0] == 1 else "row_idx"
@@ -733,7 +820,7 @@ class FlyDslBridge:
             "        col_idx = fx.Int32(col_i)",
             f"        fx.copy_atom_call(copyAtom, fx.slice(t_{lhs_name}, (None, {lhs_col_expr})), r_{lhs_name})",
             f"        fx.copy_atom_call(copyAtom, fx.slice(t_{rhs_name}, (None, {rhs_col_expr})), r_{rhs_name})",
-            f"        val_{dst_name} = fx.arith.addf(fx.memref_load_vec(r_{lhs_name}), fx.memref_load_vec(r_{rhs_name}))",
+            f"        val_{dst_name} = {arith_expr}(fx.memref_load_vec(r_{lhs_name}), fx.memref_load_vec(r_{rhs_name}))",
             f"        fx.memref_store_vec(val_{dst_name}, r_{dst_name})",
             f"        fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, col_idx)))",
         ]
@@ -904,7 +991,71 @@ class FlyDslBridge:
         return "\n".join(f"    {line}" for line in body_lines), prologue
 
     def _match_real_exec_math_bundle_1d(self, ir: PortableKernelIR) -> tuple[str] | None:
-        if len(ir.arguments) != 5:
+        return self._match_real_exec_unary_math_bundle_1d(
+            ir,
+            expected_math_ops=("math_exp", "math_log", "math_cos", "math_erf"),
+        )
+
+    def _match_real_exec_math_bundle_2d(self, ir: PortableKernelIR) -> tuple[str] | None:
+        return self._match_real_exec_unary_math_bundle_2d(
+            ir,
+            expected_math_ops=("math_exp", "math_log", "math_cos", "math_erf"),
+        )
+
+    def _match_real_exec_math_bundle2_1d(self, ir: PortableKernelIR) -> tuple[str] | None:
+        return self._match_real_exec_unary_math_bundle_1d(
+            ir,
+            expected_math_ops=("math_exp2", "math_log2", "math_log10", "math_sqrt"),
+        )
+
+    def _match_real_exec_math_bundle3_1d(self, ir: PortableKernelIR) -> tuple[str] | None:
+        return self._match_real_exec_unary_math_bundle_1d(
+            ir,
+            expected_math_ops=("math_sin",),
+        )
+
+    def _match_real_exec_rsqrt_1d(self, ir: PortableKernelIR) -> tuple[str, str] | None:
+        if len(ir.arguments) != 2:
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        if tuple(ir.launch.grid) != (1, 1, 1):
+            return None
+        if tuple(ir.launch.block) != (1, 1, 1):
+            return None
+        src_arg, dst_arg = ir.arguments
+        shape = tuple(src_arg.spec.shape)
+        if len(shape) != 1 or shape[0] <= 0:
+            return None
+        for argument in (src_arg, dst_arg):
+            spec = argument.spec
+            if tuple(spec.shape) != shape:
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 4:
+            return None
+        if [op.op for op in ops] != ["make_tensor", "copy", "math_rsqrt", "copy"]:
+            return None
+        src_tensor = ops[0].outputs[0]
+        if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
+            return None
+        if tuple(ops[2].inputs) != (src_tensor,):
+            return None
+        if tuple(ops[3].inputs) != (ops[2].outputs[0], dst_arg.name):
+            return None
+        return (src_arg.name, dst_arg.name)
+
+    def _match_real_exec_unary_math_bundle_1d(
+        self,
+        ir: PortableKernelIR,
+        *,
+        expected_math_ops: tuple[str, ...],
+    ) -> tuple[str] | None:
+        if len(ir.arguments) != 1 + len(expected_math_ops):
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
             return None
@@ -927,7 +1078,7 @@ class FlyDslBridge:
             if spec.address_space.value != "global":
                 return None
         ops = ir.operations
-        if len(ops) != 10:
+        if len(ops) != 2 + 2 * len(expected_math_ops):
             return None
         if [op.op for op in ops[:2]] != ["make_tensor", "copy"]:
             return None
@@ -935,10 +1086,62 @@ class FlyDslBridge:
         if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
             return None
         expected_math = [
-            ("math_exp", (src_tensor,), dst_args[0].name),
-            ("math_log", (src_tensor,), dst_args[1].name),
-            ("math_cos", (src_tensor,), dst_args[2].name),
-            ("math_erf", (src_tensor,), dst_args[3].name),
+            (math_op_name, (src_tensor,), dst_arg.name)
+            for math_op_name, dst_arg in zip(expected_math_ops, dst_args, strict=True)
+        ]
+        for (math_op_name, expected_inputs, dst_name), math_op, copy_op in zip(
+            expected_math,
+            ops[2::2],
+            ops[3::2],
+            strict=True,
+        ):
+            if math_op.op != math_op_name:
+                return None
+            if tuple(math_op.inputs) != expected_inputs:
+                return None
+            if tuple(copy_op.inputs) != (math_op.outputs[0], dst_name):
+                return None
+        return (src_arg.name,)
+
+    def _match_real_exec_unary_math_bundle_2d(
+        self,
+        ir: PortableKernelIR,
+        *,
+        expected_math_ops: tuple[str, ...],
+    ) -> tuple[str] | None:
+        if len(ir.arguments) != 1 + len(expected_math_ops):
+            return None
+        if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
+            return None
+        if tuple(ir.launch.grid) != (1, 1, 1):
+            return None
+        if tuple(ir.launch.block) != (1, 1, 1):
+            return None
+        src_arg, *dst_args = ir.arguments
+        shape = tuple(src_arg.spec.shape)
+        if len(shape) != 2:
+            return None
+        if shape[0] <= 0 or shape[1] <= 0:
+            return None
+        for argument in (src_arg, *dst_args):
+            spec = argument.spec
+            if tuple(spec.shape) != shape:
+                return None
+            if spec.dtype != "f32":
+                return None
+            if spec.address_space.value != "global":
+                return None
+        ops = ir.operations
+        if len(ops) != 2 + 2 * len(expected_math_ops):
+            return None
+        if [op.op for op in ops[:2]] != ["make_tensor", "copy"]:
+            return None
+        src_tensor = ops[0].outputs[0]
+        if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
+            return None
+        expected_math = [
+            (math_op_name, (src_tensor,), dst_arg.name)
+            for math_op_name, dst_arg in zip(expected_math_ops, dst_args, strict=True)
         ]
         for (math_op_name, expected_inputs, dst_name), math_op, copy_op in zip(
             expected_math,
@@ -959,46 +1162,157 @@ class FlyDslBridge:
         ir: PortableKernelIR,
         src_name: str,
     ) -> tuple[str, list[str]]:
+        dst_names = tuple(argument.name for argument in ir.arguments[1:])
+        return self._render_real_exec_unary_math_bundle_1d(
+            ir,
+            src_name,
+            math_op_names=("exp", "log", "cos", "erf"),
+            dst_names=dst_names,
+        )
+
+    def _render_real_exec_math_bundle_2d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+    ) -> tuple[str, list[str]]:
         src_spec = ir.arguments[0].spec
         if not isinstance(src_spec, TensorSpec):
-            raise ValueError("validated real FlyDSL math lowering requires tensor specs")
-        extent = src_spec.shape[0]
-        dst_exp_name = ir.arguments[1].name
-        dst_log_name = ir.arguments[2].name
-        dst_cos_name = ir.arguments[3].name
-        dst_erf_name = ir.arguments[4].name
+            raise ValueError("validated real FlyDSL 2D math lowering requires tensor specs")
+        rows, cols = src_spec.shape
+        dst_names = tuple(argument.name for argument in ir.arguments[1:])
         prologue = [
             "from flydsl._mlir.dialects import math as mlir_math",
-            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout(1, 1))",
-            f"t_{dst_exp_name} = fx.logical_divide({dst_exp_name}, fx.make_layout(1, 1))",
-            f"t_{dst_log_name} = fx.logical_divide({dst_log_name}, fx.make_layout(1, 1))",
-            f"t_{dst_cos_name} = fx.logical_divide({dst_cos_name}, fx.make_layout(1, 1))",
-            f"t_{dst_erf_name} = fx.logical_divide({dst_erf_name}, fx.make_layout(1, 1))",
             "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
             "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
             f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
-            f"r_{dst_exp_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
-            f"r_{dst_log_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
-            f"r_{dst_cos_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
-            f"r_{dst_erf_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+        ]
+        for dst_name in dst_names:
+            prologue.append(f"r_{dst_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))")
+        body_lines = [
+            f"for row_i in range({rows}):",
+            "    row_idx = fx.Int32(row_i)",
+            f"    row_{src_name} = fx.slice({src_name}, (row_idx, None))",
+            f"    t_{src_name} = fx.logical_divide(row_{src_name}, fx.make_layout(1, 1))",
+        ]
+        for dst_name in dst_names:
+            body_lines.append(f"    row_{dst_name} = fx.slice({dst_name}, (row_idx, None))")
+            body_lines.append(f"    t_{dst_name} = fx.logical_divide(row_{dst_name}, fx.make_layout(1, 1))")
+        body_lines.extend(
+            [
+                f"    for col_i in range({cols}):",
+                "        col_idx = fx.Int32(col_i)",
+                f"        fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, col_idx)), r_{src_name})",
+                f"        v_{src_name} = fx.memref_load_vec(r_{src_name})",
+            ]
+        )
+        for math_op_name, dst_name in zip(("exp", "log", "cos", "erf"), dst_names, strict=True):
+            body_lines.append(
+                f"        fx.memref_store_vec(mlir_math.{math_op_name}(v_{src_name}), r_{dst_name})"
+            )
+        for dst_name in dst_names:
+            body_lines.append(
+                f"        fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, col_idx)))"
+            )
+        return "\n".join(f"    {line}" for line in body_lines), prologue
+
+    def _render_real_exec_math_bundle2_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+    ) -> tuple[str, list[str]]:
+        dst_names = tuple(argument.name for argument in ir.arguments[1:])
+        return self._render_real_exec_unary_math_bundle_1d(
+            ir,
+            src_name,
+            math_op_names=("exp2", "log2", "log10", "sqrt"),
+            dst_names=dst_names,
+        )
+
+    def _render_real_exec_math_bundle3_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+    ) -> tuple[str, list[str]]:
+        dst_names = tuple(argument.name for argument in ir.arguments[1:])
+        return self._render_real_exec_unary_math_bundle_1d(
+            ir,
+            src_name,
+            math_op_names=("sin",),
+            dst_names=dst_names,
+        )
+
+    def _render_real_exec_rsqrt_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+        dst_name: str,
+    ) -> tuple[str, list[str]]:
+        src_spec = ir.arguments[0].spec
+        if not isinstance(src_spec, TensorSpec):
+            raise ValueError("validated real FlyDSL rsqrt lowering requires tensor specs")
+        extent = src_spec.shape[0]
+        prologue = [
+            "from flydsl._mlir.dialects import math as mlir_math",
+            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout(1, 1))",
+            f"t_{dst_name} = fx.logical_divide({dst_name}, fx.make_layout(1, 1))",
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            "vec1f32 = fx.T.vector(1, element_type=fx.T.f32())",
+            "c_one = fx.arith.constant(1.0, type=fx.T.f32())",
+            "v_one = fx.vector.from_elements(vec1f32, [c_one])",
+            f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+            f"r_{dst_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
         ]
         body_lines = [
             f"for math_i0 in range({extent}):",
             "    math_idx = fx.Int32(math_i0)",
             f"    fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, math_idx)), r_{src_name})",
             f"    v_{src_name} = fx.memref_load_vec(r_{src_name})",
-            f"    fx.memref_store_vec(mlir_math.exp(v_{src_name}), r_{dst_exp_name})",
-            f"    fx.memref_store_vec(mlir_math.log(v_{src_name}), r_{dst_log_name})",
-            f"    fx.memref_store_vec(mlir_math.cos(v_{src_name}), r_{dst_cos_name})",
-            f"    fx.memref_store_vec(mlir_math.erf(v_{src_name}), r_{dst_erf_name})",
-            f"    fx.copy_atom_call(copyAtom, r_{dst_exp_name}, fx.slice(t_{dst_exp_name}, (None, math_idx)))",
-            f"    fx.copy_atom_call(copyAtom, r_{dst_log_name}, fx.slice(t_{dst_log_name}, (None, math_idx)))",
-            f"    fx.copy_atom_call(copyAtom, r_{dst_cos_name}, fx.slice(t_{dst_cos_name}, (None, math_idx)))",
-            f"    fx.copy_atom_call(copyAtom, r_{dst_erf_name}, fx.slice(t_{dst_erf_name}, (None, math_idx)))",
+            f"    fx.memref_store_vec(fx.arith.divf(v_one, mlir_math.sqrt(v_{src_name})), r_{dst_name})",
+            f"    fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, math_idx)))",
         ]
         return "\n".join(f"    {line}" for line in body_lines), prologue
 
-    def _match_real_exec_reduce_bundle_2d(self, ir: PortableKernelIR) -> tuple[str, str, str] | None:
+    def _render_real_exec_unary_math_bundle_1d(
+        self,
+        ir: PortableKernelIR,
+        src_name: str,
+        *,
+        math_op_names: tuple[str, ...],
+        dst_names: tuple[str, ...],
+    ) -> tuple[str, list[str]]:
+        src_spec = ir.arguments[0].spec
+        if not isinstance(src_spec, TensorSpec):
+            raise ValueError("validated real FlyDSL math lowering requires tensor specs")
+        extent = src_spec.shape[0]
+        prologue = [
+            "from flydsl._mlir.dialects import math as mlir_math",
+            f"t_{src_name} = fx.logical_divide({src_name}, fx.make_layout(1, 1))",
+            "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
+            "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
+            f"r_{src_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))",
+        ]
+        for dst_name in dst_names:
+            prologue.append(f"t_{dst_name} = fx.logical_divide({dst_name}, fx.make_layout(1, 1))")
+        for dst_name in dst_names:
+            prologue.append(f"r_{dst_name} = fx.memref_alloca(RMemRefTy, fx.make_layout(1, 1))")
+        body_lines = [
+            f"for math_i0 in range({extent}):",
+            "    math_idx = fx.Int32(math_i0)",
+            f"    fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, math_idx)), r_{src_name})",
+            f"    v_{src_name} = fx.memref_load_vec(r_{src_name})",
+        ]
+        for math_op_name, dst_name in zip(math_op_names, dst_names, strict=True):
+            body_lines.append(
+                f"    fx.memref_store_vec(mlir_math.{math_op_name}(v_{src_name}), r_{dst_name})"
+            )
+        for dst_name in dst_names:
+            body_lines.append(
+                f"    fx.copy_atom_call(copyAtom, r_{dst_name}, fx.slice(t_{dst_name}, (None, math_idx)))"
+            )
+        return "\n".join(f"    {line}" for line in body_lines), prologue
+
+    def _match_real_exec_reduce_bundle_2d(self, ir: PortableKernelIR) -> tuple[str, str, str, str] | None:
         if len(ir.arguments) != 3:
             return None
         if not all(isinstance(argument.spec, TensorSpec) for argument in ir.arguments):
@@ -1025,18 +1339,29 @@ class FlyDslBridge:
         ops = ir.operations
         if len(ops) != 9:
             return None
-        if [op.op for op in ops] != [
+        op_names = [op.op for op in ops]
+        if op_names[:3] != [
             "make_tensor",
             "copy",
             "constant",
-            "reduce_add",
-            "constant",
-            "store",
-            "constant",
-            "reduce_add",
-            "copy",
         ]:
             return None
+        if op_names[3] not in {"reduce_add", "reduce_mul"}:
+            return None
+        if op_names[4] != "constant" or op_names[5] != "store" or op_names[6] != "constant":
+            return None
+        if op_names[7] != op_names[3]:
+            return None
+        if op_names[8] != "copy":
+            return None
+        if op_names[3] == "reduce_add":
+            expected_init = 0.0
+            expected_profile = 0
+            expected_row_profile = [None, 1]
+        else:
+            expected_init = 1.0
+            expected_profile = 0
+            expected_row_profile = [None, 1]
         src_tensor = ops[0].outputs[0]
         if tuple(ops[1].inputs) != (src_arg.name, src_tensor):
             return None
@@ -1048,11 +1373,15 @@ class FlyDslBridge:
             return None
         if tuple(ops[8].inputs) != (ops[7].outputs[0], dst_rows_arg.name):
             return None
-        if ops[3].attrs.get("reduction_profile") != 0:
+        if ops[3].attrs.get("reduction_profile") != expected_profile:
             return None
-        if ops[7].attrs.get("reduction_profile") != [None, 1]:
+        if ops[7].attrs.get("reduction_profile") != expected_row_profile:
             return None
-        return src_arg.name, dst_scalar_arg.name, dst_rows_arg.name
+        if ops[2].attrs.get("value") != expected_init:
+            return None
+        if ops[6].attrs.get("value") != expected_init:
+            return None
+        return src_arg.name, dst_scalar_arg.name, dst_rows_arg.name, op_names[3]
 
     def _render_real_exec_reduce_bundle_2d(
         self,
@@ -1060,11 +1389,16 @@ class FlyDslBridge:
         src_name: str,
         dst_scalar_name: str,
         dst_rows_name: str,
+        reduce_op_name: str,
     ) -> tuple[str, list[str]]:
         src_spec = ir.arguments[0].spec
         if not isinstance(src_spec, TensorSpec):
             raise ValueError("validated real FlyDSL reduction lowering requires tensor specs")
         rows, cols = src_spec.shape
+        arith_expr = {
+            "reduce_add": "fx.arith.addf",
+            "reduce_mul": "fx.arith.mulf",
+        }[reduce_op_name]
         prologue = [
             "RMemRefTy = fx.MemRefType.get(fx.T.f32(), fx.LayoutType.get(1, 1), fx.AddressSpace.Register)",
             "copyAtom = fx.make_copy_atom(fx.UniversalCopy32b(), fx.Float32)",
@@ -1083,13 +1417,13 @@ class FlyDslBridge:
             f"    for col_i in range(1, {cols}):",
             "        col_idx = fx.Int32(col_i)",
             f"        fx.copy_atom_call(copyAtom, fx.slice(t_{src_name}, (None, col_idx)), r_{src_name})",
-            f"        fx.memref_store_vec(fx.arith.addf(fx.memref_load_vec(r_{dst_rows_name}), fx.memref_load_vec(r_{src_name})), r_{dst_rows_name})",
+            f"        fx.memref_store_vec({arith_expr}(fx.memref_load_vec(r_{dst_rows_name}), fx.memref_load_vec(r_{src_name})), r_{dst_rows_name})",
             f"    fx.copy_atom_call(copyAtom, r_{dst_rows_name}, fx.slice(t_{dst_rows_name}, (None, row_idx)))",
             f"fx.copy_atom_call(copyAtom, fx.slice(t_{dst_rows_name}, (None, fx.Int32(0))), r_{dst_scalar_name})",
             f"for row_i in range(1, {rows}):",
             "    row_idx = fx.Int32(row_i)",
             f"    fx.copy_atom_call(copyAtom, fx.slice(t_{dst_rows_name}, (None, row_idx)), r_{src_name})",
-            f"    fx.memref_store_vec(fx.arith.addf(fx.memref_load_vec(r_{dst_scalar_name}), fx.memref_load_vec(r_{src_name})), r_{dst_scalar_name})",
+            f"    fx.memref_store_vec({arith_expr}(fx.memref_load_vec(r_{dst_scalar_name}), fx.memref_load_vec(r_{src_name})), r_{dst_scalar_name})",
             f"fx.copy_atom_call(copyAtom, r_{dst_scalar_name}, fx.slice(t_{dst_scalar_name}, (None, fx.Int32(0))))",
         ]
         return "\n".join(f"    {line}" for line in body_lines), prologue

@@ -255,15 +255,26 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - real upstream FlyDSL execution is currently validated for a narrow subset:
     - 1D `f32` pointwise binary ops through the copy-atom/register path
       - hardware-validated today: add, sub, mul, div
+      - canonical linear indexed add of the form `block_idx.x * block_dim.x + thread_idx.x` is also hardware-validated today
     - 1D `f32` copy
     - 1D `f32` unary math bundle through the copy-atom/register path
-      - hardware-validated today: exp, log, cos, erf
-    - 2D `f32` broadcast add through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
+      - hardware-validated today:
+        - exp, log, cos, erf
+        - exp2, log2, log10, sqrt
+        - sin
+        - rsqrt
+    - 2D `f32` broadcast binary through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
+      - hardware-validated today: add, sub, mul, div
     - 2D `f32` reduction bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
-      - hardware-validated today: full reduction to `(1,)` plus row reduction to `(M,)`
+      - hardware-validated today:
+        - add: full reduction to `(1,)` plus row reduction to `(M,)`
+        - mul: full reduction to `(1,)` plus row reduction to `(M,)`
+    - 2D `f32` unary math bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
+      - hardware-validated today:
+        - exp, log, cos, erf
     - 2D `f32` tensor-factory bundle through the row-slice/copy-atom path when `grid == block == (1, 1, 1)`
     - 1D `f32` shared-memory staging copy when the traced kernel is exactly a shared-memory round-trip and `block.x == extent`
-    - `atan2` remains outside the validated real subset because the current upstream FlyDSL pipeline does not lower `fatan2` cleanly on the active AMD environments
+    - `acos`, `asin`, `atan`, and `atan2` remain outside the validated real subset because the current upstream FlyDSL pipeline does not lower the corresponding scalar libcalls cleanly on the active AMD environments
   - broader real upstream FlyDSL execution is still gated behind:
     - `BAYBRIDGE_EXPERIMENTAL_REAL_FLYDSL_EXEC=1`
   - reason:

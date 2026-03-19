@@ -11,6 +11,10 @@ POINTWISE_N = 65536
 ASTER_POINTWISE_N = 4096
 FLYDSL_BLOCK = 256
 FLYDSL_GRID = POINTWISE_N // FLYDSL_BLOCK
+FLYDSL_MICRO_N = 4096
+FLYDSL_MICRO_ROWS = 64
+FLYDSL_MICRO_COLS = 64
+FLYDSL_SHARED_N = 256
 
 
 @bb.kernel
@@ -40,6 +44,66 @@ def indexed_add_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     bdim, _, _ = bb.arch.block_dim()
     idx = bidx * bdim + tidx
     dst[idx] = src[idx] + other[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_unary_sin_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    values = src.load()
+    dst.store(bb.math.sin(values))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_unary_rsqrt_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    values = src.load()
+    dst.store(bb.math.rsqrt(values))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_broadcast_add_2d_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    dst.store(lhs.load() + rhs.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_reduce_add_2d_kernel(src: bb.Tensor, dst_scalar: bb.Tensor, dst_rows: bb.Tensor):
+    loaded = src.load()
+    dst_scalar[0] = loaded.reduce(bb.ReductionOp.ADD, 0.0, reduction_profile=0)
+    dst_rows.store(loaded.reduce(bb.ReductionOp.ADD, 0.0, reduction_profile=(None, 1)))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_unary_math_2d_kernel(
+    src: bb.Tensor,
+    dst_exp: bb.Tensor,
+    dst_log: bb.Tensor,
+    dst_cos: bb.Tensor,
+    dst_erf: bb.Tensor,
+):
+    values = src.load()
+    dst_exp.store(bb.math.exp(values))
+    dst_log.store(bb.math.log(values))
+    dst_cos.store(bb.math.cos(values))
+    dst_erf.store(bb.math.erf(values))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(FLYDSL_SHARED_N, 1, 1)))
+def flydsl_shared_stage_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    smem = bb.make_tensor(
+        "smem",
+        shape=(FLYDSL_SHARED_N,),
+        dtype="f32",
+        address_space=bb.AddressSpace.SHARED,
+    )
+    smem[tidx] = src[tidx]
+    bb.barrier()
+    dst[tidx] = smem[tidx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def flydsl_tensor_factory_2d_kernel(dst_zero: bb.Tensor, dst_one: bb.Tensor, dst_full: bb.Tensor):
+    dst_zero.store(bb.zeros_like(dst_zero))
+    dst_one.store(bb.ones_like(dst_one))
+    dst_full.store(bb.full_like(dst_full, 7.0))
 
 
 @bb.kernel
@@ -88,6 +152,13 @@ def _vector_f32(n: int, *, scale: float = 1.0, offset: float = 0.0) -> list[floa
 
 def _vector_i32(n: int, *, scale: int = 1, offset: int = 0) -> list[int]:
     return [scale * int(index % 251) + offset for index in range(n)]
+
+
+def _matrix_f32(rows: int, cols: int, *, scale: float = 1.0, offset: float = 0.0) -> list[list[float]]:
+    return [
+        [scale * float((row * cols + col) % 251) + offset for col in range(cols)]
+        for row in range(rows)
+    ]
 
 
 def _maybe_torch_tensor(values, *, shape, dtype: str, backend_name: str):
@@ -228,6 +299,115 @@ def aster_broadcast_add_i32_args(*, backend_name=None, **_kwargs):
 def indexed_add_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}
+
+
+def flydsl_unary_sin_f32_args(*, backend_name=None, **_kwargs):
+    src_values = _vector_f32(FLYDSL_MICRO_N, scale=0.001, offset=0.25)
+    src = _maybe_torch_tensor(src_values, shape=(FLYDSL_MICRO_N,), dtype="f32", backend_name=backend_name or "")
+    dst = _maybe_torch_tensor([0.0 for _ in range(FLYDSL_MICRO_N)], shape=(FLYDSL_MICRO_N,), dtype="f32", backend_name=backend_name or "")
+    if src is None or dst is None:
+        src = bb.tensor(src_values, dtype="f32")
+        dst = bb.zeros((FLYDSL_MICRO_N,), dtype="f32")
+    return {"args": (src, dst), "result_indices": ()}
+
+
+def flydsl_unary_rsqrt_f32_args(*, backend_name=None, **_kwargs):
+    src_values = _vector_f32(FLYDSL_MICRO_N, scale=0.001, offset=1.0)
+    src = _maybe_torch_tensor(src_values, shape=(FLYDSL_MICRO_N,), dtype="f32", backend_name=backend_name or "")
+    dst = _maybe_torch_tensor([0.0 for _ in range(FLYDSL_MICRO_N)], shape=(FLYDSL_MICRO_N,), dtype="f32", backend_name=backend_name or "")
+    if src is None or dst is None:
+        src = bb.tensor(src_values, dtype="f32")
+        dst = bb.zeros((FLYDSL_MICRO_N,), dtype="f32")
+    return {"args": (src, dst), "result_indices": ()}
+
+
+def flydsl_broadcast_add_2d_args(*, backend_name=None, **_kwargs):
+    lhs_values = _matrix_f32(FLYDSL_MICRO_ROWS, 1, scale=0.5, offset=1.0)
+    rhs_values = _matrix_f32(1, FLYDSL_MICRO_COLS, scale=0.25, offset=2.0)
+    dst_values = _matrix_f32(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS, scale=0.0, offset=0.0)
+    lhs = _maybe_torch_tensor(lhs_values, shape=(FLYDSL_MICRO_ROWS, 1), dtype="f32", backend_name=backend_name or "")
+    rhs = _maybe_torch_tensor(rhs_values, shape=(1, FLYDSL_MICRO_COLS), dtype="f32", backend_name=backend_name or "")
+    dst = _maybe_torch_tensor(
+        dst_values,
+        shape=(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS),
+        dtype="f32",
+        backend_name=backend_name or "",
+    )
+    if lhs is None or rhs is None or dst is None:
+        lhs = bb.tensor(lhs_values, dtype="f32")
+        rhs = bb.tensor(rhs_values, dtype="f32")
+        dst = bb.zeros((FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS), dtype="f32")
+    return {"args": (lhs, rhs, dst), "result_indices": ()}
+
+
+def flydsl_reduce_add_2d_args(*, backend_name=None, **_kwargs):
+    src_values = _matrix_f32(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS, scale=0.125, offset=1.0)
+    src = _maybe_torch_tensor(
+        src_values,
+        shape=(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS),
+        dtype="f32",
+        backend_name=backend_name or "",
+    )
+    dst_scalar = _maybe_torch_tensor([0.0], shape=(1,), dtype="f32", backend_name=backend_name or "")
+    dst_rows = _maybe_torch_tensor(
+        [0.0 for _ in range(FLYDSL_MICRO_ROWS)],
+        shape=(FLYDSL_MICRO_ROWS,),
+        dtype="f32",
+        backend_name=backend_name or "",
+    )
+    if src is None or dst_scalar is None or dst_rows is None:
+        src = bb.tensor(src_values, dtype="f32")
+        dst_scalar = bb.zeros((1,), dtype="f32")
+        dst_rows = bb.zeros((FLYDSL_MICRO_ROWS,), dtype="f32")
+    return {"args": (src, dst_scalar, dst_rows), "result_indices": ()}
+
+
+def flydsl_unary_math_2d_args(*, backend_name=None, **_kwargs):
+    src_values = _matrix_f32(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS, scale=0.001, offset=1.0)
+    src = _maybe_torch_tensor(
+        src_values,
+        shape=(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS),
+        dtype="f32",
+        backend_name=backend_name or "",
+    )
+    dsts = [
+        _maybe_torch_tensor(
+            _matrix_f32(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS, scale=0.0, offset=0.0),
+            shape=(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS),
+            dtype="f32",
+            backend_name=backend_name or "",
+        )
+        for _ in range(4)
+    ]
+    if src is None or any(dst is None for dst in dsts):
+        src = bb.tensor(src_values, dtype="f32")
+        dsts = [bb.zeros((FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS), dtype="f32") for _ in range(4)]
+    return {"args": (src, *dsts), "result_indices": ()}
+
+
+def flydsl_shared_stage_f32_args(*, backend_name=None, **_kwargs):
+    src_values = _vector_f32(FLYDSL_SHARED_N, scale=0.125, offset=1.0)
+    src = _maybe_torch_tensor(src_values, shape=(FLYDSL_SHARED_N,), dtype="f32", backend_name=backend_name or "")
+    dst = _maybe_torch_tensor([0.0 for _ in range(FLYDSL_SHARED_N)], shape=(FLYDSL_SHARED_N,), dtype="f32", backend_name=backend_name or "")
+    if src is None or dst is None:
+        src = bb.tensor(src_values, dtype="f32")
+        dst = bb.zeros((FLYDSL_SHARED_N,), dtype="f32")
+    return {"args": (src, dst), "result_indices": ()}
+
+
+def flydsl_tensor_factory_2d_args(*, backend_name=None, **_kwargs):
+    dsts = [
+        _maybe_torch_tensor(
+            _matrix_f32(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS, scale=0.0, offset=0.0),
+            shape=(FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS),
+            dtype="f32",
+            backend_name=backend_name or "",
+        )
+        for _ in range(3)
+    ]
+    if any(dst is None for dst in dsts):
+        dsts = [bb.zeros((FLYDSL_MICRO_ROWS, FLYDSL_MICRO_COLS), dtype="f32") for _ in range(3)]
+    return {"args": tuple(dsts), "result_indices": ()}
 
 
 def hipkittens_bf16_gemm_args(**_kwargs):

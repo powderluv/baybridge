@@ -32,6 +32,13 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf8_payload = kernels.aster_mfma_bf8_gemm_args()
     mfma_fp8_bf8_payload = kernels.aster_mfma_fp8_bf8_gemm_args()
     mfma_bf8_fp8_payload = kernels.aster_mfma_bf8_fp8_gemm_args()
+    flydsl_sin_payload = kernels.flydsl_unary_sin_f32_args()
+    flydsl_rsqrt_payload = kernels.flydsl_unary_rsqrt_f32_args()
+    flydsl_broadcast_payload = kernels.flydsl_broadcast_add_2d_args()
+    flydsl_reduce_payload = kernels.flydsl_reduce_add_2d_args()
+    flydsl_unary_2d_payload = kernels.flydsl_unary_math_2d_args()
+    flydsl_shared_payload = kernels.flydsl_shared_stage_f32_args()
+    flydsl_factory_payload = kernels.flydsl_tensor_factory_2d_args()
 
     copy_args = copy_payload["args"]
     add_args = add_payload["args"]
@@ -46,6 +53,13 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf8_args = mfma_bf8_payload["args"]
     mfma_fp8_bf8_args = mfma_fp8_bf8_payload["args"]
     mfma_bf8_fp8_args = mfma_bf8_fp8_payload["args"]
+    flydsl_sin_args = flydsl_sin_payload["args"]
+    flydsl_rsqrt_args = flydsl_rsqrt_payload["args"]
+    flydsl_broadcast_args = flydsl_broadcast_payload["args"]
+    flydsl_reduce_args = flydsl_reduce_payload["args"]
+    flydsl_unary_2d_args = flydsl_unary_2d_payload["args"]
+    flydsl_shared_args = flydsl_shared_payload["args"]
+    flydsl_factory_args = flydsl_factory_payload["args"]
 
     assert len(copy_args) == 2
     assert copy_args[0].shape == (kernels.ASTER_POINTWISE_N,)
@@ -153,6 +167,45 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert str(mfma_bf8_fp8_args[2].dtype) == "f32"
     assert mfma_bf8_fp8_payload["result_indices"] == ()
 
+    assert len(flydsl_sin_args) == 2
+    assert flydsl_sin_args[0].shape == (kernels.FLYDSL_MICRO_N,)
+    assert flydsl_sin_args[1].shape == (kernels.FLYDSL_MICRO_N,)
+    assert flydsl_sin_payload["result_indices"] == ()
+
+    assert len(flydsl_rsqrt_args) == 2
+    assert flydsl_rsqrt_args[0].shape == (kernels.FLYDSL_MICRO_N,)
+    assert flydsl_rsqrt_args[1].shape == (kernels.FLYDSL_MICRO_N,)
+    assert flydsl_rsqrt_payload["result_indices"] == ()
+
+    assert len(flydsl_broadcast_args) == 3
+    assert flydsl_broadcast_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, 1)
+    assert flydsl_broadcast_args[1].shape == (1, kernels.FLYDSL_MICRO_COLS)
+    assert flydsl_broadcast_args[2].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert flydsl_broadcast_payload["result_indices"] == ()
+
+    assert len(flydsl_reduce_args) == 3
+    assert flydsl_reduce_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert flydsl_reduce_args[1].shape == (1,)
+    assert flydsl_reduce_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert flydsl_reduce_payload["result_indices"] == ()
+
+    assert len(flydsl_unary_2d_args) == 5
+    for arg in flydsl_unary_2d_args:
+        assert arg.shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(arg.dtype) == "f32"
+    assert flydsl_unary_2d_payload["result_indices"] == ()
+
+    assert len(flydsl_shared_args) == 2
+    assert flydsl_shared_args[0].shape == (kernels.FLYDSL_SHARED_N,)
+    assert flydsl_shared_args[1].shape == (kernels.FLYDSL_SHARED_N,)
+    assert flydsl_shared_payload["result_indices"] == ()
+
+    assert len(flydsl_factory_args) == 3
+    for arg in flydsl_factory_args:
+        assert arg.shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(arg.dtype) == "f32"
+    assert flydsl_factory_payload["result_indices"] == ()
+
 
 def test_compare_backends_uses_hip_synchronizer_for_aster_exec(monkeypatch) -> None:
     compare_backends = _load_tool_module("compare_backends")
@@ -183,6 +236,13 @@ def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> N
 
     assert callable(kernels.dense_sub_f32_kernel)
     assert callable(kernels.dense_mul_f32_kernel)
+    assert callable(kernels.flydsl_unary_sin_f32_kernel)
+    assert callable(kernels.flydsl_unary_rsqrt_f32_kernel)
+    assert callable(kernels.flydsl_broadcast_add_2d_kernel)
+    assert callable(kernels.flydsl_reduce_add_2d_kernel)
+    assert callable(kernels.flydsl_unary_math_2d_kernel)
+    assert callable(kernels.flydsl_shared_stage_f32_kernel)
+    assert callable(kernels.flydsl_tensor_factory_2d_kernel)
     assert callable(kernels.aster_mfma_f16_gemm_kernel)
     assert callable(kernels.aster_mfma_bf16_gemm_kernel)
     assert callable(kernels.aster_mfma_fp8_gemm_kernel)
