@@ -110,6 +110,12 @@ Benchmark notes:
 | Dense `f32` copy, `65536` elements | `flydsl_exec` | `907.73` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `33.52` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | `890.75` | Real upstream FlyDSL canonical linear indexed-add path measured with ROCm torch-backed inputs |
+| Indexed `f32` sub, `65536` elements | `hipcc_exec` | `33.11` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` sub, `65536` elements | `flydsl_exec` | `919.10` | Real upstream FlyDSL canonical linear indexed-sub path measured with ROCm torch-backed inputs |
+| Indexed `f32` mul, `65536` elements | `hipcc_exec` | `32.85` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` mul, `65536` elements | `flydsl_exec` | `962.28` | Real upstream FlyDSL canonical linear indexed-mul path measured with ROCm torch-backed inputs |
+| Indexed `f32` div, `65536` elements | `hipcc_exec` | `32.56` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` div, `65536` elements | `flydsl_exec` | `913.03` | Real upstream FlyDSL canonical linear indexed-div path measured with ROCm torch-backed inputs |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `0.84` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
@@ -122,6 +128,12 @@ Benchmark notes:
 | Dense `f32` copy, `65536` elements | `flydsl_exec` | `1370.14` | Real upstream FlyDSL copy path measured with ROCm torch-backed inputs |
 | Indexed `f32` add, `65536` elements | `hipcc_exec` | `58.01` | Used the FlyDSL-compatible indexed kernel form |
 | Indexed `f32` add, `65536` elements | `flydsl_exec` | `1377.69` | Real upstream FlyDSL canonical linear indexed-add path measured with ROCm torch-backed inputs |
+| Indexed `f32` sub, `65536` elements | `hipcc_exec` | `59.77` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` sub, `65536` elements | `flydsl_exec` | `1365.25` | Real upstream FlyDSL canonical linear indexed-sub path measured with ROCm torch-backed inputs |
+| Indexed `f32` mul, `65536` elements | `hipcc_exec` | `58.86` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` mul, `65536` elements | `flydsl_exec` | `1369.68` | Real upstream FlyDSL canonical linear indexed-mul path measured with ROCm torch-backed inputs |
+| Indexed `f32` div, `65536` elements | `hipcc_exec` | `58.80` | Used the FlyDSL-compatible indexed kernel form |
+| Indexed `f32` div, `65536` elements | `flydsl_exec` | `1368.64` | Real upstream FlyDSL canonical linear indexed-div path measured with ROCm torch-backed inputs |
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
@@ -342,8 +354,7 @@ That is enough for the benchmark harness to measure the validated real `flydsl_e
 The remaining boundary is semantic, not environmental:
 - dense `f32` copy is benchmarkable
 - specialized 1D unary, shared-stage, and 2D broadcast/reduction/unary/tensor-factory families are benchmarkable through the checked-in exact kernels above
-- the canonical linear indexed-add benchmark is now benchmarkable through the validated real path
-- the same canonical indexed real path is now also hardware-validated for `sub`, `mul`, and `div`
+- the canonical linear indexed `add/sub/mul/div` benchmarks are now benchmarkable through the validated real path
 - broader indexed families are still narrower than the general `hipcc_exec` path
 
 ### ASTER

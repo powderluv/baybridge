@@ -46,6 +46,33 @@ def indexed_add_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     dst[idx] = src[idx] + other[idx]
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(FLYDSL_GRID, 1, 1), block=(FLYDSL_BLOCK, 1, 1)))
+def indexed_sub_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = src[idx] - other[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(FLYDSL_GRID, 1, 1), block=(FLYDSL_BLOCK, 1, 1)))
+def indexed_mul_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = src[idx] * other[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(FLYDSL_GRID, 1, 1), block=(FLYDSL_BLOCK, 1, 1)))
+def indexed_div_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = src[idx] / other[idx]
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def flydsl_unary_sin_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
     values = src.load()
@@ -297,6 +324,21 @@ def aster_broadcast_add_i32_args(*, backend_name=None, **_kwargs):
 
 
 def indexed_add_f32_args(*, backend_name=None, **_kwargs):
+    src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
+    return {"args": (src, other, dst), "result_indices": ()}
+
+
+def indexed_sub_f32_args(*, backend_name=None, **_kwargs):
+    src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
+    return {"args": (src, other, dst), "result_indices": ()}
+
+
+def indexed_mul_f32_args(*, backend_name=None, **_kwargs):
+    src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
+    return {"args": (src, other, dst), "result_indices": ()}
+
+
+def indexed_div_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}
 

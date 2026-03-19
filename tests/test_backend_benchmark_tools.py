@@ -34,6 +34,9 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf8_fp8_payload = kernels.aster_mfma_bf8_fp8_gemm_args()
     flydsl_sin_payload = kernels.flydsl_unary_sin_f32_args()
     flydsl_rsqrt_payload = kernels.flydsl_unary_rsqrt_f32_args()
+    indexed_sub_payload = kernels.indexed_sub_f32_args()
+    indexed_mul_payload = kernels.indexed_mul_f32_args()
+    indexed_div_payload = kernels.indexed_div_f32_args()
     flydsl_broadcast_payload = kernels.flydsl_broadcast_add_2d_args()
     flydsl_reduce_payload = kernels.flydsl_reduce_add_2d_args()
     flydsl_unary_2d_payload = kernels.flydsl_unary_math_2d_args()
@@ -55,6 +58,9 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     mfma_bf8_fp8_args = mfma_bf8_fp8_payload["args"]
     flydsl_sin_args = flydsl_sin_payload["args"]
     flydsl_rsqrt_args = flydsl_rsqrt_payload["args"]
+    indexed_sub_args = indexed_sub_payload["args"]
+    indexed_mul_args = indexed_mul_payload["args"]
+    indexed_div_args = indexed_div_payload["args"]
     flydsl_broadcast_args = flydsl_broadcast_payload["args"]
     flydsl_reduce_args = flydsl_reduce_payload["args"]
     flydsl_unary_2d_args = flydsl_unary_2d_payload["args"]
@@ -177,6 +183,24 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert flydsl_rsqrt_args[1].shape == (kernels.FLYDSL_MICRO_N,)
     assert flydsl_rsqrt_payload["result_indices"] == ()
 
+    assert len(indexed_sub_args) == 3
+    assert indexed_sub_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_sub_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_sub_args[2].shape == (kernels.POINTWISE_N,)
+    assert indexed_sub_payload["result_indices"] == ()
+
+    assert len(indexed_mul_args) == 3
+    assert indexed_mul_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_mul_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_mul_args[2].shape == (kernels.POINTWISE_N,)
+    assert indexed_mul_payload["result_indices"] == ()
+
+    assert len(indexed_div_args) == 3
+    assert indexed_div_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_div_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_div_args[2].shape == (kernels.POINTWISE_N,)
+    assert indexed_div_payload["result_indices"] == ()
+
     assert len(flydsl_broadcast_args) == 3
     assert flydsl_broadcast_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, 1)
     assert flydsl_broadcast_args[1].shape == (1, kernels.FLYDSL_MICRO_COLS)
@@ -236,6 +260,9 @@ def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> N
 
     assert callable(kernels.dense_sub_f32_kernel)
     assert callable(kernels.dense_mul_f32_kernel)
+    assert callable(kernels.indexed_sub_f32_kernel)
+    assert callable(kernels.indexed_mul_f32_kernel)
+    assert callable(kernels.indexed_div_f32_kernel)
     assert callable(kernels.flydsl_unary_sin_f32_kernel)
     assert callable(kernels.flydsl_unary_rsqrt_f32_kernel)
     assert callable(kernels.flydsl_broadcast_add_2d_kernel)
