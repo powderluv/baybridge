@@ -191,6 +191,18 @@ They are intentionally broken out from the common `65536`-element table above be
 | 2D `f32` tensor-factory bundle, `64x64` | `hipcc_exec` | `4.22` | Same kernel/sample factory as FlyDSL baseline |
 | 2D `f32` tensor-factory bundle, `64x64` | `flydsl_exec` | `1366.74` | Real upstream FlyDSL specialized row-slice/copy-atom path |
 
+## FlyDSL Cold vs Warm Snapshot
+
+Cold-start timing here is the first recorded execution in the `--repeat 7` run. Warm median is the median of the following six steady-state executions.
+
+These representative reruns were captured after Baybridge-side DLPack adaptation caching and default-stream reuse were in place. The important result is that both cold and warm timings stay tightly clustered across very different validated FlyDSL kernels, which points to a dominant fixed cost inside the real FlyDSL runtime/JIT path rather than in Baybridge's wrapper glue.
+
+| Family | `mi355` cold ms | `mi355` warm median ms | `mi300` cold ms | `mi300` warm median ms |
+| --- | ---: | ---: | ---: | ---: |
+| Indexed `f32` add, `65536` elements | `1150.55` | `910.87` | `1850.27` | `1381.13` |
+| Unary `f32` `sin`, `4096` elements | `1152.22` | `907.18` | `1849.00` | `1372.85` |
+| 2D `f32` broadcast add, `64x64` | `1147.64` | `910.80` | `1840.72` | `1373.30` |
+
 ## ASTER Microbenchmark Snapshot
 
 These are real checked-in-tool measurements for the current validated ASTER subset, using:
