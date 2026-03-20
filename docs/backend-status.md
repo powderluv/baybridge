@@ -465,6 +465,23 @@ BAYBRIDGE_HIPKITTENS_ROOT=$HOME/tmp/HipKittens \
   --repeat 7
 ```
 
+Cold/warm FlyDSL diagnostic example on `mi355`:
+
+```bash
+cd ~/tmp/baybridge-codex
+PATH=$PWD/.venv/bin:$PATH \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=src \
+LD_LIBRARY_PATH=$HOME/tmp/FlyDSL/build-fly-fullmlir/python_packages/flydsl/_mlir/_mlir_libs:$HOME/tmp/llvm-project/mlir_install/lib:${LD_LIBRARY_PATH:-} \
+BAYBRIDGE_FLYDSL_ROOT=$HOME/tmp/FlyDSL \
+.venv/bin/python tools/report_cold_warm.py \
+  tools/backend_benchmark_kernels.py indexed_add_f32_kernel \
+  --sample-factory indexed_add_f32_args \
+  --backends flydsl_exec \
+  --target gfx950 \
+  --repeat 7
+```
+
 ASTER microbenchmark example on `mi355`:
 
 ```bash

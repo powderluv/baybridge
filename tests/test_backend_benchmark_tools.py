@@ -265,6 +265,74 @@ def test_compare_backends_summarizes_cold_and_warm_timings() -> None:
     assert summary["warm_median_ms"] == 6.0
 
 
+def test_report_cold_warm_summarizes_successful_backend_result() -> None:
+    report_cold_warm = _load_tool_module("report_cold_warm")
+
+    payload = {
+        "environment": {"target": "gfx950"},
+        "results": [
+            {
+                "backend": "flydsl_exec",
+                "resolved_backend": "flydsl_exec",
+                "target": "gfx950",
+                "status": "ok",
+                "execute_status": "ok",
+                "timings_ms": [100.0, 10.0, 12.0],
+                "cold_ms": 100.0,
+                "warm_median_ms": 11.0,
+                "warm_timings_ms": [10.0, 12.0],
+            }
+        ],
+    }
+
+    summary = report_cold_warm._summarize_compare_payload(payload)
+
+    assert summary["environment"] == {"target": "gfx950"}
+    assert summary["results"] == [
+        {
+            "backend": "flydsl_exec",
+            "resolved_backend": "flydsl_exec",
+            "target": "gfx950",
+            "status": "ok",
+            "execute_status": "ok",
+            "cold_ms": 100.0,
+            "warm_median_ms": 11.0,
+            "warm_timings_ms": [10.0, 12.0],
+            "repeat": 3,
+        }
+    ]
+    assert report_cold_warm._format_summary(summary) == "target=gfx950\nflydsl_exec cold=100.00 warm_median=11.00 repeat=3"
+
+
+def test_report_cold_warm_formats_skipped_backend_result() -> None:
+    report_cold_warm = _load_tool_module("report_cold_warm")
+
+    summary = report_cold_warm._summarize_compare_payload(
+        [
+            {
+                "backend": "flydsl_exec",
+                "status": "ok",
+                "execute_status": "skipped_unvalidated_real_flydsl_exec",
+                "execute_note": "gate still enabled",
+            }
+        ]
+    )
+
+    assert summary["results"] == [
+        {
+            "backend": "flydsl_exec",
+            "resolved_backend": None,
+            "target": None,
+            "status": "ok",
+            "execute_status": "skipped_unvalidated_real_flydsl_exec",
+            "execute_note": "gate still enabled",
+        }
+    ]
+    assert report_cold_warm._format_summary(summary) == (
+        "flydsl_exec skipped_unvalidated_real_flydsl_exec gate still enabled"
+    )
+
+
 def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> None:
     kernels = _load_tool_module("backend_benchmark_kernels")
 
