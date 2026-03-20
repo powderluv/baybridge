@@ -673,6 +673,11 @@ class HipKittensExecBackend:
             raise BackendNotImplementedError(
                 f"hipkittens_exec requires matching operand dtypes, got {a_spec.dtype} and {b_spec.dtype}"
             )
+        if target.arch == "gfx950" and a_spec.dtype == "f16" and (transpose_a or transpose_b):
+            raise BackendNotImplementedError(
+                "hipkittens_exec transposed f16 GEMM is not supported by the current HipKittens gfx950 MMA templates; "
+                "use hipkittens_ref"
+            )
         logical_m = a_spec.shape[1] if transpose_a else a_spec.shape[0]
         logical_k = a_spec.shape[0] if transpose_a else a_spec.shape[1]
         logical_kb = b_spec.shape[1] if transpose_b else b_spec.shape[0]

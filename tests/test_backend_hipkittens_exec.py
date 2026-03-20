@@ -599,7 +599,10 @@ def test_hipkittens_exec_rejects_transposed_f16_gemm(tmp_path: Path, monkeypatch
     _fake_root(tmp_path, monkeypatch)
     a, b, c = _make_f16_micro_inputs_abt()
 
-    with pytest.raises(bb.BackendNotImplementedError, match="hipkittens_exec only supports GEMM shapes"):
+    with pytest.raises(
+        bb.BackendNotImplementedError,
+        match="hipkittens_exec transposed f16 GEMM is not supported by the current HipKittens gfx950 MMA templates; use hipkittens_ref",
+    ):
         bb.compile(
             gemm_f16_abt_kernel,
             a,

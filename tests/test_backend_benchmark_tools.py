@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_tool_module(name: str):
     tools_dir = Path(__file__).resolve().parents[1] / "tools"
@@ -302,6 +304,60 @@ def test_report_cold_warm_summarizes_successful_backend_result() -> None:
         }
     ]
     assert report_cold_warm._format_summary(summary) == "target=gfx950\nflydsl_exec cold=100.00 warm_median=11.00 repeat=3"
+
+
+def test_report_cold_warm_adds_baseline_ratios() -> None:
+    report_cold_warm = _load_tool_module("report_cold_warm")
+
+    payload = {
+        "results": [
+            {
+                "backend": "hipcc_exec",
+                "resolved_backend": "hipcc_exec",
+                "target": "gfx950",
+                "status": "ok",
+                "execute_status": "ok",
+                "timings_ms": [40.0, 4.0, 6.0],
+                "cold_ms": 40.0,
+                "warm_median_ms": 5.0,
+                "warm_timings_ms": [4.0, 6.0],
+            },
+            {
+                "backend": "flydsl_exec",
+                "resolved_backend": "flydsl_exec",
+                "target": "gfx950",
+                "status": "ok",
+                "execute_status": "ok",
+                "timings_ms": [100.0, 10.0, 12.0],
+                "cold_ms": 100.0,
+                "warm_median_ms": 11.0,
+                "warm_timings_ms": [10.0, 12.0],
+            },
+        ]
+    }
+
+    summary = report_cold_warm._summarize_compare_payload(payload, baseline_backend="hipcc_exec")
+
+    assert summary["baseline_backend"] == "hipcc_exec"
+    assert summary["results"][0]["cold_ratio"] == 1.0
+    assert summary["results"][0]["warm_median_ratio"] == 1.0
+    assert summary["results"][1]["cold_ratio"] == 2.5
+    assert summary["results"][1]["warm_median_ratio"] == 2.2
+    assert report_cold_warm._format_summary(summary) == (
+        "baseline=hipcc_exec\n"
+        "hipcc_exec cold=40.00 warm_median=5.00 repeat=3 cold_ratio=1.00 warm_ratio=1.00\n"
+        "flydsl_exec cold=100.00 warm_median=11.00 repeat=3 cold_ratio=2.50 warm_ratio=2.20"
+    )
+
+
+def test_report_cold_warm_requires_successful_baseline_backend() -> None:
+    report_cold_warm = _load_tool_module("report_cold_warm")
+
+    with pytest.raises(SystemExit, match="baseline backend 'hipcc_exec' was not found in successful results"):
+        report_cold_warm._summarize_compare_payload(
+            [{"backend": "flydsl_exec", "status": "ok", "execute_status": "ok", "cold_ms": 1.0, "warm_median_ms": 1.0}],
+            baseline_backend="hipcc_exec",
+        )
 
 
 def test_report_cold_warm_formats_skipped_backend_result() -> None:

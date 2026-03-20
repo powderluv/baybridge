@@ -22,7 +22,35 @@ def _run_compare_backends(args: list[str]) -> object:
     return json.loads(result.stdout)
 
 
-def _summarize_compare_payload(payload: object) -> dict[str, object]:
+def _annotate_baseline_ratios(summary: dict[str, object], baseline_backend: str) -> bool:
+    results = summary.get("results")
+    if not isinstance(results, list):
+        return False
+    baseline_entry = None
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("backend") != baseline_backend:
+            continue
+        if entry.get("execute_status") != "ok":
+            return False
+        baseline_entry = entry
+        break
+    if baseline_entry is None:
+        return False
+    baseline_cold = float(baseline_entry["cold_ms"])
+    baseline_warm = float(baseline_entry["warm_median_ms"])
+    summary["baseline_backend"] = baseline_backend
+    for entry in results:
+        if not isinstance(entry, dict) or entry.get("execute_status") != "ok":
+            continue
+        entry["baseline_backend"] = baseline_backend
+        entry["cold_ratio"] = float(entry["cold_ms"]) / baseline_cold
+        entry["warm_median_ratio"] = float(entry["warm_median_ms"]) / baseline_warm
+    return True
+
+
+def _summarize_compare_payload(payload: object, baseline_backend: str | None = None) -> dict[str, object]:
     environment = None
     results = payload
     if isinstance(payload, dict):
@@ -52,7 +80,10 @@ def _summarize_compare_payload(payload: object) -> dict[str, object]:
             if "execute_note" in entry:
                 summary["execute_note"] = entry["execute_note"]
         summaries.append(summary)
-    return {"environment": environment, "results": summaries}
+    summary = {"environment": environment, "results": summaries}
+    if baseline_backend is not None and not _annotate_baseline_ratios(summary, baseline_backend):
+        raise SystemExit(f"baseline backend '{baseline_backend}' was not found in successful results")
+    return summary
 
 
 def _format_summary(summary: dict[str, object]) -> str:
@@ -62,6 +93,9 @@ def _format_summary(summary: dict[str, object]) -> str:
         target = environment.get("target")
         if target:
             lines.append(f"target={target}")
+    baseline_backend = summary.get("baseline_backend")
+    if isinstance(baseline_backend, str):
+        lines.append(f"baseline={baseline_backend}")
     results = summary.get("results", [])
     if not isinstance(results, list):
         return "\n".join(lines)
@@ -71,14 +105,18 @@ def _format_summary(summary: dict[str, object]) -> str:
         backend = entry.get("backend", "<unknown>")
         execute_status = entry.get("execute_status")
         if execute_status == "ok":
-            lines.append(
-                "{} cold={:.2f} warm_median={:.2f} repeat={}".format(
-                    backend,
-                    float(entry["cold_ms"]),
-                    float(entry["warm_median_ms"]),
-                    int(entry["repeat"]),
-                )
+            line = "{} cold={:.2f} warm_median={:.2f} repeat={}".format(
+                backend,
+                float(entry["cold_ms"]),
+                float(entry["warm_median_ms"]),
+                int(entry["repeat"]),
             )
+            if "cold_ratio" in entry and "warm_median_ratio" in entry:
+                line += " cold_ratio={:.2f} warm_ratio={:.2f}".format(
+                    float(entry["cold_ratio"]),
+                    float(entry["warm_median_ratio"]),
+                )
+            lines.append(line)
             continue
         note = entry.get("execute_note") or entry.get("execute_error") or entry.get("status")
         lines.append(f"{backend} {execute_status or 'unknown'} {note}")
@@ -97,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--target", default=None)
     parser.add_argument("--include-env", action="store_true")
+    parser.add_argument(
+        "--baseline-backend",
+        default=None,
+        help="Optional backend name to use as the ratio baseline for cold and warm timings",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
     args = parser.parse_args(argv)
 
@@ -111,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
         compare_args.append("--include-env")
 
     payload = _run_compare_backends(compare_args)
-    summary = _summarize_compare_payload(payload)
+    summary = _summarize_compare_payload(payload, baseline_backend=args.baseline_backend)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
