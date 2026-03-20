@@ -295,6 +295,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - currently validated for `gfx950`
   - `gfx942` executable support is currently limited to the BF16 slice; F16 exec is not wired yet
   - transposed F16 GEMM stays on `hipkittens_ref` on `gfx950`; current upstream HipKittens gfx950 MMA templates reject that family
+  - RMSNorm stays on `hipkittens_ref` on `gfx950`; current upstream HipKittens gfx950 headers do not compile the generated RMSNorm kernel
   - supported micro tiles:
     - `f16/f16 -> f32`
     - `bf16/bf16 -> f32`

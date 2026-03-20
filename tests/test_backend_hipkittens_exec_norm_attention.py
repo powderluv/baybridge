@@ -238,6 +238,24 @@ def test_hipkittens_exec_lowers_exact_rmsnorm(tmp_path: Path, monkeypatch: pytes
     assert "rmsnorm_hk<D>" in text
 
 
+def test_hipkittens_exec_rejects_exact_rmsnorm_on_gfx950(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_root(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        bb.BackendNotImplementedError,
+        match="hipkittens_exec rmsnorm remains gfx942-only; current HipKittens gfx950 headers do not compile the generated rmsnorm kernel, so use hipkittens_ref",
+    ):
+        bb.compile(
+            exact_rmsnorm_kernel,
+            *_make_rmsnorm_inputs(),
+            cache_dir=tmp_path,
+            backend="hipkittens_exec",
+            target=bb.AMDTarget(arch="gfx950"),
+        )
+
+
 def test_hipkittens_exec_lowers_exact_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_root(tmp_path, monkeypatch)
     artifact = bb.compile(
@@ -340,6 +358,21 @@ def test_compile_auto_prefers_hipkittens_exec_for_exact_rmsnorm_gfx942(
         assert artifact.backend_name == "hipkittens_exec"
     else:
         assert artifact.backend_name == "hipkittens_ref"
+
+
+def test_compile_auto_prefers_hipkittens_ref_for_exact_rmsnorm_on_gfx950(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_root(tmp_path, monkeypatch)
+
+    artifact = bb.compile(
+        exact_rmsnorm_kernel,
+        *_make_rmsnorm_inputs(),
+        cache_dir=tmp_path,
+        target=bb.AMDTarget(arch="gfx950"),
+    )
+
+    assert artifact.backend_name == "hipkittens_ref"
 
 
 def test_compile_auto_prefers_hipkittens_exec_for_exact_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

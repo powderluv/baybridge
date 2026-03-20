@@ -790,6 +790,11 @@ class HipKittensExecBackend:
         target: AMDTarget,
         operation: Any,
     ) -> HipKittensRmsNormExecMatch:
+        if target.arch == "gfx950":
+            raise BackendNotImplementedError(
+                "hipkittens_exec rmsnorm remains gfx942-only; current HipKittens gfx950 headers do not compile the "
+                "generated rmsnorm kernel, so use hipkittens_ref"
+            )
         if target.arch != "gfx942":
             raise BackendNotImplementedError("hipkittens_exec rmsnorm is currently wired only for gfx942/cdna3")
         if len(operation.inputs) != 3:
