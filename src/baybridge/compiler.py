@@ -20,6 +20,8 @@ from .backends import (
     HipKittensRefBackend,
     HipccExecBackend,
     MlirTextBackend,
+    PtxExecBackend,
+    PtxRefBackend,
     WaveAsmExecBackend,
     WaveAsmRefBackend,
 )
@@ -35,7 +37,7 @@ from .runtime import (
     materialized_runtime_call,
     normalize_runtime_argument,
 )
-from .target import AMDTarget
+from .target import AMDTarget, NvidiaTarget
 from .tracing import IRBuilder, ScalarValue, TensorValue, tracing
 from .views import TiledTensorView
 
@@ -47,7 +49,7 @@ _DEFAULT_BACKEND = "mlir_text"
 @dataclass(frozen=True)
 class CompiledKernel:
     ir: PortableKernelIR | None
-    target: AMDTarget
+    target: AMDTarget | NvidiaTarget
     backend_name: str
     cache_key: str
     artifact_path: Path
@@ -133,6 +135,10 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
             return backend, GpuMlirBackend()
         if backend == "gpu_text":
             return backend, GpuTextBackend()
+        if backend == "ptx_exec":
+            return backend, PtxExecBackend()
+        if backend == "ptx_ref":
+            return backend, PtxRefBackend()
         if backend == "waveasm_exec":
             return backend, WaveAsmExecBackend()
         if backend == "waveasm_ref":
@@ -153,12 +159,14 @@ def _resolve_backend(backend: str | Backend | None) -> tuple[str, Backend | None
 
 def _resolve_backend_for_ir(
     ir: PortableKernelIR | None,
-    target: AMDTarget,
+    target: AMDTarget | NvidiaTarget,
     backend: str | Backend | None,
     sample_args: tuple[Any, ...] = (),
 ) -> tuple[str, Backend | None]:
     if backend is not None:
         return _resolve_backend(backend)
+    if isinstance(target, NvidiaTarget):
+        return PtxRefBackend().name, PtxRefBackend()
     if ir is not None:
         hipkittens_backend = HipKittensExecBackend()
         if hipkittens_backend.available(target) and hipkittens_backend.supports(ir, target):
@@ -458,7 +466,7 @@ def _cache_key(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _trace_cache_payload(ir: PortableKernelIR, target: AMDTarget, backend_name: str) -> dict[str, Any]:
+def _trace_cache_payload(ir: PortableKernelIR, target: AMDTarget | NvidiaTarget, backend_name: str) -> dict[str, Any]:
     return {
         "backend_name": backend_name,
         "ir": ir.to_dict(),
@@ -469,7 +477,7 @@ def _trace_cache_payload(ir: PortableKernelIR, target: AMDTarget, backend_name: 
 
 def _runtime_cache_payload(
     definition: KernelDefinition,
-    target: AMDTarget,
+    target: AMDTarget | NvidiaTarget,
     backend_name: str,
     sample_args: tuple[Any, ...],
 ) -> dict[str, Any]:
@@ -518,7 +526,7 @@ def _execute_definition(definition: KernelDefinition, *args: Any, **kwargs: Any)
 def _write_artifact(
     manifest_path: Path,
     *,
-    target: AMDTarget,
+    target: AMDTarget | NvidiaTarget,
     backend_name: str,
     cache_key: str,
     ir: PortableKernelIR | None,
@@ -543,7 +551,7 @@ def _write_artifact(
 
 def _artifact_paths(
     cache_dir: Path,
-    target: AMDTarget,
+    target: AMDTarget | NvidiaTarget,
     backend_name: str,
     cache_key: str,
     *,
@@ -558,7 +566,7 @@ def _artifact_paths(
 def compile(
     kernel: KernelDefinition | Any,
     *sample_args: Any,
-    target: AMDTarget | None = None,
+    target: AMDTarget | NvidiaTarget | None = None,
     backend: str | Backend | None = None,
     cache_dir: str | os.PathLike[str] | None = None,
     use_cache: bool = True,

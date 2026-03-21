@@ -32,6 +32,10 @@ class CUstream(ctypes.c_void_p):
     pass
 
 
+class CUdeviceptr(ctypes.c_uint64):
+    pass
+
+
 @dataclass(frozen=True)
 class CudaDeviceInfo:
     ordinal: int
@@ -126,6 +130,22 @@ class CudaDriver:
         self._check(self._lib.cuInit(0), "cuInit")
 
     def _bind(self) -> None:
+        def _bind_symbol(primary: str, *fallbacks: str):
+            symbol = getattr(self._lib, primary, None)
+            if symbol is not None:
+                return symbol
+            for name in fallbacks:
+                symbol = getattr(self._lib, name, None)
+                if symbol is not None:
+                    return symbol
+            raise AttributeError(primary)
+
+        def _bind_symbol_optional(primary: str, *fallbacks: str):
+            try:
+                return _bind_symbol(primary, *fallbacks)
+            except AttributeError:
+                return None
+
         self._lib.cuInit.argtypes = [ctypes.c_uint]
         self._lib.cuInit.restype = ctypes.c_int
         self._lib.cuDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
@@ -182,6 +202,22 @@ class CudaDriver:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         self._lib.cuLaunchKernel.restype = ctypes.c_int
+        self._cuMemAlloc = _bind_symbol_optional("cuMemAlloc_v2", "cuMemAlloc")
+        if self._cuMemAlloc is not None:
+            self._cuMemAlloc.argtypes = [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t]
+            self._cuMemAlloc.restype = ctypes.c_int
+        self._cuMemFree = _bind_symbol_optional("cuMemFree_v2", "cuMemFree")
+        if self._cuMemFree is not None:
+            self._cuMemFree.argtypes = [CUdeviceptr]
+            self._cuMemFree.restype = ctypes.c_int
+        self._cuMemcpyHtoD = _bind_symbol_optional("cuMemcpyHtoD_v2", "cuMemcpyHtoD")
+        if self._cuMemcpyHtoD is not None:
+            self._cuMemcpyHtoD.argtypes = [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t]
+            self._cuMemcpyHtoD.restype = ctypes.c_int
+        self._cuMemcpyDtoH = _bind_symbol_optional("cuMemcpyDtoH_v2", "cuMemcpyDtoH")
+        if self._cuMemcpyDtoH is not None:
+            self._cuMemcpyDtoH.argtypes = [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t]
+            self._cuMemcpyDtoH.restype = ctypes.c_int
 
     def _error_name(self, status: int) -> str | None:
         name = ctypes.c_char_p()
@@ -261,6 +297,7 @@ class CudaDriver:
 
     def release_primary_context(self, device_or_ordinal: CUdevice | int = 0) -> None:
         device = self.device(device_or_ordinal) if isinstance(device_or_ordinal, int) else device_or_ordinal
+        self._check(self._lib.cuCtxSetCurrent(CUcontext()), "cuCtxSetCurrent")
         self._check(self._lib.cuDevicePrimaryCtxRelease(device), "cuDevicePrimaryCtxRelease")
 
     def synchronize(self) -> None:
@@ -291,6 +328,28 @@ class CudaDriver:
         self._check(self._lib.cuModuleGetFunction(ctypes.byref(function), module, name.encode("utf-8")), "cuModuleGetFunction")
         return function
 
+    def mem_alloc(self, byte_size: int) -> CUdeviceptr:
+        if self._cuMemAlloc is None:
+            raise BackendNotImplementedError("CUDA driver memory allocation symbols are unavailable")
+        ptr = CUdeviceptr()
+        self._check(self._cuMemAlloc(ctypes.byref(ptr), byte_size), "cuMemAlloc")
+        return ptr
+
+    def mem_free(self, ptr: CUdeviceptr) -> None:
+        if self._cuMemFree is None:
+            raise BackendNotImplementedError("CUDA driver memory free symbols are unavailable")
+        self._check(self._cuMemFree(ptr), "cuMemFree")
+
+    def memcpy_htod(self, dst: CUdeviceptr, src: ctypes.c_void_p, byte_size: int) -> None:
+        if self._cuMemcpyHtoD is None:
+            raise BackendNotImplementedError("CUDA driver host-to-device copy symbols are unavailable")
+        self._check(self._cuMemcpyHtoD(dst, src, byte_size), "cuMemcpyHtoD")
+
+    def memcpy_dtoh(self, dst: ctypes.c_void_p, src: CUdeviceptr, byte_size: int) -> None:
+        if self._cuMemcpyDtoH is None:
+            raise BackendNotImplementedError("CUDA driver device-to-host copy symbols are unavailable")
+        self._check(self._cuMemcpyDtoH(dst, src, byte_size), "cuMemcpyDtoH")
+
     def launch_kernel(
         self,
         function: CUfunction,
@@ -299,12 +358,24 @@ class CudaDriver:
         block: tuple[int, int, int],
         shared_mem_bytes: int = 0,
         stream: CUstream | None = None,
-        kernel_params: Sequence[int | ctypes.c_void_p] | None = None,
+        kernel_params: Sequence[object] | None = None,
     ) -> None:
         params_array = None
+        host_values: list[object] = []
         if kernel_params:
-            packed = [ctypes.c_void_p(int(value)) if not isinstance(value, ctypes.c_void_p) else value for value in kernel_params]
-            params_array = (ctypes.c_void_p * len(packed))(*packed)
+            packed_ptrs: list[ctypes.c_void_p] = []
+            for value in kernel_params:
+                if isinstance(value, ctypes.c_void_p):
+                    host_value = ctypes.c_uint64(int(value.value or 0))
+                elif isinstance(value, ctypes._SimpleCData):
+                    host_value = value
+                elif isinstance(value, int):
+                    host_value = ctypes.c_uint64(value)
+                else:
+                    raise TypeError(f"unsupported CUDA kernel parameter type '{type(value).__name__}'")
+                host_values.append(host_value)
+                packed_ptrs.append(ctypes.cast(ctypes.byref(host_value), ctypes.c_void_p))
+            params_array = (ctypes.c_void_p * len(packed_ptrs))(*packed_ptrs)
         self._check(
             self._lib.cuLaunchKernel(
                 function,
@@ -326,6 +397,7 @@ class CudaDriver:
 __all__ = [
     "CUcontext",
     "CUdevice",
+    "CUdeviceptr",
     "CUfunction",
     "CUmodule",
     "CUstream",

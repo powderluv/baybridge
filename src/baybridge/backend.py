@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .ir import PortableKernelIR
-from .target import AMDTarget
+from .target import AMDTarget, NvidiaTarget
 
 
 @dataclass(frozen=True)
@@ -26,4 +26,4 @@ class LoweredModule:
 class Backend(Protocol):
     name: str
 
-    def lower(self, ir: PortableKernelIR, target: AMDTarget) -> LoweredModule: ...
+    def lower(self, ir: PortableKernelIR, target: AMDTarget | NvidiaTarget) -> LoweredModule: ...

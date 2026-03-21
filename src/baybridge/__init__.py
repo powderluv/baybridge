@@ -166,7 +166,7 @@ from .runtime import (
     unpack_fp8,
     zeros,
 )
-from .target import AMDTarget
+from .target import AMDTarget, NvidiaTarget
 from .tracing import TensorValue
 
 TensorSSA = (Tensor, TensorValue)
@@ -196,6 +196,7 @@ __all__ = [
     "Mbarrier",
     "MbarrierArray",
     "NamedBarrier",
+    "NvidiaTarget",
     "Boolean",
     "BFloat16",
     "Pointer",
