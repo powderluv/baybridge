@@ -331,6 +331,7 @@ class CudaDriver:
     def mem_alloc(self, byte_size: int) -> CUdeviceptr:
         if self._cuMemAlloc is None:
             raise BackendNotImplementedError("CUDA driver memory allocation symbols are unavailable")
+        self.ensure_primary_context(0)
         ptr = CUdeviceptr()
         self._check(self._cuMemAlloc(ctypes.byref(ptr), byte_size), "cuMemAlloc")
         return ptr
@@ -343,11 +344,13 @@ class CudaDriver:
     def memcpy_htod(self, dst: CUdeviceptr, src: ctypes.c_void_p, byte_size: int) -> None:
         if self._cuMemcpyHtoD is None:
             raise BackendNotImplementedError("CUDA driver host-to-device copy symbols are unavailable")
+        self.ensure_primary_context(0)
         self._check(self._cuMemcpyHtoD(dst, src, byte_size), "cuMemcpyHtoD")
 
     def memcpy_dtoh(self, dst: ctypes.c_void_p, src: CUdeviceptr, byte_size: int) -> None:
         if self._cuMemcpyDtoH is None:
             raise BackendNotImplementedError("CUDA driver device-to-host copy symbols are unavailable")
+        self.ensure_primary_context(0)
         self._check(self._cuMemcpyDtoH(dst, src, byte_size), "cuMemcpyDtoH")
 
     def launch_kernel(

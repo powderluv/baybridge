@@ -10,9 +10,11 @@ from ..cuda_driver import CudaDriver, CUdeviceptr, load_cuda_driver_library
 from ..diagnostics import BackendNotImplementedError
 from ..hip_runtime import contiguous_size, pack_tensor_value, unpack_tensor_value
 from ..ir import KernelArgument, PortableKernelIR, TensorSpec
-from ..runtime import RuntimeTensor
+from ..runtime import RuntimeTensor, TensorHandle
 from ..target import NvidiaTarget
 from .ptx_bridge import PtxBridge
+
+_DLPACK_DEVICE_TYPE_CUDA = 2
 
 
 def _tensor_ctype(dtype: str):
@@ -105,8 +107,11 @@ class PtxExecBackend:
                 if not isinstance(argument.spec, TensorSpec):
                     raise BackendNotImplementedError("ptx_exec currently supports tensor arguments only")
                 if not isinstance(value, RuntimeTensor):
+                    if isinstance(value, TensorHandle):
+                        kernel_params.append(self._tensor_handle_ptr(value, argument))
+                        continue
                     raise TypeError(
-                        f"ptx_exec currently expects RuntimeTensor values for tensor argument '{argument.name}', got {type(value).__name__}"
+                        f"ptx_exec currently expects RuntimeTensor or CUDA TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
                     )
                 allocation = self._upload_tensor(driver, value)
                 allocations.append(allocation)
@@ -143,6 +148,22 @@ class PtxExecBackend:
             byte_size=byte_size,
             host_array=host_array,
         )
+
+    def _tensor_handle_ptr(self, value: TensorHandle, argument: KernelArgument) -> int:
+        if int(value.device_type) != _DLPACK_DEVICE_TYPE_CUDA:
+            raise BackendNotImplementedError(
+                f"ptx_exec currently requires CUDA TensorHandle inputs for tensor argument '{argument.name}'"
+            )
+        data_ptr = value.data_ptr() or value.raw_address
+        if not data_ptr:
+            raise TypeError(
+                f"ptx_exec tensor handle for argument '{argument.name}' does not expose a usable data_ptr()"
+            )
+        if value.stride is not None and tuple(int(dim) for dim in value.stride) != self._canonical_stride(value.shape):
+            raise BackendNotImplementedError(
+                f"ptx_exec currently requires contiguous CUDA TensorHandle inputs for tensor argument '{argument.name}'"
+            )
+        return int(data_ptr)
 
     def _canonical_stride(self, shape: tuple[int, ...]) -> tuple[int, ...]:
         if not shape:
