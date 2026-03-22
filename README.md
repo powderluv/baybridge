@@ -1,17 +1,17 @@
 # baybridge
 
-`baybridge` is an in-progress AMD-focused kernel DSL and portability layer.
+`baybridge` is an in-progress AMD-first kernel DSL and portability layer.
 
 Today it provides:
 - a Python frontend with an example-friendly `import baybridge as cute` surface
 - a portable kernel IR
-- textual lowering backends (`mlir_text`, `gpu_text`, `gpu_mlir`, `waveasm_ref`, `aster_ref`, and `hipkittens_ref`)
+- textual/reference lowering backends (`mlir_text`, `gpu_text`, `gpu_mlir`, `waveasm_ref`, `aster_ref`, `hipkittens_ref`, and `ptx_ref`)
 - executable HIP lowering for a narrow validated subset
+- an executable PTX backend for a narrow validated subset via the CUDA driver JIT
 - an optional executable HipKittens backend for a narrow BF16 GEMM subset
 - a reference runtime for basic examples and `@jit` wrapper execution
 
 It does not yet provide:
-- HSACO production or HIP launch
 - PTX-to-AMDGCN translation
 - broad executable lowering for the full DSL surface
 
@@ -207,6 +207,79 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - lowers portable IR to GPU/ROCDL-flavored textual IR
 - `backend="gpu_mlir"`
   - lowers portable IR to a stricter MLIR GPU/module form suitable for external backend consumption
+- `backend="ptx_ref"`
+  - lowers a narrow exact Baybridge subset to driver-JIT-loadable PTX text
+  - current validated subset:
+    - canonical indexed rank-1 dense copy
+    - canonical indexed rank-1 dense pointwise `add/sub/mul/div`
+    - canonical indexed rank-1 unary `sqrt/rsqrt`
+    - canonical indexed rank-1 scalar broadcast from:
+      - a scalar kernel parameter
+      - a rank-1 extent-1 tensor
+    - direct `threadIdx.x` rank-1 dense copy
+    - direct `threadIdx.x` rank-1 dense pointwise `add/sub/mul/div`
+    - direct `threadIdx.x` rank-1 unary `sqrt/rsqrt`
+    - direct `threadIdx.x` scalar broadcast from either:
+      - a scalar kernel parameter
+      - a rank-1 extent-1 tensor
+    - serial rank-1 scalar reductions to `dst[0]`:
+      - `reduce_add`
+      - `reduce_mul`
+      - `reduce_max`
+      - `reduce_min`
+      - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+    - exact parallel rank-1 scalar reduction to `dst[0]`:
+      - supported ops:
+        - `reduce_add`
+        - `reduce_mul`
+        - `reduce_max`
+        - `reduce_min`
+      - current launch contract: `grid=(1,1,1)`, `block=(power_of_two,1,1)`
+      - current lowering uses a single-block shared-memory reduction
+    - exact 2D `f32/i32` reduction bundle:
+      - scalar reduction to `dst_scalar[0]`
+      - row reduction to `dst_rows`
+      - column reduction to `dst_cols`
+      - supported ops:
+        - `reduce_add`
+        - `reduce_mul`
+        - `reduce_max`
+        - `reduce_min`
+      - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+    - exact parallel 2D `f32/i32` reduction bundle:
+      - scalar reduction to `dst_scalar[0]`
+      - row reduction to `dst_rows`
+      - column reduction to `dst_cols`
+      - supported ops:
+        - `reduce_add`
+        - `reduce_mul`
+        - `reduce_max`
+        - `reduce_min`
+      - exact current launch contract: `grid=(1,1,1)`, `block=(power_of_two,1,1)`, `block.x >= max(rows, cols)`
+      - current lowering uses a single-block shared-memory scalar reduction plus per-thread row/column accumulation
+    - exact 2D `f32/i32` tensor-factory bundle:
+      - `dst_zero.store(bb.zeros_like(dst_zero))`
+      - `dst_one.store(bb.ones_like(dst_one))`
+      - `dst_full.store(bb.full_like(dst_full, fill_value))`
+      - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+  - current dtypes:
+    - `f32`
+    - `i32`
+- `backend="ptx_exec"`
+  - launches the same exact PTX subset through `libcuda.so.1`
+  - no `nvcc`, `nvrtc`, or `ptxas` is required in the backend path
+  - works with:
+    - Baybridge `RuntimeTensor` values through host staging
+    - CUDA `TensorHandle` values with real device pointers
+  - scalar kernel parameters are supported for the exact PTX scalar-broadcast family
+  - current PTX unary math stays intentionally narrow:
+    - `sqrt` lowers to native PTX `sqrt.rn.f32`
+    - `rsqrt` lowers to native PTX `rsqrt.approx.f32`
+  - current PTX reductions are intentionally serial:
+    - they are correctness-first exact lowerings for the traced 1D scalar-reduction form
+    - and for the exact traced 2D reduction-bundle form
+    - except for the exact single-block scalar-reduction family above and the exact parallel 2D reduction-bundle family, which now have shared-memory parallel lowerings
+  - broader CUDA math that would require `libdevice` is still intentionally deferred
 - `backend="waveasm_ref"`
   - lowers supported kernels to WaveASM-oriented MLIR plus tool invocation hints
   - this is a reference backend, not an executable backend
@@ -305,6 +378,9 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - requires `BAYBRIDGE_HIPKITTENS_ROOT` to point at a HipKittens checkout
 
 Default backend behavior:
+- if the compile target is `cute.NvidiaTarget(...)` and no explicit backend is given, Baybridge auto-selects:
+  - `ptx_exec` when the CUDA driver is available and the traced kernel matches the current exact PTX subset
+  - otherwise `ptx_ref`
 - if `compile(...)` is called without an explicit backend, the traced kernel matches `hipkittens_exec` on `gfx950`, and `BAYBRIDGE_HIPKITTENS_ROOT` points at a usable checkout, Baybridge auto-prefers `hipkittens_exec`
 - the same auto-preference path can apply to `gfx942`, but only when the local ROCm toolchain satisfies the HipKittens `cdna3` header requirements
 - otherwise, if the traced kernel matches a HipKittens tensorop GEMM or attention family, Baybridge auto-prefers `hipkittens_ref`
@@ -345,6 +421,20 @@ artifact = cute.compile(
 artifact(a, b, c)
 ```
 
+PTX executable example:
+
+```python
+artifact = cute.compile(
+    indexed_add_kernel,
+    a,
+    b,
+    c,
+    backend="ptx_exec",
+    target=cute.NvidiaTarget(sm="sm_80"),
+)
+artifact(a, b, c)
+```
+
 ## Working Examples In This Repo
 
 These tests are the best executable documentation today:
@@ -369,8 +459,7 @@ Not implemented yet:
 - `zipped_divide`
 - composition-based tiled tensor views
 - slice/view objects with `.load()` / `.store()` semantics
-- executable ROCm lowering
-- PTX translation
+- broad NVIDIA executable lowering beyond the current exact PTX subset
 
 Important limitations in the current tracer:
 - dynamic Python `if`, `while`, and other control flow on traced scalars are rejected

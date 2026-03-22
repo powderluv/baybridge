@@ -7,7 +7,7 @@ This document is the current backend inventory for Baybridge, including executio
 The status below separates three things:
 - backend surface area
 - validated execution coverage
-- what was benchmarkable in the current repo-local remote environments on `mi355` and `mi300`
+- what was benchmarkable in the current repo-local remote environments on `mi355` and `mi300`, plus the local NVIDIA host for PTX
 
 That split matters because some backends are integrated and tested, but still depend on extra runtime environment setup for ad hoc shell-driven benchmarking.
 
@@ -15,12 +15,12 @@ That split matters because some backends are integrated and tested, but still de
 
 Current repo state during this documentation pass:
 - branch: `main`
-- worktree: clean
+- worktree: dirty
 - full local suite:
-  - `377 passed, 168 skipped`
-- focused local WaveASM validation after the latest `gpu_text`/`waveasm_exec` math widening:
-  - `tests/test_backend_gpu.py tests/test_backend_waveasm_exec.py tests/test_backend_waveasm_ref.py`
-  - result: `34 passed, 2 skipped`
+  - `507 passed, 196 skipped`
+- focused local PTX/CUDA validation:
+  - `tests/test_backend_ptx_ref.py tests/test_backend_ptx_exec.py tests/test_cuda_driver_runtime.py tests/test_backend_benchmark_tools.py`
+  - result: `103 passed`
 
 ## Backend Test Inventory
 
@@ -33,11 +33,14 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
 | `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
 | `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `125` |
+| `tests/test_backend_ptx_ref.py` | `ptx_ref` PTX lowering, fallback selection, and driver-JIT-loadable module text | `45` |
+| `tests/test_backend_ptx_exec.py` | `ptx_exec` lowering, NVIDIA execution, CUDA tensor-handle execution, and auto-selection | `44` |
 | `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
 | `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
 | `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
 | `tests/test_backend_aster_exec.py` | `aster_exec` lowering, auto-selection, AMD execution, MFMA, float8, broadcast/tail coverage | `144` |
-| `tests/test_backend_benchmark_tools.py` | benchmark sample factories and timing helpers | `4` |
+| `tests/test_backend_benchmark_tools.py` | benchmark sample factories and timing helpers | `10` |
+| `tests/test_cuda_driver_runtime.py` | CUDA driver bootstrap used by the PTX backend | `4` |
 | `tests/test_hip_runtime.py` | HIP runtime bootstrap used by executable backends | `2` |
 
 ## Backend Inventory
@@ -48,6 +51,8 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `mlir_text` | text/ref | textual inspection | local | broad traced subset | Baybridge-specific textual IR |
 | `gpu_text` | text/ref | textual GPU-flavored inspection | local | broad traced subset | Useful for debug only |
 | `gpu_mlir` | text/ref | structured MLIR emission | local | broad traced subset | Base for external MLIR backends |
+| `ptx_ref` | ref | Baybridge-owned PTX text lowering | local NVIDIA host | exact rank-1 dense copy, pointwise `add/sub/mul/div`, scalar-broadcast, narrow unary `sqrt/rsqrt`, serial scalar reductions, exact single-block parallel scalar reductions, exact 2D serial reduction bundles, exact 2D parallel reduction bundles, and exact 2D tensor-factory bundles for `f32`/`i32` on canonical indexed or direct `threadIdx.x` forms | Emits PTX text that the CUDA driver JIT can load directly; no toolkit is required in the backend path |
+| `ptx_exec` | exec | Baybridge-owned NVIDIA executable path | local NVIDIA host | same exact PTX subset as `ptx_ref`; works with Baybridge `RuntimeTensor` staging, CUDA `TensorHandle` inputs, and scalar kernel params | Uses only `libcuda.so.1`; auto-preferred for `NvidiaTarget` when available and the traced kernel matches the exact PTX subset |
 | `hipcc_exec` | exec | default general AMD executable path | `gfx950`, `gfx942` | broad traced kernel subset including copy, pointwise, broadcast, reductions, shared memory, many tensor helpers | Primary executable backend today |
 | `hipkittens_ref` | ref | reference/source backend for HipKittens families | local, `gfx950`, `gfx942` | GEMM, attention-family, norm-family matching | Not executable |
 | `hipkittens_exec` | exec | narrow AMD-native GEMM backend | `gfx950`, `gfx942` | BF16/F16 GEMM on supported tile families, including validated BF16 transpose families | Opt-in or auto-selected only for matching GEMM kernels; transposed F16 and RMSNorm stay on `hipkittens_ref` on `gfx950` because current upstream HipKittens templates/headers reject those families |
@@ -78,6 +83,87 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | GEMM | No dedicated path | Yes, narrow validated subset | No | Yes, exact `16x16x16` MFMA subset plus direct `fp8`/`bf8` exact and mixed `16x16x32` on `gfx942` only | No |
 | Attention / norm families | No dedicated path | ref only | ref only | ref only | ref only |
 
+## NVIDIA PTX Exact Coverage
+
+The PTX path is intentionally separate from the AMD-focused execution matrix above.
+
+- `ptx_ref` and `ptx_exec` are currently validated for:
+  - canonical indexed rank-1 dense copy
+  - canonical indexed rank-1 dense pointwise `add/sub/mul/div`
+  - canonical indexed rank-1 unary `sqrt/rsqrt`
+  - canonical indexed rank-1 scalar broadcast from:
+    - a scalar kernel parameter
+    - a rank-1 extent-1 tensor
+  - direct `threadIdx.x` rank-1 dense copy
+  - direct `threadIdx.x` rank-1 dense pointwise `add/sub/mul/div`
+  - direct `threadIdx.x` rank-1 unary `sqrt/rsqrt`
+  - direct `threadIdx.x` scalar broadcast from:
+    - a scalar kernel parameter
+    - a rank-1 extent-1 tensor
+  - serial rank-1 scalar reductions to `dst[0]`:
+    - `reduce_add`
+    - `reduce_mul`
+    - `reduce_max`
+    - `reduce_min`
+    - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+  - exact parallel rank-1 scalar reduction to `dst[0]`:
+    - supported ops:
+      - `reduce_add`
+      - `reduce_mul`
+      - `reduce_max`
+      - `reduce_min`
+    - current launch contract: `grid=(1,1,1)`, `block=(power_of_two,1,1)`
+    - current lowering uses a single-block shared-memory reduction
+  - exact 2D `f32/i32` reduction bundle:
+    - scalar reduction to `dst_scalar[0]`
+    - row reduction to `dst_rows`
+    - column reduction to `dst_cols`
+    - supported ops:
+      - `reduce_add`
+      - `reduce_mul`
+      - `reduce_max`
+      - `reduce_min`
+    - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+  - exact parallel 2D `f32/i32` reduction bundle:
+    - scalar reduction to `dst_scalar[0]`
+    - row reduction to `dst_rows`
+    - column reduction to `dst_cols`
+    - supported ops:
+      - `reduce_add`
+      - `reduce_mul`
+      - `reduce_max`
+      - `reduce_min`
+    - exact current launch contract: `grid=(1,1,1)`, `block=(power_of_two,1,1)`, `block.x >= max(rows, cols)`
+    - current lowering uses a single-block shared-memory scalar reduction plus per-thread row/column accumulation
+  - exact 2D `f32/i32` tensor-factory bundle:
+    - `dst_zero.store(bb.zeros_like(dst_zero))`
+    - `dst_one.store(bb.ones_like(dst_one))`
+    - `dst_full.store(bb.full_like(dst_full, fill_value))`
+    - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
+- current dtypes:
+  - `f32`
+  - `i32`
+- runtime paths validated in `ptx_exec`:
+  - Baybridge `RuntimeTensor` values through CUDA-driver host staging
+  - CUDA `TensorHandle` values with real device pointers
+- current runtime dependency:
+  - `libcuda.so.1`
+- current non-goals:
+  - `nvcc`
+  - `nvrtc`
+  - `ptxas`
+  - broader CUDA math/libdevice lowering
+- unary PTX note:
+  - `sqrt` uses native `sqrt.rn.f32`
+  - `rsqrt` uses native `rsqrt.approx.f32`, so its validated runtime path is approximate by construction
+- reduction PTX note:
+  - current scalar reductions are serial correctness-first lowerings
+  - except for the exact single-block reduction family, which now has a shared-memory parallel lowering
+  - the current 2D reduction bundle is also serial and correctness-first
+  - the exact 2D reduction bundle also has a narrow single-block parallel path now
+  - for the 2D bundle, the direct CUDA-handle path benefits much more than the staged path because host copies still dominate staged timings
+  - there is not yet a general parallel CUDA reduction path beyond those exact single-block families
+
 ## Benchmark Method
 
 Checked-in harness:
@@ -92,6 +178,7 @@ Benchmark notes:
 - the first execution is usually a clear cold-start outlier
 - the tables below report the median of the six warm runs after dropping the first cold-start outlier
 - pointwise benchmark size: `65536` elements
+- PTX snapshot target: `sm_80` PTX JIT on the local NVIDIA host
 - FlyDSL specialized 1D microbenchmark size: `4096` elements
 - FlyDSL specialized 2D microbenchmark shape: `64x64`
 - FlyDSL specialized shared-stage microbenchmark size: `256` elements
@@ -138,6 +225,70 @@ Benchmark notes:
 | BF16 GEMM `32x16 * 16x32 -> 32x32` | `hipkittens_exec` | `1.46` | Narrow supported microkernel family |
 | Dense `f32` copy, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
 | Dense `f32` add, `65536` elements | `aster_exec` | n/a | ASTER is measured separately on a `4096`-element microbenchmark because that is the validated checked-in harness path today |
+
+## NVIDIA PTX Snapshot
+
+These timings were captured on the local NVIDIA host:
+- GPU: `NVIDIA RTX PRO 6000 Blackwell Workstation Edition`
+- driver path: direct `libcuda.so.1`
+- target passed to Baybridge: `sm_80`
+- method: checked-in [`tools/compare_backends.py`](/home/nod/github/baybridge/tools/compare_backends.py) with `--execute --repeat 7`
+- note:
+  - rows without `CUDA handles` use Baybridge `RuntimeTensor` staging
+  - rows with `CUDA handles` use `compile_args` as `RuntimeTensor` values but `run_args` as direct CUDA `TensorHandle` values, so they isolate the PTX launch/device path without host copies
+
+| Family | Backend | Cold ms | Warm median ms | Notes |
+| --- | --- | ---: | ---: | --- |
+| Indexed `f32` copy, `65536` elements | `ptx_exec` | `241.82` | `25.17` | Canonical indexed PTX copy path through driver JIT |
+| Indexed `f32` add, `65536` elements | `ptx_exec` | `219.18` | `37.18` | Canonical indexed PTX pointwise add path through driver JIT |
+| Indexed `i32` copy, `65536` elements | `ptx_exec` | `259.77` | `32.39` | Canonical indexed PTX copy path through driver JIT |
+| Indexed `i32` add, `65536` elements | `ptx_exec` | `167.98` | `48.84` | Canonical indexed PTX pointwise add path through driver JIT |
+| Indexed `f32` sqrt, `65536` elements | `ptx_exec` | `343.01` | `25.44` | Canonical indexed PTX unary sqrt path through driver JIT |
+| Indexed `f32` rsqrt, `65536` elements | `ptx_exec` | `250.40` | `25.33` | Canonical indexed PTX unary rsqrt path through driver JIT |
+| Indexed `f32` scalar-broadcast add, `65536` elements | `ptx_exec` | `273.45` | `25.17` | Canonical indexed PTX scalar-parameter broadcast path through driver JIT |
+| Indexed `i32` scalar-broadcast add, `65536` elements | `ptx_exec` | `155.19` | `33.69` | Canonical indexed PTX scalar-parameter broadcast path through driver JIT |
+| Scalar `f32` reduction add, `65536` elements | `ptx_exec` | `240.74` | `13.22` | Serial exact PTX scalar-reduction path through driver JIT |
+| Parallel scalar `f32` reduction add, `65536` elements | `ptx_exec` | `283.92` | `13.01` | Exact single-block shared-memory PTX reduction-add path through driver JIT |
+| Parallel scalar `i32` reduction add, `65536` elements | `ptx_exec` | `278.42` | `16.35` | Exact single-block shared-memory PTX reduction-add path through driver JIT |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `258.23` | `1.06` | Serial exact PTX 2D reduction-add bundle through driver JIT |
+| 2D `i32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `310.74` | `1.33` | Serial exact PTX 2D reduction-add bundle through driver JIT |
+| Parallel 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `425.35` | `1.16` | Exact single-block shared-memory PTX reduction-add bundle through driver JIT |
+| Parallel 2D `f32` reduction mul bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `419.50` | `0.96` | Exact single-block shared-memory PTX reduction-mul bundle through driver JIT |
+| Parallel 2D `f32` reduction max bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `368.44` | `1.01` | Exact single-block shared-memory PTX reduction-max bundle through driver JIT |
+| Parallel 2D `f32` reduction min bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `419.47` | `1.11` | Exact single-block shared-memory PTX reduction-min bundle through driver JIT |
+| 2D `f32` tensor-factory bundle, `64x64` | `ptx_exec` | `436.49` | `7.10` | Exact PTX tensor-factory bundle through driver JIT |
+| Parallel 2D `i32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `379.27` | `1.37` | Exact single-block shared-memory PTX reduction-add bundle through driver JIT |
+| Parallel 2D `i32` reduction mul bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `377.81` | `1.37` | Exact single-block shared-memory PTX reduction-mul bundle through driver JIT |
+| Parallel 2D `i32` reduction max bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `412.13` | `1.24` | Exact single-block shared-memory PTX reduction-max bundle through driver JIT |
+| Parallel 2D `i32` reduction min bundle, `64x64 -> (1,) + (64,) + (64,)` | `ptx_exec` | `268.32` | `1.26` | Exact single-block shared-memory PTX reduction-min bundle through driver JIT |
+| 2D `i32` tensor-factory bundle, `64x64` | `ptx_exec` | `411.07` | `5.07` | Exact PTX tensor-factory bundle through driver JIT |
+| Indexed `f32` copy, `65536` elements, CUDA handles | `ptx_exec` | `0.34` | `0.02` | Same canonical PTX copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f32` add, `65536` elements, CUDA handles | `ptx_exec` | `0.30` | `0.02` | Same canonical PTX add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `i32` copy, `65536` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same canonical PTX copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `i32` add, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f32` sqrt, `65536` elements, CUDA handles | `ptx_exec` | `0.32` | `0.02` | Same canonical PTX unary sqrt kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f32` rsqrt, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX unary rsqrt kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f32` scalar-broadcast add, `65536` elements, CUDA handles | `ptx_exec` | `0.30` | `0.02` | Same canonical PTX scalar-broadcast kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `i32` scalar-broadcast add, `65536` elements, CUDA handles | `ptx_exec` | `0.24` | `0.02` | Same canonical PTX scalar-broadcast kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Scalar `f32` reduction add, `65536` elements, CUDA handles | `ptx_exec` | `0.77` | `0.49` | Same serial exact PTX scalar-reduction kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel scalar `f32` reduction add, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.03` | Same exact single-block shared-memory PTX reduction-add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel scalar `i32` reduction add, `65536` elements, CUDA handles | `ptx_exec` | `0.24` | `0.03` | Same exact single-block shared-memory PTX reduction-add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `0.33` | `0.09` | Same serial exact PTX 2D reduction-add bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `i32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `26.13` | `0.10` | Same serial exact PTX 2D reduction-add bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `f32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `24.52` | `0.03` | Same exact single-block shared-memory PTX reduction-add bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `f32` reduction mul bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `24.09` | `0.02` | Same exact single-block shared-memory PTX reduction-mul bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `f32` reduction max bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `23.76` | `0.03` | Same exact single-block shared-memory PTX reduction-max bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `f32` reduction min bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `23.37` | `0.03` | Same exact single-block shared-memory PTX reduction-min bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `f32` tensor-factory bundle, `64x64`, CUDA handles | `ptx_exec` | `37.28` | `0.05` | Same exact PTX tensor-factory bundle, but executed with direct CUDA `TensorHandle` outputs to avoid host staging |
+| Parallel 2D `i32` reduction add bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `25.29` | `0.13` | Same exact single-block shared-memory PTX reduction-add bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `i32` reduction mul bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `0.24` | `0.02` | Same exact single-block shared-memory PTX reduction-mul bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `i32` reduction max bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `0.21` | `0.02` | Same exact single-block shared-memory PTX reduction-max bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Parallel 2D `i32` reduction min bundle, `64x64 -> (1,) + (64,) + (64,)`, CUDA handles | `ptx_exec` | `0.32` | `0.02` | Same exact single-block shared-memory PTX reduction-min bundle, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `i32` tensor-factory bundle, `64x64`, CUDA handles | `ptx_exec` | `27.93` | `0.05` | Same exact PTX tensor-factory bundle, but executed with direct CUDA `TensorHandle` outputs to avoid host staging |
+| Direct `f32` sqrt, `128` elements | `ptx_exec` | `129.88` | `0.17` | Direct `threadIdx.x` PTX unary sqrt path |
+| Direct `f32` sqrt, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary sqrt kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Direct `f32` rsqrt, `128` elements | `ptx_exec` | `308.19` | `0.19` | Direct `threadIdx.x` PTX unary rsqrt path; uses `rsqrt.approx.f32`, so accuracy is approximate |
+| Direct `f32` rsqrt, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary rsqrt kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; accuracy is approximate |
 
 ## FlyDSL Specialized Microbenchmark Snapshot
 

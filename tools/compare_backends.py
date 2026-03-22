@@ -87,7 +87,7 @@ def _sample_payload_from_factory(factory, *, backend_name: str, target) -> dict[
 
 
 def _is_executable_backend(name: str) -> bool:
-    return name in {"hipcc_exec", "hipkittens_exec", "flydsl_exec", "waveasm_exec", "aster_exec"}
+    return name in {"hipcc_exec", "hipkittens_exec", "flydsl_exec", "waveasm_exec", "aster_exec", "ptx_exec"}
 
 
 def _summarize_value(value):
@@ -266,7 +266,7 @@ def main() -> int:
         help="Include Python/platform/tool/version metadata alongside the backend results",
     )
     parser.add_argument("--cache-dir", default=None)
-    parser.add_argument("--target", default=None, help="AMD target arch such as gfx942 or gfx950")
+    parser.add_argument("--target", default=None, help="GPU target arch such as gfx942, gfx950, or sm_80")
     args = parser.parse_args()
     if args.repeat < 1:
         raise SystemExit("--repeat must be >= 1")
@@ -283,7 +283,10 @@ def main() -> int:
     sample_factory = None
     if args.sample_factory:
         sample_factory = _resolve_symbol(module, args.sample_factory)
-    target = bb.AMDTarget(arch=args.target) if args.target else None
+    if args.target:
+        target = bb.NvidiaTarget(sm=args.target) if args.target.startswith("sm_") else bb.AMDTarget(arch=args.target)
+    else:
+        target = None
     cache_dir = args.cache_dir
 
     backend_names = tuple(item.strip() for item in args.backends.split(",") if item.strip())

@@ -8,9 +8,10 @@ from typing import Any
 from ..backend import LoweredModule
 from ..cuda_driver import CudaDriver, CUdeviceptr, load_cuda_driver_library
 from ..diagnostics import BackendNotImplementedError
+from ..dtypes import normalize_dtype_name
 from ..hip_runtime import contiguous_size, pack_tensor_value, unpack_tensor_value
-from ..ir import KernelArgument, PortableKernelIR, TensorSpec
-from ..runtime import RuntimeTensor, TensorHandle
+from ..ir import KernelArgument, PortableKernelIR, ScalarSpec, TensorSpec
+from ..runtime import RuntimeScalar, RuntimeTensor, TensorHandle
 from ..target import NvidiaTarget
 from .ptx_bridge import PtxBridge
 
@@ -26,6 +27,17 @@ def _tensor_ctype(dtype: str):
         return table[dtype]
     except KeyError as exc:
         raise BackendNotImplementedError(f"ptx_exec does not support tensor dtype '{dtype}' yet") from exc
+
+
+def _scalar_ctype(dtype: str):
+    table = {
+        "f32": ctypes.c_float,
+        "i32": ctypes.c_int32,
+    }
+    try:
+        return table[dtype]
+    except KeyError as exc:
+        raise BackendNotImplementedError(f"ptx_exec does not support scalar dtype '{dtype}' yet") from exc
 
 
 @dataclass
@@ -104,18 +116,19 @@ class PtxExecBackend:
         kernel_params: list[object] = []
         try:
             for argument, value in zip(ir.arguments, args):
-                if not isinstance(argument.spec, TensorSpec):
-                    raise BackendNotImplementedError("ptx_exec currently supports tensor arguments only")
-                if not isinstance(value, RuntimeTensor):
-                    if isinstance(value, TensorHandle):
-                        kernel_params.append(self._tensor_handle_ptr(value, argument))
-                        continue
-                    raise TypeError(
-                        f"ptx_exec currently expects RuntimeTensor or CUDA TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
-                    )
-                allocation = self._upload_tensor(driver, value)
-                allocations.append(allocation)
-                kernel_params.append(int(allocation.ptr.value))
+                if isinstance(argument.spec, TensorSpec):
+                    if not isinstance(value, RuntimeTensor):
+                        if isinstance(value, TensorHandle):
+                            kernel_params.append(self._tensor_handle_ptr(value, argument))
+                            continue
+                        raise TypeError(
+                            f"ptx_exec currently expects RuntimeTensor or CUDA TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
+                        )
+                    allocation = self._upload_tensor(driver, value)
+                    allocations.append(allocation)
+                    kernel_params.append(int(allocation.ptr.value))
+                    continue
+                kernel_params.append(self._scalar_kernel_param(value, argument))
             driver.launch_kernel(
                 function,
                 grid=ir.launch.grid,
@@ -164,6 +177,18 @@ class PtxExecBackend:
                 f"ptx_exec currently requires contiguous CUDA TensorHandle inputs for tensor argument '{argument.name}'"
             )
         return int(data_ptr)
+
+    def _scalar_kernel_param(self, value: Any, argument: KernelArgument) -> ctypes._SimpleCData:
+        if not isinstance(argument.spec, ScalarSpec):
+            raise TypeError("scalar kernel parameter adaptation requires a scalar argument spec")
+        ctype = _scalar_ctype(argument.spec.dtype)
+        if isinstance(value, RuntimeScalar):
+            if normalize_dtype_name(value.dtype) != argument.spec.dtype:
+                raise TypeError(
+                    f"ptx_exec scalar argument '{argument.name}' expects dtype {argument.spec.dtype}, got {value.dtype}"
+                )
+            return ctype(value.value)
+        return ctype(value)
 
     def _canonical_stride(self, shape: tuple[int, ...]) -> tuple[int, ...]:
         if not shape:

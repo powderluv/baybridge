@@ -22,6 +22,55 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     kernels = _load_tool_module("backend_benchmark_kernels")
 
     copy_payload = kernels.aster_dense_copy_f32_args()
+    indexed_copy_payload = kernels.indexed_copy_f32_args()
+    indexed_copy_cuda_handle_payload = kernels.indexed_copy_f32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_copy_i32_payload = kernels.indexed_copy_i32_args()
+    indexed_copy_i32_cuda_handle_payload = kernels.indexed_copy_i32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_add_cuda_handle_payload = kernels.indexed_add_f32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_add_i32_payload = kernels.indexed_add_i32_args()
+    indexed_add_i32_cuda_handle_payload = kernels.indexed_add_i32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_scalar_broadcast_payload = kernels.indexed_scalar_broadcast_add_f32_args()
+    indexed_scalar_broadcast_cuda_handle_payload = kernels.indexed_scalar_broadcast_add_f32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_scalar_broadcast_i32_payload = kernels.indexed_scalar_broadcast_add_i32_args()
+    indexed_scalar_broadcast_i32_cuda_handle_payload = kernels.indexed_scalar_broadcast_add_i32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_sqrt_payload = kernels.indexed_sqrt_f32_args()
+    indexed_sqrt_cuda_handle_payload = kernels.indexed_sqrt_f32_cuda_handle_args(backend_name="ptx_exec")
+    indexed_rsqrt_payload = kernels.indexed_rsqrt_f32_args()
+    indexed_rsqrt_cuda_handle_payload = kernels.indexed_rsqrt_f32_cuda_handle_args(backend_name="ptx_exec")
+    direct_sqrt_payload = kernels.direct_sqrt_f32_args()
+    direct_sqrt_cuda_handle_payload = kernels.direct_sqrt_f32_cuda_handle_args(backend_name="ptx_exec")
+    direct_rsqrt_payload = kernels.direct_rsqrt_f32_args()
+    direct_rsqrt_cuda_handle_payload = kernels.direct_rsqrt_f32_cuda_handle_args(backend_name="ptx_exec")
+    reduce_add_payload = kernels.reduce_add_f32_args()
+    reduce_add_cuda_handle_payload = kernels.reduce_add_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_add_payload = kernels.parallel_reduce_add_f32_args()
+    parallel_reduce_add_cuda_handle_payload = kernels.parallel_reduce_add_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_add_i32_payload = kernels.parallel_reduce_add_i32_args()
+    parallel_reduce_add_i32_cuda_handle_payload = kernels.parallel_reduce_add_i32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_add_2d_bundle_payload = kernels.parallel_reduce_add_2d_bundle_f32_args()
+    parallel_reduce_add_2d_bundle_cuda_handle_payload = kernels.parallel_reduce_add_2d_bundle_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_add_2d_bundle_i32_payload = kernels.parallel_reduce_add_2d_bundle_i32_args()
+    parallel_reduce_add_2d_bundle_i32_cuda_handle_payload = kernels.parallel_reduce_add_2d_bundle_i32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_mul_2d_bundle_payload = kernels.parallel_reduce_mul_2d_bundle_f32_args()
+    parallel_reduce_mul_2d_bundle_cuda_handle_payload = kernels.parallel_reduce_mul_2d_bundle_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_max_2d_bundle_payload = kernels.parallel_reduce_max_2d_bundle_f32_args()
+    parallel_reduce_max_2d_bundle_cuda_handle_payload = kernels.parallel_reduce_max_2d_bundle_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_min_2d_bundle_payload = kernels.parallel_reduce_min_2d_bundle_f32_args()
+    parallel_reduce_min_2d_bundle_cuda_handle_payload = kernels.parallel_reduce_min_2d_bundle_f32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_mul_2d_bundle_i32_payload = kernels.parallel_reduce_mul_2d_bundle_i32_args()
+    parallel_reduce_mul_2d_bundle_i32_cuda_handle_payload = kernels.parallel_reduce_mul_2d_bundle_i32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_max_2d_bundle_i32_payload = kernels.parallel_reduce_max_2d_bundle_i32_args()
+    parallel_reduce_max_2d_bundle_i32_cuda_handle_payload = kernels.parallel_reduce_max_2d_bundle_i32_cuda_handle_args(backend_name="ptx_exec")
+    parallel_reduce_min_2d_bundle_i32_payload = kernels.parallel_reduce_min_2d_bundle_i32_args()
+    parallel_reduce_min_2d_bundle_i32_cuda_handle_payload = kernels.parallel_reduce_min_2d_bundle_i32_cuda_handle_args(backend_name="ptx_exec")
+    tensor_factory_2d_payload = kernels.tensor_factory_2d_f32_args()
+    tensor_factory_2d_cuda_handle_payload = kernels.tensor_factory_2d_f32_cuda_handle_args(backend_name="ptx_exec")
+    tensor_factory_2d_i32_payload = kernels.tensor_factory_2d_i32_args()
+    tensor_factory_2d_i32_cuda_handle_payload = kernels.tensor_factory_2d_i32_cuda_handle_args(backend_name="ptx_exec")
+    reduce_add_2d_bundle_payload = kernels.reduce_add_2d_bundle_f32_args()
+    reduce_add_2d_bundle_cuda_handle_payload = kernels.reduce_add_2d_bundle_f32_cuda_handle_args(backend_name="ptx_exec")
+    reduce_add_2d_bundle_i32_payload = kernels.reduce_add_2d_bundle_i32_args()
+    reduce_add_2d_bundle_i32_cuda_handle_payload = kernels.reduce_add_2d_bundle_i32_cuda_handle_args(backend_name="ptx_exec")
     add_payload = kernels.aster_dense_add_f32_args()
     copy_i32_payload = kernels.aster_dense_copy_i32_args()
     add_i32_payload = kernels.aster_dense_add_i32_args()
@@ -46,6 +95,80 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     flydsl_factory_payload = kernels.flydsl_tensor_factory_2d_args()
 
     copy_args = copy_payload["args"]
+    indexed_copy_args = indexed_copy_payload["args"]
+    indexed_copy_cuda_handle_compile_args = indexed_copy_cuda_handle_payload["compile_args"]
+    indexed_copy_cuda_handle_run_args = indexed_copy_cuda_handle_payload["run_args"]
+    indexed_copy_i32_args = indexed_copy_i32_payload["args"]
+    indexed_copy_i32_cuda_handle_compile_args = indexed_copy_i32_cuda_handle_payload["compile_args"]
+    indexed_copy_i32_cuda_handle_run_args = indexed_copy_i32_cuda_handle_payload["run_args"]
+    indexed_add_cuda_handle_compile_args = indexed_add_cuda_handle_payload["compile_args"]
+    indexed_add_cuda_handle_run_args = indexed_add_cuda_handle_payload["run_args"]
+    indexed_add_i32_args = indexed_add_i32_payload["args"]
+    indexed_add_i32_cuda_handle_compile_args = indexed_add_i32_cuda_handle_payload["compile_args"]
+    indexed_add_i32_cuda_handle_run_args = indexed_add_i32_cuda_handle_payload["run_args"]
+    indexed_scalar_broadcast_args = indexed_scalar_broadcast_payload["args"]
+    indexed_scalar_broadcast_cuda_handle_compile_args = indexed_scalar_broadcast_cuda_handle_payload["compile_args"]
+    indexed_scalar_broadcast_cuda_handle_run_args = indexed_scalar_broadcast_cuda_handle_payload["run_args"]
+    indexed_scalar_broadcast_i32_args = indexed_scalar_broadcast_i32_payload["args"]
+    indexed_scalar_broadcast_i32_cuda_handle_compile_args = indexed_scalar_broadcast_i32_cuda_handle_payload["compile_args"]
+    indexed_scalar_broadcast_i32_cuda_handle_run_args = indexed_scalar_broadcast_i32_cuda_handle_payload["run_args"]
+    indexed_sqrt_args = indexed_sqrt_payload["args"]
+    indexed_sqrt_cuda_handle_compile_args = indexed_sqrt_cuda_handle_payload["compile_args"]
+    indexed_sqrt_cuda_handle_run_args = indexed_sqrt_cuda_handle_payload["run_args"]
+    indexed_rsqrt_args = indexed_rsqrt_payload["args"]
+    indexed_rsqrt_cuda_handle_compile_args = indexed_rsqrt_cuda_handle_payload["compile_args"]
+    indexed_rsqrt_cuda_handle_run_args = indexed_rsqrt_cuda_handle_payload["run_args"]
+    direct_sqrt_args = direct_sqrt_payload["args"]
+    direct_sqrt_cuda_handle_compile_args = direct_sqrt_cuda_handle_payload["compile_args"]
+    direct_sqrt_cuda_handle_run_args = direct_sqrt_cuda_handle_payload["run_args"]
+    direct_rsqrt_args = direct_rsqrt_payload["args"]
+    direct_rsqrt_cuda_handle_compile_args = direct_rsqrt_cuda_handle_payload["compile_args"]
+    direct_rsqrt_cuda_handle_run_args = direct_rsqrt_cuda_handle_payload["run_args"]
+    reduce_add_args = reduce_add_payload["args"]
+    reduce_add_cuda_handle_compile_args = reduce_add_cuda_handle_payload["compile_args"]
+    reduce_add_cuda_handle_run_args = reduce_add_cuda_handle_payload["run_args"]
+    parallel_reduce_add_args = parallel_reduce_add_payload["args"]
+    parallel_reduce_add_cuda_handle_compile_args = parallel_reduce_add_cuda_handle_payload["compile_args"]
+    parallel_reduce_add_cuda_handle_run_args = parallel_reduce_add_cuda_handle_payload["run_args"]
+    parallel_reduce_add_i32_args = parallel_reduce_add_i32_payload["args"]
+    parallel_reduce_add_i32_cuda_handle_compile_args = parallel_reduce_add_i32_cuda_handle_payload["compile_args"]
+    parallel_reduce_add_i32_cuda_handle_run_args = parallel_reduce_add_i32_cuda_handle_payload["run_args"]
+    parallel_reduce_add_2d_bundle_args = parallel_reduce_add_2d_bundle_payload["args"]
+    parallel_reduce_add_2d_bundle_cuda_handle_compile_args = parallel_reduce_add_2d_bundle_cuda_handle_payload["compile_args"]
+    parallel_reduce_add_2d_bundle_cuda_handle_run_args = parallel_reduce_add_2d_bundle_cuda_handle_payload["run_args"]
+    parallel_reduce_add_2d_bundle_i32_args = parallel_reduce_add_2d_bundle_i32_payload["args"]
+    parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args = parallel_reduce_add_2d_bundle_i32_cuda_handle_payload["compile_args"]
+    parallel_reduce_add_2d_bundle_i32_cuda_handle_run_args = parallel_reduce_add_2d_bundle_i32_cuda_handle_payload["run_args"]
+    parallel_reduce_mul_2d_bundle_args = parallel_reduce_mul_2d_bundle_payload["args"]
+    parallel_reduce_mul_2d_bundle_cuda_handle_compile_args = parallel_reduce_mul_2d_bundle_cuda_handle_payload["compile_args"]
+    parallel_reduce_mul_2d_bundle_cuda_handle_run_args = parallel_reduce_mul_2d_bundle_cuda_handle_payload["run_args"]
+    parallel_reduce_max_2d_bundle_args = parallel_reduce_max_2d_bundle_payload["args"]
+    parallel_reduce_max_2d_bundle_cuda_handle_compile_args = parallel_reduce_max_2d_bundle_cuda_handle_payload["compile_args"]
+    parallel_reduce_max_2d_bundle_cuda_handle_run_args = parallel_reduce_max_2d_bundle_cuda_handle_payload["run_args"]
+    parallel_reduce_min_2d_bundle_args = parallel_reduce_min_2d_bundle_payload["args"]
+    parallel_reduce_min_2d_bundle_cuda_handle_compile_args = parallel_reduce_min_2d_bundle_cuda_handle_payload["compile_args"]
+    parallel_reduce_min_2d_bundle_cuda_handle_run_args = parallel_reduce_min_2d_bundle_cuda_handle_payload["run_args"]
+    parallel_reduce_mul_2d_bundle_i32_args = parallel_reduce_mul_2d_bundle_i32_payload["args"]
+    parallel_reduce_mul_2d_bundle_i32_cuda_handle_compile_args = parallel_reduce_mul_2d_bundle_i32_cuda_handle_payload["compile_args"]
+    parallel_reduce_mul_2d_bundle_i32_cuda_handle_run_args = parallel_reduce_mul_2d_bundle_i32_cuda_handle_payload["run_args"]
+    parallel_reduce_max_2d_bundle_i32_args = parallel_reduce_max_2d_bundle_i32_payload["args"]
+    parallel_reduce_max_2d_bundle_i32_cuda_handle_compile_args = parallel_reduce_max_2d_bundle_i32_cuda_handle_payload["compile_args"]
+    parallel_reduce_max_2d_bundle_i32_cuda_handle_run_args = parallel_reduce_max_2d_bundle_i32_cuda_handle_payload["run_args"]
+    parallel_reduce_min_2d_bundle_i32_args = parallel_reduce_min_2d_bundle_i32_payload["args"]
+    parallel_reduce_min_2d_bundle_i32_cuda_handle_compile_args = parallel_reduce_min_2d_bundle_i32_cuda_handle_payload["compile_args"]
+    parallel_reduce_min_2d_bundle_i32_cuda_handle_run_args = parallel_reduce_min_2d_bundle_i32_cuda_handle_payload["run_args"]
+    tensor_factory_2d_args = tensor_factory_2d_payload["args"]
+    tensor_factory_2d_cuda_handle_compile_args = tensor_factory_2d_cuda_handle_payload["compile_args"]
+    tensor_factory_2d_cuda_handle_run_args = tensor_factory_2d_cuda_handle_payload["run_args"]
+    tensor_factory_2d_i32_args = tensor_factory_2d_i32_payload["args"]
+    tensor_factory_2d_i32_cuda_handle_compile_args = tensor_factory_2d_i32_cuda_handle_payload["compile_args"]
+    tensor_factory_2d_i32_cuda_handle_run_args = tensor_factory_2d_i32_cuda_handle_payload["run_args"]
+    reduce_add_2d_bundle_args = reduce_add_2d_bundle_payload["args"]
+    reduce_add_2d_bundle_cuda_handle_compile_args = reduce_add_2d_bundle_cuda_handle_payload["compile_args"]
+    reduce_add_2d_bundle_cuda_handle_run_args = reduce_add_2d_bundle_cuda_handle_payload["run_args"]
+    reduce_add_2d_bundle_i32_args = reduce_add_2d_bundle_i32_payload["args"]
+    reduce_add_2d_bundle_i32_cuda_handle_compile_args = reduce_add_2d_bundle_i32_cuda_handle_payload["compile_args"]
+    reduce_add_2d_bundle_i32_cuda_handle_run_args = reduce_add_2d_bundle_i32_cuda_handle_payload["run_args"]
     add_args = add_payload["args"]
     copy_i32_args = copy_i32_payload["args"]
     add_i32_args = add_i32_payload["args"]
@@ -73,6 +196,337 @@ def test_aster_benchmark_sample_factories_return_expected_shapes() -> None:
     assert copy_args[0].shape == (kernels.ASTER_POINTWISE_N,)
     assert copy_args[1].shape == (kernels.ASTER_POINTWISE_N,)
     assert copy_payload["result_indices"] == ()
+
+    assert len(indexed_copy_args) == 2
+    assert indexed_copy_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_copy_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_copy_payload["result_indices"] == ()
+
+    assert len(indexed_copy_cuda_handle_compile_args) == 2
+    assert indexed_copy_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_copy_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert len(indexed_copy_cuda_handle_run_args) == 2
+    assert indexed_copy_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_copy_i32_args) == 2
+    assert indexed_copy_i32_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_copy_i32_args[1].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_copy_i32_args[0].dtype) == "i32"
+    assert str(indexed_copy_i32_args[1].dtype) == "i32"
+    assert indexed_copy_i32_payload["result_indices"] == ()
+
+    assert len(indexed_copy_i32_cuda_handle_compile_args) == 2
+    assert indexed_copy_i32_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_copy_i32_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_copy_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(indexed_copy_i32_cuda_handle_compile_args[1].dtype) == "i32"
+    assert len(indexed_copy_i32_cuda_handle_run_args) == 2
+    assert indexed_copy_i32_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_add_cuda_handle_compile_args) == 3
+    assert indexed_add_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_cuda_handle_compile_args[2].shape == (kernels.POINTWISE_N,)
+    assert len(indexed_add_cuda_handle_run_args) == 3
+    assert indexed_add_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_add_i32_args) == 3
+    assert indexed_add_i32_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_i32_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_i32_args[2].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_add_i32_args[0].dtype) == "i32"
+    assert str(indexed_add_i32_args[1].dtype) == "i32"
+    assert str(indexed_add_i32_args[2].dtype) == "i32"
+    assert indexed_add_i32_payload["result_indices"] == ()
+
+    assert len(indexed_add_i32_cuda_handle_compile_args) == 3
+    assert indexed_add_i32_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_i32_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_add_i32_cuda_handle_compile_args[2].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_add_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(indexed_add_i32_cuda_handle_compile_args[1].dtype) == "i32"
+    assert str(indexed_add_i32_cuda_handle_compile_args[2].dtype) == "i32"
+    assert len(indexed_add_i32_cuda_handle_run_args) == 3
+    assert indexed_add_i32_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_scalar_broadcast_args) == 3
+    assert indexed_scalar_broadcast_args[0].shape == (kernels.POINTWISE_N,)
+    assert float(indexed_scalar_broadcast_args[1]) == 1.5
+    assert indexed_scalar_broadcast_args[2].shape == (kernels.POINTWISE_N,)
+    assert indexed_scalar_broadcast_payload["result_indices"] == ()
+
+    assert len(indexed_scalar_broadcast_cuda_handle_compile_args) == 3
+    assert indexed_scalar_broadcast_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert float(indexed_scalar_broadcast_cuda_handle_compile_args[1]) == 1.5
+    assert indexed_scalar_broadcast_cuda_handle_compile_args[2].shape == (kernels.POINTWISE_N,)
+    assert len(indexed_scalar_broadcast_cuda_handle_run_args) == 3
+    assert indexed_scalar_broadcast_cuda_handle_run_args[1] == 1.5
+    assert indexed_scalar_broadcast_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_scalar_broadcast_i32_args) == 3
+    assert indexed_scalar_broadcast_i32_args[0].shape == (kernels.POINTWISE_N,)
+    assert int(indexed_scalar_broadcast_i32_args[1]) == 7
+    assert indexed_scalar_broadcast_i32_args[2].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_scalar_broadcast_i32_args[0].dtype) == "i32"
+    assert str(indexed_scalar_broadcast_i32_args[2].dtype) == "i32"
+    assert indexed_scalar_broadcast_i32_payload["result_indices"] == ()
+
+    assert len(indexed_scalar_broadcast_i32_cuda_handle_compile_args) == 3
+    assert indexed_scalar_broadcast_i32_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert int(indexed_scalar_broadcast_i32_cuda_handle_compile_args[1]) == 7
+    assert indexed_scalar_broadcast_i32_cuda_handle_compile_args[2].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_scalar_broadcast_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(indexed_scalar_broadcast_i32_cuda_handle_compile_args[2].dtype) == "i32"
+    assert len(indexed_scalar_broadcast_i32_cuda_handle_run_args) == 3
+    assert indexed_scalar_broadcast_i32_cuda_handle_run_args[1] == 7
+    assert indexed_scalar_broadcast_i32_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_sqrt_args) == 2
+    assert indexed_sqrt_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_sqrt_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_sqrt_payload["result_indices"] == ()
+
+    assert len(indexed_sqrt_cuda_handle_compile_args) == 2
+    assert indexed_sqrt_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_sqrt_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert len(indexed_sqrt_cuda_handle_run_args) == 2
+    assert indexed_sqrt_cuda_handle_payload["result_indices"] == ()
+
+    assert len(indexed_rsqrt_args) == 2
+    assert indexed_rsqrt_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_rsqrt_args[1].shape == (kernels.POINTWISE_N,)
+    assert indexed_rsqrt_payload["result_indices"] == ()
+
+    assert len(indexed_rsqrt_cuda_handle_compile_args) == 2
+    assert indexed_rsqrt_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_rsqrt_cuda_handle_compile_args[1].shape == (kernels.POINTWISE_N,)
+    assert len(indexed_rsqrt_cuda_handle_run_args) == 2
+    assert indexed_rsqrt_cuda_handle_payload["result_indices"] == ()
+
+    assert len(direct_sqrt_args) == 2
+    assert direct_sqrt_args[0].shape == (128,)
+    assert direct_sqrt_args[1].shape == (128,)
+    assert direct_sqrt_payload["result_indices"] == ()
+
+    assert len(direct_sqrt_cuda_handle_compile_args) == 2
+    assert direct_sqrt_cuda_handle_compile_args[0].shape == (128,)
+    assert direct_sqrt_cuda_handle_compile_args[1].shape == (128,)
+    assert len(direct_sqrt_cuda_handle_run_args) == 2
+    assert direct_sqrt_cuda_handle_payload["result_indices"] == ()
+
+    assert len(direct_rsqrt_args) == 2
+    assert direct_rsqrt_args[0].shape == (128,)
+    assert direct_rsqrt_args[1].shape == (128,)
+    assert direct_rsqrt_payload["result_indices"] == ()
+
+    assert len(direct_rsqrt_cuda_handle_compile_args) == 2
+    assert direct_rsqrt_cuda_handle_compile_args[0].shape == (128,)
+    assert direct_rsqrt_cuda_handle_compile_args[1].shape == (128,)
+    assert len(direct_rsqrt_cuda_handle_run_args) == 2
+    assert direct_rsqrt_cuda_handle_payload["result_indices"] == ()
+
+    assert len(reduce_add_args) == 2
+    assert reduce_add_args[0].shape == (kernels.POINTWISE_N,)
+    assert reduce_add_args[1].shape == (1,)
+    assert reduce_add_payload["result_indices"] == ()
+
+    assert len(reduce_add_cuda_handle_compile_args) == 2
+    assert reduce_add_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert reduce_add_cuda_handle_compile_args[1].shape == (1,)
+    assert len(reduce_add_cuda_handle_run_args) == 2
+    assert reduce_add_cuda_handle_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_args) == 2
+    assert parallel_reduce_add_args[0].shape == (kernels.POINTWISE_N,)
+    assert parallel_reduce_add_args[1].shape == (1,)
+    assert parallel_reduce_add_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_cuda_handle_compile_args) == 2
+    assert parallel_reduce_add_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert parallel_reduce_add_cuda_handle_compile_args[1].shape == (1,)
+    assert len(parallel_reduce_add_cuda_handle_run_args) == 2
+    assert parallel_reduce_add_cuda_handle_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_i32_args) == 2
+    assert parallel_reduce_add_i32_args[0].shape == (kernels.POINTWISE_N,)
+    assert parallel_reduce_add_i32_args[1].shape == (1,)
+    assert str(parallel_reduce_add_i32_args[0].dtype) == "i32"
+    assert str(parallel_reduce_add_i32_args[1].dtype) == "i32"
+    assert parallel_reduce_add_i32_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_i32_cuda_handle_compile_args) == 2
+    assert parallel_reduce_add_i32_cuda_handle_compile_args[0].shape == (kernels.POINTWISE_N,)
+    assert parallel_reduce_add_i32_cuda_handle_compile_args[1].shape == (1,)
+    assert str(parallel_reduce_add_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(parallel_reduce_add_i32_cuda_handle_compile_args[1].dtype) == "i32"
+    assert len(parallel_reduce_add_i32_cuda_handle_run_args) == 2
+    assert parallel_reduce_add_i32_cuda_handle_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_2d_bundle_args) == 4
+    assert parallel_reduce_add_2d_bundle_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert parallel_reduce_add_2d_bundle_args[1].shape == (1,)
+    assert parallel_reduce_add_2d_bundle_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert parallel_reduce_add_2d_bundle_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert parallel_reduce_add_2d_bundle_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_2d_bundle_cuda_handle_compile_args) == 4
+    assert parallel_reduce_add_2d_bundle_cuda_handle_compile_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert parallel_reduce_add_2d_bundle_cuda_handle_compile_args[1].shape == (1,)
+    assert parallel_reduce_add_2d_bundle_cuda_handle_compile_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert parallel_reduce_add_2d_bundle_cuda_handle_compile_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert len(parallel_reduce_add_2d_bundle_cuda_handle_run_args) == 4
+    assert parallel_reduce_add_2d_bundle_cuda_handle_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_2d_bundle_i32_args) == 4
+    assert parallel_reduce_add_2d_bundle_i32_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert parallel_reduce_add_2d_bundle_i32_args[1].shape == (1,)
+    assert parallel_reduce_add_2d_bundle_i32_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert parallel_reduce_add_2d_bundle_i32_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert str(parallel_reduce_add_2d_bundle_i32_args[0].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_args[1].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_args[2].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_args[3].dtype) == "i32"
+    assert parallel_reduce_add_2d_bundle_i32_payload["result_indices"] == ()
+
+    assert len(parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args) == 4
+    assert parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[1].shape == (1,)
+    assert parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert str(parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[1].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[2].dtype) == "i32"
+    assert str(parallel_reduce_add_2d_bundle_i32_cuda_handle_compile_args[3].dtype) == "i32"
+    assert len(parallel_reduce_add_2d_bundle_i32_cuda_handle_run_args) == 4
+    assert parallel_reduce_add_2d_bundle_i32_cuda_handle_payload["result_indices"] == ()
+
+    def _assert_parallel_reduce_2d_bundle_payload(args, payload, *, dtype: str) -> None:
+        assert len(args) == 4
+        assert args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert args[1].shape == (1,)
+        assert args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+        assert args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+        if dtype == "i32":
+            assert str(args[0].dtype) == "i32"
+            assert str(args[1].dtype) == "i32"
+            assert str(args[2].dtype) == "i32"
+            assert str(args[3].dtype) == "i32"
+        assert payload["result_indices"] == ()
+
+    def _assert_parallel_reduce_2d_bundle_cuda_handle_payload(compile_args, run_args, payload, *, dtype: str) -> None:
+        _assert_parallel_reduce_2d_bundle_payload(compile_args, payload, dtype=dtype)
+        assert len(run_args) == 4
+
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_mul_2d_bundle_args, parallel_reduce_mul_2d_bundle_payload, dtype="f32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_mul_2d_bundle_cuda_handle_compile_args,
+        parallel_reduce_mul_2d_bundle_cuda_handle_run_args,
+        parallel_reduce_mul_2d_bundle_cuda_handle_payload,
+        dtype="f32",
+    )
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_max_2d_bundle_args, parallel_reduce_max_2d_bundle_payload, dtype="f32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_max_2d_bundle_cuda_handle_compile_args,
+        parallel_reduce_max_2d_bundle_cuda_handle_run_args,
+        parallel_reduce_max_2d_bundle_cuda_handle_payload,
+        dtype="f32",
+    )
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_min_2d_bundle_args, parallel_reduce_min_2d_bundle_payload, dtype="f32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_min_2d_bundle_cuda_handle_compile_args,
+        parallel_reduce_min_2d_bundle_cuda_handle_run_args,
+        parallel_reduce_min_2d_bundle_cuda_handle_payload,
+        dtype="f32",
+    )
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_mul_2d_bundle_i32_args, parallel_reduce_mul_2d_bundle_i32_payload, dtype="i32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_mul_2d_bundle_i32_cuda_handle_compile_args,
+        parallel_reduce_mul_2d_bundle_i32_cuda_handle_run_args,
+        parallel_reduce_mul_2d_bundle_i32_cuda_handle_payload,
+        dtype="i32",
+    )
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_max_2d_bundle_i32_args, parallel_reduce_max_2d_bundle_i32_payload, dtype="i32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_max_2d_bundle_i32_cuda_handle_compile_args,
+        parallel_reduce_max_2d_bundle_i32_cuda_handle_run_args,
+        parallel_reduce_max_2d_bundle_i32_cuda_handle_payload,
+        dtype="i32",
+    )
+    _assert_parallel_reduce_2d_bundle_payload(parallel_reduce_min_2d_bundle_i32_args, parallel_reduce_min_2d_bundle_i32_payload, dtype="i32")
+    _assert_parallel_reduce_2d_bundle_cuda_handle_payload(
+        parallel_reduce_min_2d_bundle_i32_cuda_handle_compile_args,
+        parallel_reduce_min_2d_bundle_i32_cuda_handle_run_args,
+        parallel_reduce_min_2d_bundle_i32_cuda_handle_payload,
+        dtype="i32",
+    )
+
+    def _assert_tensor_factory_payload(args, payload, *, dtype: str) -> None:
+        assert len(args) == 3
+        assert args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert args[1].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert args[2].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        if dtype == "i32":
+            assert str(args[0].dtype) == "i32"
+            assert str(args[1].dtype) == "i32"
+            assert str(args[2].dtype) == "i32"
+        assert payload["result_indices"] == ()
+
+    def _assert_tensor_factory_cuda_handle_payload(compile_args, run_args, payload, *, dtype: str) -> None:
+        _assert_tensor_factory_payload(compile_args, payload, dtype=dtype)
+        assert len(run_args) == 3
+
+    _assert_tensor_factory_payload(tensor_factory_2d_args, tensor_factory_2d_payload, dtype="f32")
+    _assert_tensor_factory_cuda_handle_payload(
+        tensor_factory_2d_cuda_handle_compile_args,
+        tensor_factory_2d_cuda_handle_run_args,
+        tensor_factory_2d_cuda_handle_payload,
+        dtype="f32",
+    )
+    _assert_tensor_factory_payload(tensor_factory_2d_i32_args, tensor_factory_2d_i32_payload, dtype="i32")
+    _assert_tensor_factory_cuda_handle_payload(
+        tensor_factory_2d_i32_cuda_handle_compile_args,
+        tensor_factory_2d_i32_cuda_handle_run_args,
+        tensor_factory_2d_i32_cuda_handle_payload,
+        dtype="i32",
+    )
+
+    assert len(reduce_add_2d_bundle_args) == 4
+    assert reduce_add_2d_bundle_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert reduce_add_2d_bundle_args[1].shape == (1,)
+    assert reduce_add_2d_bundle_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert reduce_add_2d_bundle_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert reduce_add_2d_bundle_payload["result_indices"] == ()
+
+    assert len(reduce_add_2d_bundle_cuda_handle_compile_args) == 4
+    assert reduce_add_2d_bundle_cuda_handle_compile_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert reduce_add_2d_bundle_cuda_handle_compile_args[1].shape == (1,)
+    assert reduce_add_2d_bundle_cuda_handle_compile_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert reduce_add_2d_bundle_cuda_handle_compile_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert len(reduce_add_2d_bundle_cuda_handle_run_args) == 4
+    assert reduce_add_2d_bundle_cuda_handle_payload["result_indices"] == ()
+
+    assert len(reduce_add_2d_bundle_i32_args) == 4
+    assert reduce_add_2d_bundle_i32_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert reduce_add_2d_bundle_i32_args[1].shape == (1,)
+    assert reduce_add_2d_bundle_i32_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert reduce_add_2d_bundle_i32_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert str(reduce_add_2d_bundle_i32_args[0].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_args[1].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_args[2].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_args[3].dtype) == "i32"
+    assert reduce_add_2d_bundle_i32_payload["result_indices"] == ()
+
+    assert len(reduce_add_2d_bundle_i32_cuda_handle_compile_args) == 4
+    assert reduce_add_2d_bundle_i32_cuda_handle_compile_args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+    assert reduce_add_2d_bundle_i32_cuda_handle_compile_args[1].shape == (1,)
+    assert reduce_add_2d_bundle_i32_cuda_handle_compile_args[2].shape == (kernels.FLYDSL_MICRO_ROWS,)
+    assert reduce_add_2d_bundle_i32_cuda_handle_compile_args[3].shape == (kernels.FLYDSL_MICRO_COLS,)
+    assert str(reduce_add_2d_bundle_i32_cuda_handle_compile_args[0].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_cuda_handle_compile_args[1].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_cuda_handle_compile_args[2].dtype) == "i32"
+    assert str(reduce_add_2d_bundle_i32_cuda_handle_compile_args[3].dtype) == "i32"
+    assert len(reduce_add_2d_bundle_i32_cuda_handle_run_args) == 4
+    assert reduce_add_2d_bundle_i32_cuda_handle_payload["result_indices"] == ()
 
     assert len(add_args) == 3
     assert add_args[0].shape == (kernels.ASTER_POINTWISE_N,)
@@ -257,6 +711,12 @@ def test_compare_backends_returns_no_synchronizer_for_non_exec_backend() -> None
     assert compare_backends._make_execution_synchronizer("gpu_mlir", ()) is None
 
 
+def test_compare_backends_treats_ptx_exec_as_executable() -> None:
+    compare_backends = _load_tool_module("compare_backends")
+
+    assert compare_backends._is_executable_backend("ptx_exec") is True
+
+
 def test_compare_backends_summarizes_cold_and_warm_timings() -> None:
     compare_backends = _load_tool_module("compare_backends")
 
@@ -394,6 +854,54 @@ def test_backend_benchmark_kernels_exports_sub_and_mul_microbench_kernels() -> N
 
     assert callable(kernels.dense_sub_f32_kernel)
     assert callable(kernels.dense_mul_f32_kernel)
+    assert callable(kernels.indexed_copy_f32_kernel)
+    assert callable(kernels.indexed_copy_f32_cuda_handle_args)
+    assert callable(kernels.indexed_copy_i32_kernel)
+    assert callable(kernels.indexed_copy_i32_cuda_handle_args)
+    assert callable(kernels.indexed_add_f32_cuda_handle_args)
+    assert callable(kernels.indexed_add_i32_kernel)
+    assert callable(kernels.indexed_add_i32_cuda_handle_args)
+    assert callable(kernels.indexed_scalar_broadcast_add_f32_kernel)
+    assert callable(kernels.indexed_scalar_broadcast_add_f32_cuda_handle_args)
+    assert callable(kernels.indexed_scalar_broadcast_add_i32_kernel)
+    assert callable(kernels.indexed_scalar_broadcast_add_i32_cuda_handle_args)
+    assert callable(kernels.indexed_sqrt_f32_kernel)
+    assert callable(kernels.indexed_rsqrt_f32_kernel)
+    assert callable(kernels.direct_sqrt_f32_kernel)
+    assert callable(kernels.direct_rsqrt_f32_kernel)
+    assert callable(kernels.indexed_rsqrt_f32_cuda_handle_args)
+    assert callable(kernels.direct_sqrt_f32_cuda_handle_args)
+    assert callable(kernels.direct_rsqrt_f32_cuda_handle_args)
+    assert callable(kernels.reduce_add_f32_kernel)
+    assert callable(kernels.reduce_add_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_add_f32_kernel)
+    assert callable(kernels.parallel_reduce_add_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_add_i32_kernel)
+    assert callable(kernels.parallel_reduce_add_i32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_add_2d_bundle_f32_kernel)
+    assert callable(kernels.parallel_reduce_add_2d_bundle_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_add_2d_bundle_i32_kernel)
+    assert callable(kernels.parallel_reduce_add_2d_bundle_i32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_mul_2d_bundle_f32_kernel)
+    assert callable(kernels.parallel_reduce_mul_2d_bundle_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_max_2d_bundle_f32_kernel)
+    assert callable(kernels.parallel_reduce_max_2d_bundle_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_min_2d_bundle_f32_kernel)
+    assert callable(kernels.parallel_reduce_min_2d_bundle_f32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_mul_2d_bundle_i32_kernel)
+    assert callable(kernels.parallel_reduce_mul_2d_bundle_i32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_max_2d_bundle_i32_kernel)
+    assert callable(kernels.parallel_reduce_max_2d_bundle_i32_cuda_handle_args)
+    assert callable(kernels.parallel_reduce_min_2d_bundle_i32_kernel)
+    assert callable(kernels.parallel_reduce_min_2d_bundle_i32_cuda_handle_args)
+    assert callable(kernels.tensor_factory_2d_f32_kernel)
+    assert callable(kernels.tensor_factory_2d_f32_cuda_handle_args)
+    assert callable(kernels.tensor_factory_2d_i32_kernel)
+    assert callable(kernels.tensor_factory_2d_i32_cuda_handle_args)
+    assert callable(kernels.reduce_add_2d_bundle_f32_kernel)
+    assert callable(kernels.reduce_add_2d_bundle_f32_cuda_handle_args)
+    assert callable(kernels.reduce_add_2d_bundle_i32_kernel)
+    assert callable(kernels.reduce_add_2d_bundle_i32_cuda_handle_args)
     assert callable(kernels.indexed_sub_f32_kernel)
     assert callable(kernels.indexed_mul_f32_kernel)
     assert callable(kernels.indexed_div_f32_kernel)

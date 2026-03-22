@@ -166,6 +166,9 @@ def _resolve_backend_for_ir(
     if backend is not None:
         return _resolve_backend(backend)
     if isinstance(target, NvidiaTarget):
+        ptx_exec_backend = PtxExecBackend()
+        if ir is not None and ptx_exec_backend.available(target) and ptx_exec_backend.supports(ir, target):
+            return ptx_exec_backend.name, ptx_exec_backend
         return PtxRefBackend().name, PtxRefBackend()
     if ir is not None:
         hipkittens_backend = HipKittensExecBackend()
