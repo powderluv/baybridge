@@ -233,6 +233,8 @@ def _canonical_stride(shape: tuple[int, ...]) -> tuple[int, ...]:
 def pack_tensor_value(value: Any, dtype: str) -> Any:
     if dtype == "f32":
         return float(value)
+    if dtype == "i1":
+        return bool(value)
     if dtype == "i8":
         return int(value)
     if dtype == "i32":
@@ -251,6 +253,8 @@ def pack_tensor_value(value: Any, dtype: str) -> Any:
 def unpack_tensor_value(value: Any, dtype: str) -> Any:
     if dtype == "f32":
         return float(value)
+    if dtype == "i1":
+        return bool(value)
     if dtype == "i8":
         return int(value)
     if dtype == "i32":

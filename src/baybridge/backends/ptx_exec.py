@@ -4,6 +4,7 @@ import ctypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import warnings
 
 from ..backend import LoweredModule
 from ..cuda_driver import CudaDriver, CUdeviceptr, load_cuda_driver_library
@@ -21,6 +22,7 @@ _DLPACK_DEVICE_TYPE_CUDA = 2
 def _tensor_ctype(dtype: str):
     table = {
         "f32": ctypes.c_float,
+        "i1": ctypes.c_bool,
         "i32": ctypes.c_int32,
     }
     try:
@@ -32,6 +34,7 @@ def _tensor_ctype(dtype: str):
 def _scalar_ctype(dtype: str):
     table = {
         "f32": ctypes.c_float,
+        "i1": ctypes.c_bool,
         "i32": ctypes.c_int32,
     }
     try:
@@ -41,20 +44,21 @@ def _scalar_ctype(dtype: str):
 
 
 @dataclass
-class _CudaDeviceTensor:
-    tensor: RuntimeTensor
+class _CachedCudaTensorSlot:
     ctype: Any
     ptr: CUdeviceptr
     byte_size: int
-    host_array: Any
+    dtype: str
+    shape: tuple[int, ...]
+    stride: tuple[int, ...]
 
-    def copy_back(self, driver: CudaDriver) -> None:
-        host_array = (self.ctype * len(self.tensor._storage))()
-        driver.memcpy_dtoh(ctypes.cast(host_array, ctypes.c_void_p), self.ptr, self.byte_size)
-        self.tensor._storage[:] = [unpack_tensor_value(item, self.tensor.dtype) for item in host_array]
-
-    def free(self, driver: CudaDriver) -> None:
-        driver.mem_free(self.ptr)
+    def matches(self, value: RuntimeTensor, stride: tuple[int, ...], byte_size: int) -> bool:
+        return (
+            self.dtype == value.dtype
+            and self.shape == value.shape
+            and self.stride == stride
+            and self.byte_size == byte_size
+        )
 
 
 class PtxExecBackend:
@@ -91,7 +95,6 @@ class PtxExecBackend:
 
         def launcher(*args: Any, **kwargs: Any) -> None:
             stream = kwargs.pop("stream", None)
-            del stream
             if kwargs:
                 raise TypeError("ptx_exec launcher only supports positional arguments and an optional stream=")
             if len(args) != len(ir.arguments):
@@ -107,26 +110,50 @@ class PtxExecBackend:
                 state["function"] = function
             else:
                 driver = state["driver"]
-            self._launch(driver, function, ir, args)
+            self._launch(driver, function, ir, args, stream=stream, state=state)
 
         return launcher
 
-    def _launch(self, driver: CudaDriver, function: Any, ir: PortableKernelIR, args: tuple[Any, ...]) -> None:
-        allocations: list[_CudaDeviceTensor] = []
+    def _launch(
+        self,
+        driver: CudaDriver,
+        function: Any,
+        ir: PortableKernelIR,
+        args: tuple[Any, ...],
+        *,
+        stream: Any = None,
+        state: dict[str, Any],
+    ) -> None:
+        staged_runtime_tensors: list[tuple[RuntimeTensor, _CachedCudaTensorSlot]] = []
         kernel_params: list[object] = []
+        staged_argument_names = [
+            argument.name
+            for argument, value in zip(ir.arguments, args)
+            if isinstance(argument.spec, TensorSpec) and isinstance(value, RuntimeTensor)
+        ]
+        if staged_argument_names and not state.get("warned_runtime_tensor_staging"):
+            warnings.warn(
+                "ptx_exec is staging RuntimeTensor arguments through host memory for tensor arguments "
+                f"{staged_argument_names}; pass CUDA TensorHandle values for tensor arguments to avoid "
+                "host-copy dominated timings",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            state["warned_runtime_tensor_staging"] = True
         try:
-            for argument, value in zip(ir.arguments, args):
+            for arg_index, (argument, value) in enumerate(zip(ir.arguments, args)):
                 if isinstance(argument.spec, TensorSpec):
                     if not isinstance(value, RuntimeTensor):
-                        if isinstance(value, TensorHandle):
-                            kernel_params.append(self._tensor_handle_ptr(value, argument))
+                        if isinstance(value, TensorHandle) or self._is_dlpack_tensor(value):
+                            kernel_params.append(self._tensor_handle_ptr(self._coerce_tensor_handle(value, stream), argument))
                             continue
                         raise TypeError(
-                            f"ptx_exec currently expects RuntimeTensor or CUDA TensorHandle values for tensor argument '{argument.name}', got {type(value).__name__}"
+                            "ptx_exec currently expects RuntimeTensor values, CUDA TensorHandle values, "
+                            f"or CUDA DLPack-capable tensor objects for tensor argument '{argument.name}', got {type(value).__name__}"
                         )
-                    allocation = self._upload_tensor(driver, value)
-                    allocations.append(allocation)
-                    kernel_params.append(int(allocation.ptr.value))
+                    slot = self._stage_runtime_tensor(driver, value, arg_index, state)
+                    staged_runtime_tensors.append((value, slot))
+                    kernel_params.append(int(slot.ptr.value))
                     continue
                 kernel_params.append(self._scalar_kernel_param(value, argument))
             driver.launch_kernel(
@@ -134,33 +161,66 @@ class PtxExecBackend:
                 grid=ir.launch.grid,
                 block=ir.launch.block,
                 shared_mem_bytes=ir.launch.shared_mem_bytes,
+                stream=stream,
                 kernel_params=kernel_params,
             )
-            driver.synchronize()
-            for allocation in allocations:
-                allocation.copy_back(driver)
-        finally:
-            for allocation in allocations:
-                allocation.free(driver)
+            if stream is None:
+                driver.synchronize()
+            else:
+                driver.synchronize_stream(stream)
+            for tensor, slot in staged_runtime_tensors:
+                self._copy_back_runtime_tensor(driver, tensor, slot)
+        except Exception:
+            self._release_cached_tensor_slots(driver, state)
+            raise
 
-    def _upload_tensor(self, driver: CudaDriver, value: RuntimeTensor) -> _CudaDeviceTensor:
+    def _stage_runtime_tensor(
+        self,
+        driver: CudaDriver,
+        value: RuntimeTensor,
+        arg_index: int,
+        state: dict[str, Any],
+    ) -> _CachedCudaTensorSlot:
         expected_size = contiguous_size(value.shape)
-        if value.offset != 0 or value.stride != self._canonical_stride(value.shape):
+        canonical_stride = self._canonical_stride(value.shape)
+        if value.offset != 0 or value.stride != canonical_stride:
             raise BackendNotImplementedError("ptx_exec currently requires contiguous runtime tensors without offsets")
         if len(value._storage) != expected_size:
             raise BackendNotImplementedError("ptx_exec currently requires densely packed runtime tensors")
         ctype = _tensor_ctype(value.dtype)
+        byte_size = expected_size * ctypes.sizeof(ctype)
+        slots: dict[int, _CachedCudaTensorSlot] = state.setdefault("tensor_slots", {})
+        slot = slots.get(arg_index)
+        if slot is None or not slot.matches(value, canonical_stride, byte_size):
+            if slot is not None:
+                driver.mem_free(slot.ptr)
+            slot = _CachedCudaTensorSlot(
+                ctype=ctype,
+                ptr=driver.mem_alloc(byte_size),
+                byte_size=byte_size,
+                dtype=value.dtype,
+                shape=value.shape,
+                stride=canonical_stride,
+            )
+            slots[arg_index] = slot
         host_array = (ctype * expected_size)(*(pack_tensor_value(item, value.dtype) for item in value._storage))
-        byte_size = ctypes.sizeof(host_array)
-        ptr = driver.mem_alloc(byte_size)
-        driver.memcpy_htod(ptr, ctypes.cast(host_array, ctypes.c_void_p), byte_size)
-        return _CudaDeviceTensor(
-            tensor=value,
-            ctype=ctype,
-            ptr=ptr,
-            byte_size=byte_size,
-            host_array=host_array,
-        )
+        driver.memcpy_htod(slot.ptr, ctypes.cast(host_array, ctypes.c_void_p), byte_size)
+        return slot
+
+    def _copy_back_runtime_tensor(
+        self,
+        driver: CudaDriver,
+        tensor: RuntimeTensor,
+        slot: _CachedCudaTensorSlot,
+    ) -> None:
+        host_array = (slot.ctype * len(tensor._storage))()
+        driver.memcpy_dtoh(ctypes.cast(host_array, ctypes.c_void_p), slot.ptr, slot.byte_size)
+        tensor._storage[:] = [unpack_tensor_value(item, tensor.dtype) for item in host_array]
+
+    def _release_cached_tensor_slots(self, driver: CudaDriver, state: dict[str, Any]) -> None:
+        slots: dict[int, _CachedCudaTensorSlot] = state.pop("tensor_slots", {})
+        for slot in slots.values():
+            driver.mem_free(slot.ptr)
 
     def _tensor_handle_ptr(self, value: TensorHandle, argument: KernelArgument) -> int:
         if int(value.device_type) != _DLPACK_DEVICE_TYPE_CUDA:
@@ -177,6 +237,38 @@ class PtxExecBackend:
                 f"ptx_exec currently requires contiguous CUDA TensorHandle inputs for tensor argument '{argument.name}'"
             )
         return int(data_ptr)
+
+    def _coerce_tensor_handle(self, value: Any, stream: Any) -> TensorHandle:
+        if isinstance(value, TensorHandle):
+            return value
+        return self._tensor_handle_from_dlpack(value, stream)
+
+    def _tensor_handle_from_dlpack(self, value: Any, stream: Any) -> TensorHandle:
+        device_type, device_id = value.__dlpack_device__()
+        if stream is None:
+            capsule = value.__dlpack__()
+        else:
+            try:
+                capsule = value.__dlpack__(stream=stream)
+            except TypeError:
+                capsule = value.__dlpack__()
+        shape = tuple(getattr(value, "shape", ()))
+        dtype = str(getattr(value, "dtype", "unknown"))
+        stride_value = getattr(value, "stride", None)
+        if callable(stride_value):
+            stride_value = stride_value()
+        stride = tuple(int(dim) for dim in stride_value) if stride_value is not None else None
+        raw_address = int(value.data_ptr()) if hasattr(value, "data_ptr") else None
+        return TensorHandle(
+            capsule=capsule,
+            shape=shape,
+            dtype=dtype,
+            device_type=device_type,
+            device_id=device_id,
+            source=value,
+            stride=stride,
+            raw_address=raw_address,
+        )
 
     def _scalar_kernel_param(self, value: Any, argument: KernelArgument) -> ctypes._SimpleCData:
         if not isinstance(argument.spec, ScalarSpec):
@@ -199,3 +291,6 @@ class PtxExecBackend:
             stride[index] = running
             running *= shape[index]
         return tuple(stride)
+
+    def _is_dlpack_tensor(self, value: Any) -> bool:
+        return hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__")

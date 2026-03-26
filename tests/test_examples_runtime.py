@@ -132,6 +132,58 @@ def tiled_elementwise_add(
     )
 
 
+@bb.kernel
+def tensor_abs_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.jit
+def tensor_abs(src: bb.Tensor, dst: bb.Tensor):
+    tensor_abs_kernel(src, dst).launch(grid=(1, 1, 1), block=(1, 1, 1))
+
+
+@bb.kernel
+def tensor_rounding_kernel(
+    src: bb.Tensor,
+    dst_round: bb.Tensor,
+    dst_floor: bb.Tensor,
+    dst_ceil: bb.Tensor,
+    dst_trunc: bb.Tensor,
+):
+    values = src.load()
+    dst_round.store(bb.round(values))
+    dst_floor.store(bb.floor(values))
+    dst_ceil.store(bb.ceil(values))
+    dst_trunc.store(bb.trunc(values))
+
+
+@bb.jit
+def tensor_rounding(
+    src: bb.Tensor,
+    dst_round: bb.Tensor,
+    dst_floor: bb.Tensor,
+    dst_ceil: bb.Tensor,
+    dst_trunc: bb.Tensor,
+):
+    tensor_rounding_kernel(src, dst_round, dst_floor, dst_ceil, dst_trunc).launch(
+        grid=(1, 1, 1),
+        block=(1, 1, 1),
+    )
+
+
+@bb.kernel
+def tensor_extrema_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst_max: bb.Tensor, dst_min: bb.Tensor):
+    lhs_values = lhs.load()
+    rhs_values = rhs.load()
+    dst_max.store(bb.maximum(lhs_values, rhs_values))
+    dst_min.store(bb.minimum(lhs_values, rhs_values))
+
+
+@bb.jit
+def tensor_extrema(lhs: bb.Tensor, rhs: bb.Tensor, dst_max: bb.Tensor, dst_min: bb.Tensor):
+    tensor_extrema_kernel(lhs, rhs, dst_max, dst_min).launch(grid=(1, 1, 1), block=(1, 1, 1))
+
+
 def test_hello_world_example_runs_via_compile_fallback(tmp_path: Path, capsys) -> None:
     artifact = bb.compile(hello_world, cache_dir=tmp_path)
     assert artifact.ir is None
@@ -223,3 +275,87 @@ def test_tiled_elementwise_add_example_runs_direct_and_compiled(tmp_path: Path) 
 
     artifact(a, b, compiled_out)
     assert compiled_out.tolist() == expected
+
+
+def test_tensor_abs_example_runs_direct_and_compiled(tmp_path: Path) -> None:
+    src = bb.tensor([[1.0, -2.5], [-3.0, 4.25]], dtype="f32")
+
+    direct_out = bb.zeros((2, 2), dtype="f32")
+    tensor_abs(src, direct_out)
+    assert direct_out.tolist() == [[1.0, 2.5], [3.0, 4.25]]
+
+    compiled_out = bb.zeros((2, 2), dtype="f32")
+    artifact = bb.compile(tensor_abs, src, compiled_out, cache_dir=tmp_path, backend="portable")
+    assert artifact.ir is not None
+    assert artifact.ir.name == "tensor_abs_kernel"
+    ops = [operation.op for operation in artifact.ir.operations]
+    assert "tensor_abs" in ops
+
+    artifact(src, compiled_out)
+    assert compiled_out.tolist() == [[1.0, 2.5], [3.0, 4.25]]
+
+
+def test_tensor_rounding_example_runs_direct_and_compiled(tmp_path: Path) -> None:
+    src = bb.tensor([[-1.75, -0.25], [0.25, 1.75]], dtype="f32")
+
+    direct_round = bb.zeros((2, 2), dtype="f32")
+    direct_floor = bb.zeros((2, 2), dtype="f32")
+    direct_ceil = bb.zeros((2, 2), dtype="f32")
+    direct_trunc = bb.zeros((2, 2), dtype="f32")
+    tensor_rounding(src, direct_round, direct_floor, direct_ceil, direct_trunc)
+    assert direct_round.tolist() == [[-2.0, 0.0], [0.0, 2.0]]
+    assert direct_floor.tolist() == [[-2.0, -1.0], [0.0, 1.0]]
+    assert direct_ceil.tolist() == [[-1.0, 0.0], [1.0, 2.0]]
+    assert direct_trunc.tolist() == [[-1.0, 0.0], [0.0, 1.0]]
+
+    compiled_round = bb.zeros((2, 2), dtype="f32")
+    compiled_floor = bb.zeros((2, 2), dtype="f32")
+    compiled_ceil = bb.zeros((2, 2), dtype="f32")
+    compiled_trunc = bb.zeros((2, 2), dtype="f32")
+    artifact = bb.compile(
+        tensor_rounding,
+        src,
+        compiled_round,
+        compiled_floor,
+        compiled_ceil,
+        compiled_trunc,
+        cache_dir=tmp_path,
+        backend="portable",
+    )
+    assert artifact.ir is not None
+    assert artifact.ir.name == "tensor_rounding_kernel"
+    ops = [operation.op for operation in artifact.ir.operations]
+    assert "math_round" in ops
+    assert "math_floor" in ops
+    assert "math_ceil" in ops
+    assert "math_trunc" in ops
+
+    artifact(src, compiled_round, compiled_floor, compiled_ceil, compiled_trunc)
+    assert compiled_round.tolist() == [[-2.0, 0.0], [0.0, 2.0]]
+    assert compiled_floor.tolist() == [[-2.0, -1.0], [0.0, 1.0]]
+    assert compiled_ceil.tolist() == [[-1.0, 0.0], [1.0, 2.0]]
+    assert compiled_trunc.tolist() == [[-1.0, 0.0], [0.0, 1.0]]
+
+
+def test_tensor_extrema_example_runs_direct_and_compiled(tmp_path: Path) -> None:
+    lhs = bb.tensor([[1.0, -2.5], [7.0, 4.25]], dtype="f32")
+    rhs = bb.tensor([[0.5, -3.0], [8.0, 2.0]], dtype="f32")
+
+    direct_max = bb.zeros((2, 2), dtype="f32")
+    direct_min = bb.zeros((2, 2), dtype="f32")
+    tensor_extrema(lhs, rhs, direct_max, direct_min)
+    assert direct_max.tolist() == [[1.0, -2.5], [8.0, 4.25]]
+    assert direct_min.tolist() == [[0.5, -3.0], [7.0, 2.0]]
+
+    compiled_max = bb.zeros((2, 2), dtype="f32")
+    compiled_min = bb.zeros((2, 2), dtype="f32")
+    artifact = bb.compile(tensor_extrema, lhs, rhs, compiled_max, compiled_min, cache_dir=tmp_path, backend="portable")
+    assert artifact.ir is not None
+    assert artifact.ir.name == "tensor_extrema_kernel"
+    ops = [operation.op for operation in artifact.ir.operations]
+    assert "tensor_max" in ops
+    assert "tensor_min" in ops
+
+    artifact(lhs, rhs, compiled_max, compiled_min)
+    assert compiled_max.tolist() == [[1.0, -2.5], [8.0, 4.25]]
+    assert compiled_min.tolist() == [[0.5, -3.0], [7.0, 2.0]]

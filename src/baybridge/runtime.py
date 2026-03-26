@@ -267,8 +267,21 @@ class RuntimeScalar:
     def __ror__(self, other: Any) -> "RuntimeScalar":
         return self._binary(other, lambda lhs, rhs: lhs | rhs, reverse=True)
 
+    def __xor__(self, other: Any) -> "RuntimeScalar":
+        if is_float_dtype(self.dtype):
+            raise TypeError("bitwise xor is only supported for integer baybridge scalars")
+        return self._binary(other, lambda lhs, rhs: lhs ^ rhs)
+
+    def __rxor__(self, other: Any) -> "RuntimeScalar":
+        return self._binary(other, lambda lhs, rhs: lhs ^ rhs, reverse=True)
+
     def __neg__(self) -> "RuntimeScalar":
         return RuntimeScalar(-_unwrap_scalar_host_value(self), self.dtype)
+
+    def __abs__(self) -> "RuntimeScalar":
+        if self.dtype == "i1":
+            raise TypeError("scalar abs requires non-boolean baybridge scalars")
+        return RuntimeScalar(abs(_unwrap_scalar_host_value(self)), self.dtype)
 
     def __invert__(self) -> "RuntimeScalar":
         if is_float_dtype(self.dtype):
@@ -314,6 +327,9 @@ class ReductionOp(str, Enum):
     MUL = "mul"
     MAX = "max"
     MIN = "min"
+    AND = "and"
+    OR = "or"
+    XOR = "xor"
 
 
 @dataclass(frozen=True)
@@ -542,6 +558,72 @@ class RuntimeTensor:
     def __rtruediv__(self, other: Any) -> "RuntimeTensor":
         return self._binary_op(other, lambda lhs, rhs: lhs / rhs, reverse=True)
 
+    def __and__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitand requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs & rhs)
+
+    def __rand__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitand requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs & rhs, reverse=True)
+
+    def __or__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitor requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs | rhs)
+
+    def __ror__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitor requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs | rhs, reverse=True)
+
+    def __xor__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitxor requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs ^ rhs)
+
+    def __rxor__(self, other: Any) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitxor requires integer baybridge tensors")
+        return self._binary_op(other, lambda lhs, rhs: lhs ^ rhs, reverse=True)
+
+    def __neg__(self) -> "RuntimeTensor":
+        if self.dtype == "i1":
+            raise TypeError("tensor neg requires non-boolean baybridge tensors")
+        flat = []
+        for index in _iter_indices(self.shape):
+            value = self[index]
+            if is_float_dtype(self.dtype):
+                flat.append(-float(value))
+            else:
+                flat.append(-int(value))
+        return RuntimeTensor(flat, self.shape, dtype=self.dtype)
+
+    def __abs__(self) -> "RuntimeTensor":
+        if self.dtype == "i1":
+            raise TypeError("tensor abs requires non-boolean baybridge tensors")
+        flat = []
+        for index in _iter_indices(self.shape):
+            value = self[index]
+            if is_float_dtype(self.dtype):
+                flat.append(abs(float(value)))
+            else:
+                flat.append(abs(int(value)))
+        return RuntimeTensor(flat, self.shape, dtype=self.dtype)
+
+    def __invert__(self) -> "RuntimeTensor":
+        if is_float_dtype(self.dtype):
+            raise TypeError("tensor bitnot requires integer baybridge tensors")
+        flat = []
+        for index in _iter_indices(self.shape):
+            value = self[index]
+            if self.dtype == "i1":
+                flat.append(not value)
+            else:
+                flat.append(~int(value))
+        return RuntimeTensor(flat, self.shape, dtype=self.dtype)
+
     def __lt__(self, other: Any) -> "RuntimeTensor":
         return self._compare_op(other, lambda lhs, rhs: lhs < rhs)
 
@@ -648,11 +730,17 @@ def full(shape: tuple[int, ...], fill_value: Any, *, dtype: str = "f32") -> Runt
     return RuntimeTensor([_unwrap_scalar_host_value(fill_value) for _ in range(size)], shape, dtype=dtype)
 
 
-def from_dlpack(value: Any, assumed_align: int | None = None) -> TensorHandle:
+def from_dlpack(value: Any, assumed_align: int | None = None, stream: Any | None = None) -> TensorHandle:
     if not hasattr(value, "__dlpack__") or not hasattr(value, "__dlpack_device__"):
         raise TypeError("from_dlpack expects an object implementing __dlpack__ and __dlpack_device__")
     device_type, device_id = value.__dlpack_device__()
-    capsule = value.__dlpack__()
+    if stream is None:
+        capsule = value.__dlpack__()
+    else:
+        try:
+            capsule = value.__dlpack__(stream=stream)
+        except TypeError:
+            capsule = value.__dlpack__()
     shape = tuple(getattr(value, "shape", ()))
     dtype = str(getattr(value, "dtype", "unknown"))
     stride_value = getattr(value, "stride", None)
@@ -736,7 +824,7 @@ def infer_runtime_spec(value: Any) -> tuple[str, tuple[int, ...] | None]:
     return "python_object", None
 
 
-def normalize_runtime_argument(value: Any) -> Any:
+def normalize_runtime_argument(value: Any, stream: Any | None = None) -> Any:
     if isinstance(value, RuntimeScalar):
         return value
     if isinstance(value, RuntimeTensor):
@@ -746,7 +834,7 @@ def normalize_runtime_argument(value: Any) -> Any:
     if isinstance(value, Pointer):
         if value.tensor is None:
             return value
-        normalized_tensor = normalize_runtime_argument(value.tensor)
+        normalized_tensor = normalize_runtime_argument(value.tensor, stream=stream)
         return Pointer(
             value_type=value.value_type,
             tensor=normalized_tensor,
@@ -755,15 +843,15 @@ def normalize_runtime_argument(value: Any) -> Any:
             assumed_align=value.assumed_align,
         )
     if hasattr(value, "__dlpack__") and hasattr(value, "__dlpack_device__"):
-        return from_dlpack(value)
+        return from_dlpack(value, stream=stream)
     if _looks_like_nested_tensor(value):
         return tensor(value)
     if isinstance(value, list):
-        return [normalize_runtime_argument(item) for item in value]
+        return [normalize_runtime_argument(item, stream=stream) for item in value]
     if isinstance(value, tuple):
-        return tuple(normalize_runtime_argument(item) for item in value)
+        return tuple(normalize_runtime_argument(item, stream=stream) for item in value)
     if isinstance(value, dict):
-        return {key: normalize_runtime_argument(item) for key, item in value.items()}
+        return {key: normalize_runtime_argument(item, stream=stream) for key, item in value.items()}
     return value
 
 
@@ -990,6 +1078,12 @@ def _apply_reduction(op: ReductionOp, lhs: Any, rhs: Any) -> Any:
         return lhs if lhs >= rhs else rhs
     if op is ReductionOp.MIN:
         return lhs if lhs <= rhs else rhs
+    if op is ReductionOp.AND:
+        return lhs & rhs
+    if op is ReductionOp.OR:
+        return lhs | rhs
+    if op is ReductionOp.XOR:
+        return lhs ^ rhs
     raise ValueError(f"unsupported reduction op '{op}'")
 
 

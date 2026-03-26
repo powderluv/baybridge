@@ -218,6 +218,10 @@ class CudaDriver:
         if self._cuMemcpyDtoH is not None:
             self._cuMemcpyDtoH.argtypes = [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t]
             self._cuMemcpyDtoH.restype = ctypes.c_int
+        self._cuStreamSynchronize = _bind_symbol_optional("cuStreamSynchronize")
+        if self._cuStreamSynchronize is not None:
+            self._cuStreamSynchronize.argtypes = [CUstream]
+            self._cuStreamSynchronize.restype = ctypes.c_int
 
     def _error_name(self, status: int) -> str | None:
         name = ctypes.c_char_p()
@@ -303,6 +307,23 @@ class CudaDriver:
     def synchronize(self) -> None:
         self._check(self._lib.cuCtxSynchronize(), "cuCtxSynchronize")
 
+    def coerce_stream(self, stream: CUstream | ctypes.c_void_p | int | None) -> CUstream:
+        if stream is None:
+            return CUstream()
+        if isinstance(stream, CUstream):
+            return stream
+        if isinstance(stream, ctypes.c_void_p):
+            return CUstream(int(stream.value or 0))
+        if isinstance(stream, int):
+            return CUstream(int(stream))
+        raise TypeError(f"unsupported CUDA stream type '{type(stream).__name__}'")
+
+    def synchronize_stream(self, stream: CUstream | ctypes.c_void_p | int) -> None:
+        if self._cuStreamSynchronize is None:
+            raise BackendNotImplementedError("CUDA driver stream synchronize symbol is unavailable")
+        self.ensure_primary_context(0)
+        self._check(self._cuStreamSynchronize(self.coerce_stream(stream)), "cuStreamSynchronize")
+
     def load_module_from_ptx(self, ptx: str | bytes, *, ordinal: int = 0) -> CUmodule:
         self.ensure_primary_context(ordinal)
         blob = ptx.encode("utf-8") if isinstance(ptx, str) else ptx
@@ -364,6 +385,7 @@ class CudaDriver:
         kernel_params: Sequence[object] | None = None,
     ) -> None:
         params_array = None
+        launch_stream = self.coerce_stream(stream)
         host_values: list[object] = []
         if kernel_params:
             packed_ptrs: list[ctypes.c_void_p] = []
@@ -389,7 +411,7 @@ class CudaDriver:
                 ctypes.c_uint(block[1]),
                 ctypes.c_uint(block[2]),
                 ctypes.c_uint(shared_mem_bytes),
-                stream or CUstream(),
+                launch_stream,
                 params_array,
                 None,
             ),

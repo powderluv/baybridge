@@ -186,8 +186,13 @@ class ScalarValue:
         if is_float_dtype(self.spec.dtype) or is_float_dtype(rhs.spec.dtype):
             raise TypeError(f"{op} requires integer baybridge scalars")
         result_dtype = _binary_dtype(self.spec.dtype, rhs.spec.dtype)
+        bit_op = {
+            "and": "bitand",
+            "or": "bitor",
+            "xor": "bitxor",
+        }[op]
         return require_builder().emit_scalar(
-            "bitand" if op == "and" else "bitor",
+            bit_op,
             self,
             rhs,
             spec=ScalarSpec(dtype=result_dtype),
@@ -200,12 +205,25 @@ class ScalarValue:
     def __or__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
         return self._bitwise("or", other)
 
+    def __xor__(self, other: "ScalarValue | RuntimeScalar | bool | int | float") -> "ScalarValue":
+        return self._bitwise("xor", other)
+
     def __neg__(self) -> "ScalarValue":
         return require_builder().emit_scalar(
             "neg",
             self,
             spec=ScalarSpec(dtype=self.spec.dtype),
             name_hint="neg",
+        )
+
+    def __abs__(self) -> "ScalarValue":
+        if self.spec.dtype == "i1":
+            raise TypeError("scalar abs requires non-boolean baybridge scalars")
+        return require_builder().emit_scalar(
+            "abs",
+            self,
+            spec=ScalarSpec(dtype=self.spec.dtype),
+            name_hint="abs",
         )
 
     def __invert__(self) -> "ScalarValue":
@@ -315,6 +333,36 @@ class TensorValue:
             name_hint=op,
         )
 
+    def _tensor_compare(self, op: str, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        builder = require_builder()
+        if isinstance(other, TensorValue):
+            result_shape = _broadcast_shape(self.spec.shape, other.spec.shape)
+            lhs = self.broadcast_to(result_shape) if self.spec.shape != result_shape else self
+            rhs = other.broadcast_to(result_shape) if other.spec.shape != result_shape else other
+            if self.spec.dtype != other.spec.dtype:
+                raise ValueError(f"tensor dtypes must match, got {self.spec.dtype} and {other.spec.dtype}")
+            inputs = (lhs, rhs)
+            result_shape = lhs.spec.shape
+        else:
+            if isinstance(other, ScalarValue):
+                scalar = other
+            else:
+                scalar = builder.constant(other, dtype=self.spec.dtype)
+            if scalar.spec.dtype != self.spec.dtype:
+                raise ValueError(f"{op} scalar dtype must match {self.spec.dtype}, got {scalar.spec.dtype}")
+            inputs = (self, scalar)
+            result_shape = self.spec.shape
+        return require_builder().emit_tensor(
+            op,
+            *inputs,
+            spec=TensorSpec(
+                shape=result_shape,
+                dtype="i1",
+                address_space=AddressSpace.REGISTER,
+            ),
+            name_hint=op,
+        )
+
     def __getitem__(self, index: ScalarValue | int | tuple[ScalarValue | int, ...]) -> ScalarValue:
         if isinstance(index, tuple) and any(item is None for item in index):
             from .frontend import slice_
@@ -404,6 +452,85 @@ class TensorValue:
 
     def __truediv__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
         return self._tensor_binary("tensor_div", other)
+
+    def __and__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        if is_float_dtype(self.spec.dtype):
+            raise TypeError("tensor bitand requires integer baybridge tensors")
+        return self._tensor_binary("tensor_bitand", other)
+
+    def __or__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        if is_float_dtype(self.spec.dtype):
+            raise TypeError("tensor bitor requires integer baybridge tensors")
+        return self._tensor_binary("tensor_bitor", other)
+
+    def __xor__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        if is_float_dtype(self.spec.dtype):
+            raise TypeError("tensor bitxor requires integer baybridge tensors")
+        return self._tensor_binary("tensor_bitxor", other)
+
+    def __neg__(self) -> "TensorValue":
+        if self.spec.dtype == "i1":
+            raise TypeError("tensor neg requires non-boolean baybridge tensors")
+        return require_builder().emit_tensor(
+            "tensor_neg",
+            self,
+            spec=TensorSpec(
+                shape=self.spec.shape,
+                dtype=self.spec.dtype,
+                address_space=AddressSpace.REGISTER,
+            ),
+            name_hint="tensor_neg",
+        )
+
+    def __abs__(self) -> "TensorValue":
+        if self.spec.dtype == "i1":
+            raise TypeError("tensor abs requires non-boolean baybridge tensors")
+        return require_builder().emit_tensor(
+            "tensor_abs",
+            self,
+            spec=TensorSpec(
+                shape=self.spec.shape,
+                dtype=self.spec.dtype,
+                address_space=AddressSpace.REGISTER,
+            ),
+            name_hint="tensor_abs",
+        )
+
+    def __invert__(self) -> "TensorValue":
+        if is_float_dtype(self.spec.dtype):
+            raise TypeError("tensor bitnot requires integer baybridge tensors")
+        return require_builder().emit_tensor(
+            "tensor_bitnot",
+            self,
+            spec=TensorSpec(
+                shape=self.spec.shape,
+                dtype=self.spec.dtype,
+                address_space=AddressSpace.REGISTER,
+            ),
+            name_hint="tensor_bitnot",
+        )
+
+    def __lt__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        return self._tensor_compare("cmp_lt", other)
+
+    def __le__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        return self._tensor_compare("cmp_le", other)
+
+    def __gt__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        return self._tensor_compare("cmp_gt", other)
+
+    def __ge__(self, other: "TensorValue | ScalarValue | RuntimeScalar | int | float") -> "TensorValue":
+        return self._tensor_compare("cmp_ge", other)
+
+    def __eq__(self, other: object) -> "TensorValue":  # type: ignore[override]
+        if not isinstance(other, (TensorValue, ScalarValue, RuntimeScalar, int, float)):
+            raise TypeError("tensor comparisons are only supported against baybridge tensor/scalar values")
+        return self._tensor_compare("cmp_eq", other)
+
+    def __ne__(self, other: object) -> "TensorValue":  # type: ignore[override]
+        if not isinstance(other, (TensorValue, ScalarValue, RuntimeScalar, int, float)):
+            raise TypeError("tensor comparisons are only supported against baybridge tensor/scalar values")
+        return self._tensor_compare("cmp_ne", other)
 
 
 class IRBuilder:

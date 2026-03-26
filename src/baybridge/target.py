@@ -21,10 +21,13 @@ class AMDTarget:
 
 @dataclass(frozen=True)
 class NvidiaTarget:
-    sm: str = "sm_80"
+    sm: str | int = "sm_80"
     ptx_version: str = "8.0"
     warp_size: int = 32
     driver_version: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sm", self._normalize_sm(self.sm))
 
     @property
     def arch(self) -> str:
@@ -39,3 +42,17 @@ class NvidiaTarget:
             "driver_version": self.driver_version,
             "vendor": "nvidia",
         }
+
+    @staticmethod
+    def _normalize_sm(value: str | int) -> str:
+        if isinstance(value, int):
+            if value <= 0:
+                raise ValueError("NvidiaTarget(sm=...) expects a positive SM value")
+            return f"sm_{value}"
+        text = str(value).strip().lower()
+        if not text:
+            raise ValueError("NvidiaTarget(sm=...) expects a non-empty SM value")
+        suffix = text[3:] if text.startswith("sm_") else text
+        if not suffix or not all(ch.isalnum() for ch in suffix):
+            raise ValueError("NvidiaTarget(sm=...) expects values like 80, '80', or 'sm_80'")
+        return f"sm_{suffix}"

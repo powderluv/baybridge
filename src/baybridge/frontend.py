@@ -2536,13 +2536,13 @@ def elem_less(lhs: Any, rhs: Any) -> ScalarValue | bool:
 
 
 def where(
-    predicate: ScalarValue | bool,
-    true_value: ScalarValue | int | float,
-    false_value: ScalarValue | int | float,
+    predicate: ScalarValue | TensorValue | RuntimeTensor | bool,
+    true_value: TensorValue | RuntimeTensor | ScalarValue | int | float,
+    false_value: TensorValue | RuntimeTensor | ScalarValue | int | float,
     *,
     loc: Any | None = None,
     ip: Any | None = None,
-) -> ScalarValue | int | float:
+) -> TensorValue | RuntimeTensor | ScalarValue | int | float:
     del loc
     del ip
     if isinstance(predicate, ScalarValue):
@@ -2567,6 +2567,60 @@ def where(
             false_scalar,
             spec=ScalarSpec(dtype=true_scalar.spec.dtype),
             name_hint="select",
+        )
+    if isinstance(predicate, TensorValue):
+        if predicate.spec.dtype != "i1":
+            raise ValueError("where requires an i1 predicate tensor")
+        builder = require_builder()
+
+        def _coerce_tensor_branch(
+            value: TensorValue | ScalarValue | int | float,
+            *,
+            required_dtype: str | None,
+        ) -> tuple[TensorValue | ScalarValue, str, bool]:
+            if isinstance(value, TensorValue):
+                tensor = value
+                if tensor.spec.shape != predicate.spec.shape:
+                    tensor = tensor.broadcast_to(predicate.spec.shape)
+                if required_dtype is not None and tensor.spec.dtype != required_dtype:
+                    raise ValueError(f"where tensor branch dtype must match {required_dtype}, got {tensor.spec.dtype}")
+                return tensor, tensor.spec.dtype, True
+            if required_dtype is None:
+                if isinstance(value, ScalarValue):
+                    scalar = value
+                else:
+                    scalar = builder.constant(value)
+            else:
+                if isinstance(value, ScalarValue):
+                    scalar = value
+                else:
+                    scalar = builder.constant(value, dtype=required_dtype)
+            if required_dtype is not None and scalar.spec.dtype != required_dtype:
+                raise ValueError(f"where scalar branch dtype must match {required_dtype}, got {scalar.spec.dtype}")
+            return scalar, scalar.spec.dtype, False
+
+        branch_dtype: str | None = None
+        if isinstance(true_value, TensorValue):
+            branch_dtype = true_value.spec.dtype
+        elif isinstance(false_value, TensorValue):
+            branch_dtype = false_value.spec.dtype
+        true_branch, true_dtype, true_is_tensor = _coerce_tensor_branch(true_value, required_dtype=branch_dtype)
+        false_branch, false_dtype, false_is_tensor = _coerce_tensor_branch(false_value, required_dtype=true_dtype)
+        if true_dtype != false_dtype:
+            raise ValueError("where requires the true and false branches to have the same dtype")
+        if not true_is_tensor and not false_is_tensor:
+            raise TypeError("where with a traced tensor predicate requires at least one tensor branch")
+        return builder.emit_tensor(
+            "tensor_select",
+            predicate,
+            true_branch,
+            false_branch,
+            spec=TensorSpec(
+                shape=predicate.spec.shape,
+                dtype=true_dtype,
+                address_space=AddressSpace.REGISTER,
+            ),
+            name_hint="tensor_select",
         )
     if isinstance(predicate, RuntimeTensor):
         if predicate.dtype != "i1":

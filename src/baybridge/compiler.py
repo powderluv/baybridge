@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import os
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -61,8 +62,12 @@ class CompiledKernel:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self.runtime_callable is not None:
-            normalized_args = tuple(normalize_runtime_argument(arg) for arg in args)
-            normalized_kwargs = {name: normalize_runtime_argument(value) for name, value in kwargs.items()}
+            launch_stream = kwargs.get("stream", None)
+            normalized_args = tuple(normalize_runtime_argument(arg, stream=launch_stream) for arg in args)
+            normalized_kwargs = {
+                name: (value if name == "stream" else normalize_runtime_argument(value, stream=launch_stream))
+                for name, value in kwargs.items()
+            }
             return self.runtime_callable(*normalized_args, **normalized_kwargs)
         raise BackendNotImplementedError(
             "portable IR compilation succeeded, but AMD lowering and runtime launch are not implemented yet"
@@ -168,6 +173,39 @@ def _resolve_backend_for_ir(
     if isinstance(target, NvidiaTarget):
         ptx_exec_backend = PtxExecBackend()
         if ir is not None and ptx_exec_backend.available(target) and ptx_exec_backend.supports(ir, target):
+            tensor_names = _ptx_tensor_argument_names(ir)
+            staged_names = _ptx_staged_tensor_argument_names(ir, sample_args)
+            if staged_names and tensor_names and len(staged_names) == len(tensor_names):
+                warnings.warn(
+                    "compile(...) auto-selected ptx_ref for NvidiaTarget because all tensor sample arguments are "
+                    f"staged RuntimeTensor values {list(staged_names)}. Pass CUDA TensorHandle values or raw CUDA "
+                    "DLPack-capable tensors for tensor arguments to use the fast device-only PTX path, or request "
+                    "backend='ptx_exec' explicitly to run through staged host copies.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                return PtxRefBackend().name, PtxRefBackend()
+            if staged_names and _ptx_prefers_device_resident_auto_exec(ir):
+                warnings.warn(
+                    "compile(...) auto-selected ptx_ref for NvidiaTarget because PTX reduction-style kernels are "
+                    "only auto-selected onto ptx_exec when tensor sample arguments are fully device-resident. "
+                    f"Staged RuntimeTensor tensor arguments {list(staged_names)} would force host staging. Pass "
+                    "CUDA TensorHandle values or raw CUDA DLPack-capable tensors for all tensor arguments to use "
+                    "the fast device-only PTX path, or request backend='ptx_exec' explicitly to run through staged "
+                    "host copies.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                return PtxRefBackend().name, PtxRefBackend()
+            if staged_names:
+                warnings.warn(
+                    "compile(...) auto-selected ptx_exec for NvidiaTarget with staged RuntimeTensor tensor arguments "
+                    f"{list(staged_names)}; launches will stage through host memory for those arguments. Pass CUDA "
+                    "TensorHandle values or raw CUDA DLPack-capable tensors for tensor arguments to use the fast "
+                    "device-only PTX path.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
             return ptx_exec_backend.name, ptx_exec_backend
         return PtxRefBackend().name, PtxRefBackend()
     if ir is not None:
@@ -184,6 +222,22 @@ def _resolve_backend_for_ir(
         if hipkittens_ref_backend.supports(ir, target):
             return hipkittens_ref_backend.name, hipkittens_ref_backend
     return _resolve_backend(_DEFAULT_BACKEND)
+
+
+def _ptx_staged_tensor_argument_names(ir: PortableKernelIR, sample_args: tuple[Any, ...]) -> tuple[str, ...]:
+    staged: list[str] = []
+    for argument, value in zip(ir.arguments, sample_args):
+        if isinstance(argument.spec, TensorSpec) and isinstance(value, RuntimeTensor):
+            staged.append(argument.name)
+    return tuple(staged)
+
+
+def _ptx_tensor_argument_names(ir: PortableKernelIR) -> tuple[str, ...]:
+    return tuple(argument.name for argument in ir.arguments if isinstance(argument.spec, TensorSpec))
+
+
+def _ptx_prefers_device_resident_auto_exec(ir: PortableKernelIR) -> bool:
+    return any(operation.op == "copy_reduce" or operation.op.startswith("reduce_") for operation in ir.operations)
 
 
 def _normalize_kernel(kernel: KernelDefinition | Any) -> KernelDefinition:
@@ -453,7 +507,8 @@ def _wrap_backend_launcher(
             launch_stream = bound["stream"]
         extracted_args = [
             normalize_runtime_argument(
-                _extract_bound_value(bound[binding["parameter"]], tuple(binding["path"]))
+                _extract_bound_value(bound[binding["parameter"]], tuple(binding["path"])),
+                stream=launch_stream,
             )
             for binding in trace_bindings
         ]

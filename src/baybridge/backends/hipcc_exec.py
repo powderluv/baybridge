@@ -462,7 +462,7 @@ class HipccExecBackend:
         if operation.op == "constant":
             dtype = value_types[output].dtype
             return [f"const {self._cpp_scalar_type(dtype)} {output} = {self._literal(operation.attrs['value'], dtype)};"]
-        if operation.op in {"add", "sub", "mul", "div", "floordiv", "mod", "and", "or", "bitand", "bitor"}:
+        if operation.op in {"add", "sub", "mul", "div", "floordiv", "mod", "and", "or", "bitand", "bitor", "bitxor"}:
             lhs, rhs = operation.inputs
             dtype = value_types[output].dtype
             op = {
@@ -476,6 +476,7 @@ class HipccExecBackend:
                 "or": "||",
                 "bitand": "&",
                 "bitor": "|",
+                "bitxor": "^",
             }[operation.op]
             return [f"const {self._cpp_scalar_type(dtype)} {output} = {lhs} {op} {rhs};"]
         if operation.op == "neg":

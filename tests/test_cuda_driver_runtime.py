@@ -9,6 +9,7 @@ from baybridge.cuda_driver import (
     CUdevice,
     CUfunction,
     CUmodule,
+    CUstream,
     CudaDriver,
     CudaDriverError,
     load_cuda_driver_library,
@@ -109,6 +110,9 @@ def test_cuda_driver_fake_module_load_and_launch(monkeypatch) -> None:
             def cuCtxSynchronize() -> int:
                 return 0
 
+            def cuStreamSynchronize(stream: CUstream) -> int:
+                return 0
+
             def cuDevicePrimaryCtxRetain(out, device: CUdevice) -> int:
                 self.context = 0xCAFE
                 _write_context_ptr(out, self.context)
@@ -150,6 +154,7 @@ def test_cuda_driver_fake_module_load_and_launch(monkeypatch) -> None:
             self.cuCtxGetCurrent = cuCtxGetCurrent
             self.cuCtxSetCurrent = cuCtxSetCurrent
             self.cuCtxSynchronize = cuCtxSynchronize
+            self.cuStreamSynchronize = cuStreamSynchronize
             self.cuDevicePrimaryCtxRetain = cuDevicePrimaryCtxRetain
             self.cuDevicePrimaryCtxRelease = cuDevicePrimaryCtxRelease
             self.cuModuleLoadDataEx = cuModuleLoadDataEx
@@ -174,6 +179,120 @@ def test_cuda_driver_fake_module_load_and_launch(monkeypatch) -> None:
     assert driver.device_info(0).name == "Fake NVIDIA"
     assert driver.device_info(0).compute_capability == (9, 0)
     assert driver.driver_version() == 13020
+
+
+def test_cuda_driver_fake_stream_launch_and_sync(monkeypatch) -> None:
+    _reset_cuda_loader(monkeypatch)
+
+    class FakeLibrary:
+        def __init__(self) -> None:
+            self.stream_launches: list[int] = []
+            self.synced_streams: list[int] = []
+            self.context = 0xCAFE
+
+            def cuInit(flags: int) -> int:
+                return 0
+
+            def cuDriverGetVersion(out) -> int:
+                _write_int_ptr(out, 13020)
+                return 0
+
+            def cuGetErrorName(status: int, out) -> int:
+                _write_char_pp(out, b"CUDA_ERROR_UNKNOWN")
+                return 0
+
+            def cuGetErrorString(status: int, out) -> int:
+                _write_char_pp(out, b"unknown")
+                return 0
+
+            def cuDeviceGetCount(out) -> int:
+                _write_int_ptr(out, 1)
+                return 0
+
+            def cuDeviceGet(out, ordinal: int) -> int:
+                _write_device_ptr(out, ordinal)
+                return 0
+
+            def cuDeviceGetName(buffer, size: int, device: CUdevice) -> int:
+                ctypes.memmove(buffer, b"Fake NVIDIA\0", len(b"Fake NVIDIA\0"))
+                return 0
+
+            def cuDeviceComputeCapability(major, minor, device: CUdevice) -> int:
+                _write_int_ptr(major, 9)
+                _write_int_ptr(minor, 0)
+                return 0
+
+            def cuCtxGetCurrent(out) -> int:
+                _write_context_ptr(out, self.context)
+                return 0
+
+            def cuCtxSetCurrent(context: CUcontext) -> int:
+                self.context = int(context.value or 0)
+                return 0
+
+            def cuCtxSynchronize() -> int:
+                return 0
+
+            def cuStreamSynchronize(stream: CUstream) -> int:
+                self.synced_streams.append(int(stream.value or 0))
+                return 0
+
+            def cuDevicePrimaryCtxRetain(out, device: CUdevice) -> int:
+                self.context = 0xCAFE
+                _write_context_ptr(out, self.context)
+                return 0
+
+            def cuDevicePrimaryCtxRelease(device: CUdevice) -> int:
+                return 0
+
+            def cuModuleLoadDataEx(out, image, num_options: int, options, option_values) -> int:
+                _write_module_ptr(out, 0x1234)
+                return 0
+
+            def cuModuleUnload(module: CUmodule) -> int:
+                return 0
+
+            def cuModuleGetFunction(out, module: CUmodule, name: bytes) -> int:
+                _write_function_ptr(out, 0x5678)
+                return 0
+
+            def cuLaunchKernel(function, gx, gy, gz, bx, by, bz, shared_mem, stream, kernel_params, extra) -> int:
+                self.stream_launches.append(int(stream.value or 0))
+                return 0
+
+            self.cuInit = cuInit
+            self.cuDriverGetVersion = cuDriverGetVersion
+            self.cuGetErrorName = cuGetErrorName
+            self.cuGetErrorString = cuGetErrorString
+            self.cuDeviceGetCount = cuDeviceGetCount
+            self.cuDeviceGet = cuDeviceGet
+            self.cuDeviceGetName = cuDeviceGetName
+            self.cuDeviceComputeCapability = cuDeviceComputeCapability
+            self.cuCtxGetCurrent = cuCtxGetCurrent
+            self.cuCtxSetCurrent = cuCtxSetCurrent
+            self.cuCtxSynchronize = cuCtxSynchronize
+            self.cuStreamSynchronize = cuStreamSynchronize
+            self.cuDevicePrimaryCtxRetain = cuDevicePrimaryCtxRetain
+            self.cuDevicePrimaryCtxRelease = cuDevicePrimaryCtxRelease
+            self.cuModuleLoadDataEx = cuModuleLoadDataEx
+            self.cuModuleUnload = cuModuleUnload
+            self.cuModuleGetFunction = cuModuleGetFunction
+            self.cuLaunchKernel = cuLaunchKernel
+
+    fake_library = FakeLibrary()
+    monkeypatch.setattr("baybridge.cuda_driver.load_cuda_driver_library", lambda global_scope=False: fake_library)
+
+    driver = CudaDriver()
+    module = driver.load_module_from_ptx(
+        ".version 8.0\n.target sm_90\n.address_size 64\n.visible .entry noop_kernel() { ret; }\n"
+    )
+    function = driver.function(module, "noop_kernel")
+    stream = driver.coerce_stream(1234)
+    driver.launch_kernel(function, grid=(1, 1, 1), block=(1, 1, 1), stream=stream)
+    driver.synchronize_stream(stream)
+
+    assert fake_library.stream_launches == [1234]
+    assert fake_library.synced_streams == [1234]
 
 
 def test_cuda_driver_error_includes_name_and_string(monkeypatch) -> None:
@@ -218,6 +337,9 @@ def test_cuda_driver_error_includes_name_and_string(monkeypatch) -> None:
             def cuCtxSynchronize() -> int:
                 return 0
 
+            def cuStreamSynchronize(stream: CUstream) -> int:
+                return 0
+
             def cuDevicePrimaryCtxRetain(out, device: CUdevice) -> int:
                 return 0
 
@@ -247,6 +369,7 @@ def test_cuda_driver_error_includes_name_and_string(monkeypatch) -> None:
             self.cuCtxGetCurrent = cuCtxGetCurrent
             self.cuCtxSetCurrent = cuCtxSetCurrent
             self.cuCtxSynchronize = cuCtxSynchronize
+            self.cuStreamSynchronize = cuStreamSynchronize
             self.cuDevicePrimaryCtxRetain = cuDevicePrimaryCtxRetain
             self.cuDevicePrimaryCtxRelease = cuDevicePrimaryCtxRelease
             self.cuModuleLoadDataEx = cuModuleLoadDataEx

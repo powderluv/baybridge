@@ -86,6 +86,15 @@ def _sample_payload_from_factory(factory, *, backend_name: str, target) -> dict[
     }
 
 
+def _resolve_cli_target(bb_module, target_text: str | None):
+    if not target_text:
+        return None
+    normalized_target = target_text.strip().lower()
+    if normalized_target.startswith("sm_") or normalized_target.isdigit():
+        return bb_module.NvidiaTarget(sm=target_text)
+    return bb_module.AMDTarget(arch=target_text)
+
+
 def _is_executable_backend(name: str) -> bool:
     return name in {"hipcc_exec", "hipkittens_exec", "flydsl_exec", "waveasm_exec", "aster_exec", "ptx_exec"}
 
@@ -283,10 +292,7 @@ def main() -> int:
     sample_factory = None
     if args.sample_factory:
         sample_factory = _resolve_symbol(module, args.sample_factory)
-    if args.target:
-        target = bb.NvidiaTarget(sm=args.target) if args.target.startswith("sm_") else bb.AMDTarget(arch=args.target)
-    else:
-        target = None
+    target = _resolve_cli_target(bb, args.target)
     cache_dir = args.cache_dir
 
     backend_names = tuple(item.strip() for item in args.backends.split(",") if item.strip())

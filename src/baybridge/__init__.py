@@ -2,7 +2,7 @@ from .backend import LoweredModule
 from .compiler import CompiledKernel, GenerateLineInfo, compile, emit_waveasm_repro
 from .diagnostics import BackendNotImplementedError, CompilationError, BaybridgeError, UnsupportedOperationError
 from .dtypes import ElementType
-from .math import acos, asin, atan, atan2, cos, erf, exp, exp2, log, log10, log2, math, rsqrt, sin, sqrt
+from .math import acos, asin, atan, atan2, ceil, cos, erf, exp, exp2, floor, log, log10, log2, math, maximum, minimum, round, rsqrt, sin, sqrt, trunc
 from .frontend import (
     ComposedLayout,
     CopyAtom,
@@ -261,6 +261,7 @@ __all__ = [
     "erf",
     "exp",
     "exp2",
+    "floor",
     "flat_product",
     "flat_divide",
     "full",
@@ -286,6 +287,8 @@ __all__ = [
     "math",
     "logical_divide",
     "logical_product",
+    "maximum",
+    "minimum",
     "make_atom",
     "make_copy_atom",
     "make_fragment",
@@ -334,6 +337,7 @@ __all__ = [
     "printf",
     "product_each",
     "program_id",
+    "round",
     "rmsnorm",
     "select",
     "size",
@@ -350,6 +354,8 @@ __all__ = [
     "tuple_cat",
     "sin",
     "sqrt",
+    "trunc",
+    "ceil",
     "sync_warp",
     "typing",
     "unpack_bf8",
