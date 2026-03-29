@@ -723,7 +723,17 @@ def ptx_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def ptx_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def ptx_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def ptx_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1065,7 +1075,17 @@ def ptx_parallel_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def ptx_parallel_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
 def ptx_parallel_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def ptx_parallel_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1410,7 +1430,17 @@ def ptx_multiblock_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
+def ptx_multiblock_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
 def ptx_multiblock_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
+def ptx_multiblock_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1693,6 +1723,15 @@ def ptx_indexed_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
+def ptx_indexed_neg_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = -src[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
 def ptx_indexed_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
@@ -1703,6 +1742,15 @@ def ptx_indexed_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
 def ptx_indexed_abs_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = abs(src[idx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
+def ptx_indexed_abs_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
     bdim, _, _ = bb.arch.block_dim()
@@ -1843,7 +1891,19 @@ def ptx_direct_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def ptx_direct_neg_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = -src[tidx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
 def ptx_direct_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = abs(src[tidx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def ptx_direct_abs_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     dst[tidx] = abs(src[tidx])
 
@@ -2525,6 +2585,25 @@ def test_ptx_ref_lowers_indexed_copy_i1_kernel(tmp_path: Path) -> None:
     assert "st.global.u8 [%rd5], %r5;" in text
 
 
+def test_ptx_ref_lowers_indexed_copy_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([float(index) * 0.5 for index in range(256)], dtype="f16")
+    dst = bb.zeros((256,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_indexed_copy_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_indexed_copy_kernel(" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
+
+
 def test_ptx_ref_lowers_indexed_add_kernel(tmp_path: Path) -> None:
     a = bb.tensor([1.0] * 256, dtype="f32")
     b = bb.tensor([2.0] * 256, dtype="f32")
@@ -2546,6 +2625,32 @@ def test_ptx_ref_lowers_indexed_add_kernel(tmp_path: Path) -> None:
     assert "ld.global.f32 %f2, [%rd6];" in text
     assert "add.rn.f32 %f3, %f1, %f2;" in text
     assert "st.global.f32 [%rd7], %f3;" in text
+
+
+def test_ptx_ref_lowers_indexed_add_f16_kernel(tmp_path: Path) -> None:
+    a = bb.tensor([0.5 * float(index) for index in range(256)], dtype="f16")
+    b = bb.tensor([0.25 * float(index + 1) for index in range(256)], dtype="f16")
+    c = bb.zeros((256,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_indexed_add_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_indexed_add_kernel(" in text
+    assert "ld.global.u16 %rs1, [%rd5];" in text
+    assert "ld.global.u16 %rs2, [%rd6];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "cvt.f32.f16 %f2, %rs2;" in text
+    assert "add.rn.f32 %f3, %f1, %f2;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f3;" in text
+    assert "st.global.u16 [%rd7], %rs1;" in text
 
 
 def test_ptx_ref_lowers_indexed_mul_i32_kernel(tmp_path: Path) -> None:
@@ -2948,6 +3053,26 @@ def test_ptx_ref_lowers_direct_copy_i1_kernel(tmp_path: Path) -> None:
     assert "st.global.u8 [%rd5], %r5;" in text
 
 
+def test_ptx_ref_lowers_direct_copy_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([float(index) * 0.5 for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_direct_copy_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_direct_copy_kernel(" in text
+    assert "mov.u32 %r1, %tid.x;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
+
+
 def test_ptx_ref_lowers_direct_add_kernel(tmp_path: Path) -> None:
     a = bb.tensor([1.0] * 128, dtype="f32")
     b = bb.tensor([2.0] * 128, dtype="f32")
@@ -2970,6 +3095,33 @@ def test_ptx_ref_lowers_direct_add_kernel(tmp_path: Path) -> None:
     assert "ld.global.f32 %f2, [%rd6];" in text
     assert "add.rn.f32 %f3, %f1, %f2;" in text
     assert "st.global.f32 [%rd7], %f3;" in text
+
+
+def test_ptx_ref_lowers_direct_add_f16_kernel(tmp_path: Path) -> None:
+    a = bb.tensor([0.5 * float(index) for index in range(128)], dtype="f16")
+    b = bb.tensor([0.25 * float(index + 1) for index in range(128)], dtype="f16")
+    c = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_direct_add_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_direct_add_kernel(" in text
+    assert "mov.u32 %r1, %tid.x;" in text
+    assert "ld.global.u16 %rs1, [%rd5];" in text
+    assert "ld.global.u16 %rs2, [%rd6];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "cvt.f32.f16 %f2, %rs2;" in text
+    assert "add.rn.f32 %f3, %f1, %f2;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f3;" in text
+    assert "st.global.u16 [%rd7], %rs1;" in text
 
 
 def test_ptx_ref_lowers_direct_mul_i32_kernel(tmp_path: Path) -> None:
@@ -3855,6 +4007,7 @@ def test_ptx_ref_lowers_indexed_tensor_scalar_broadcast_kernel(tmp_path: Path) -
     ("kernel", "dtype", "src_values", "dst_shape", "load_instr", "store_instr"),
     [
         (ptx_dense_copy_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], (2, 2), "ld.global.f32 %f1, [%rd4];", "st.global.f32 [%rd5], %f1;"),
+        (ptx_dense_copy_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], (2, 2), "ld.global.u16 %rs1, [%rd4];", "st.global.u16 [%rd5], %rs1;"),
         (ptx_dense_copy_i32_2d_kernel, "i32", [[1, 2], [3, 4]], (2, 2), "ld.global.s32 %r7, [%rd4];", "st.global.s32 [%rd5], %r7;"),
         (ptx_dense_copy_2d_kernel, "i1", [[True, False], [False, True]], (2, 2), "ld.global.u8 %r7, [%rd4];", "st.global.u8 [%rd5], %r7;"),
     ],
@@ -3946,6 +4099,7 @@ def test_ptx_ref_lowers_dense_copy_reduce_or_i32_2d_kernel(tmp_path: Path) -> No
     ("kernel", "dtype", "src_values", "dst_shape", "load_instr", "store_instr"),
     [
         (ptx_parallel_dense_copy_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], (2, 2), "ld.global.f32 %f1, [%rd4];", "st.global.f32 [%rd5], %f1;"),
+        (ptx_parallel_dense_copy_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], (2, 2), "ld.global.u16 %rs1, [%rd4];", "st.global.u16 [%rd5], %rs1;"),
         (ptx_parallel_dense_copy_i32_2d_kernel, "i32", [[1, 2], [3, 4]], (2, 2), "ld.global.s32 %r7, [%rd4];", "st.global.s32 [%rd5], %r7;"),
         (ptx_parallel_dense_copy_2d_kernel, "i1", [[True, False], [False, True]], (2, 2), "ld.global.u8 %r7, [%rd4];", "st.global.u8 [%rd5], %r7;"),
     ],
@@ -4184,6 +4338,7 @@ def test_ptx_ref_lowers_parallel_dense_tensor_extent1_scalar_broadcast_2d_kernel
     ("kernel", "dtype", "lhs_values", "rhs_values", "dst_shape", "instr"),
     [
         (ptx_dense_add_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], (2, 2), "add.rn.f32 %f3, %f1, %f2;"),
+        (ptx_dense_add_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], [[0.25, 0.5], [0.75, 1.0]], (2, 2), "add.rn.f32 %f3, %f1, %f2;"),
         (ptx_dense_sub_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], (2, 2), "sub.rn.f32 %f3, %f1, %f2;"),
         (ptx_dense_mul_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], (2, 2), "mul.rn.f32 %f3, %f1, %f2;"),
         (ptx_dense_div_2d_kernel, "f32", [[8.0, 12.0], [18.0, 28.0]], [[2.0, 3.0], [6.0, 7.0]], (2, 2), "div.rn.f32 %f3, %f1, %f2;"),
@@ -4209,6 +4364,13 @@ def test_ptx_ref_lowers_dense_tensor_binary_2d_kernels(tmp_path: Path, kernel, d
     assert "L_cols_inner:" in text
     assert instr in text
     assert "mad.lo.u32 %r10, %r1, 2, %r2;" in text
+    if dtype == "f16":
+        assert "ld.global.u16 %rs1, [%rd5];" in text
+        assert "ld.global.u16 %rs2, [%rd6];" in text
+        assert "cvt.f32.f16 %f1, %rs1;" in text
+        assert "cvt.f32.f16 %f2, %rs2;" in text
+        assert "cvt.rn.f16.f32 %rs1, %f3;" in text
+        assert "st.global.u16 [%rd7], %rs1;" in text
 
 
 def test_ptx_ref_lowers_dense_tensor_compare_2d_kernel(tmp_path: Path) -> None:
@@ -4356,6 +4518,7 @@ def test_ptx_ref_lowers_dense_tensor_scalar_select_2d_kernel(tmp_path: Path) -> 
     ("kernel", "dtype", "lhs_values", "rhs_values", "dst_shape", "instr"),
     [
         (ptx_parallel_dense_add_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], (2, 2), "add.rn.f32 %f3, %f1, %f2;"),
+        (ptx_parallel_dense_add_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], [[0.25, 0.5], [0.75, 1.0]], (2, 2), "add.rn.f32 %f3, %f1, %f2;"),
         (ptx_parallel_dense_add_i32_2d_kernel, "i32", [[1, 2], [3, 4]], [[10, 20], [30, 40]], (2, 2), "add.s32 %r11, %r11, %r12;"),
         (ptx_parallel_dense_bitand_i32_2d_kernel, "i32", [[7, 11], [13, 17]], [[3, 5], [7, 9]], (2, 2), "and.b32 %r11, %r11, %r12;"),
         (ptx_parallel_dense_bitor_i32_2d_kernel, "i32", [[7, 11], [13, 17]], [[3, 5], [7, 9]], (2, 2), "or.b32 %r11, %r11, %r12;"),
@@ -4375,6 +4538,13 @@ def test_ptx_ref_lowers_parallel_dense_tensor_binary_2d_kernels(tmp_path: Path, 
     assert "setp.ge.u32 %p1, %r1, 2;" in text
     assert "mad.lo.u32 %r10, %r2, 2, %r1;" in text
     assert instr in text
+    if dtype == "f16":
+        assert "ld.global.u16 %rs1, [%rd5];" in text
+        assert "ld.global.u16 %rs2, [%rd6];" in text
+        assert "cvt.f32.f16 %f1, %rs1;" in text
+        assert "cvt.f32.f16 %f2, %rs2;" in text
+        assert "cvt.rn.f16.f32 %rs1, %f3;" in text
+        assert "st.global.u16 [%rd7], %rs1;" in text
 
 
 @pytest.mark.parametrize(
@@ -4672,8 +4842,10 @@ def test_ptx_ref_lowers_parallel_broadcast_tensor_binary_2d_kernels(tmp_path: Pa
         (ptx_dense_rsqrt_2d_kernel, "f32", [[4.0, 9.0], [16.0, 25.0]], "ld.global.f32 %f1, [%rd4];", "rsqrt.approx.f32 %f2, %f1;", "st.global.f32 [%rd5], %f2;"),
         (ptx_dense_neg_f32_2d_kernel, "f32", [[1.0, -2.0], [3.5, -4.5]], "ld.global.f32 %f1, [%rd4];", "neg.f32 %f2, %f1;", "st.global.f32 [%rd5], %f2;"),
         (ptx_dense_neg_i32_2d_kernel, "i32", [[1, -2], [3, -4]], "ld.global.s32 %r5, [%rd4];", "neg.s32 %r5, %r5;", "st.global.s32 [%rd5], %r5;"),
+        (ptx_dense_neg_f16_2d_kernel, "f16", [[0.5, -1.0], [1.5, -2.0]], "ld.global.u16 %rs1, [%rd4];", "neg.f32 %f2, %f1;", "st.global.u16 [%rd5], %rs1;"),
         (ptx_dense_abs_f32_2d_kernel, "f32", [[1.0, -2.0], [3.5, -4.5]], "ld.global.f32 %f1, [%rd4];", "abs.f32 %f2, %f1;", "st.global.f32 [%rd5], %f2;"),
         (ptx_dense_abs_i32_2d_kernel, "i32", [[1, -2], [3, -4]], "ld.global.s32 %r5, [%rd4];", "abs.s32 %r5, %r5;", "st.global.s32 [%rd5], %r5;"),
+        (ptx_dense_abs_f16_2d_kernel, "f16", [[0.5, -1.0], [1.5, -2.0]], "ld.global.u16 %rs1, [%rd4];", "abs.f32 %f2, %f1;", "st.global.u16 [%rd5], %rs1;"),
         (ptx_dense_bitnot_i32_2d_kernel, "i32", [[1, 2], [3, 4]], "ld.global.s32 %r5, [%rd4];", "not.b32 %r5, %r5;", "st.global.s32 [%rd5], %r5;"),
         (ptx_dense_bitnot_i1_2d_kernel, "i1", [[True, False], [False, True]], "ld.global.u8 %r5, [%rd4];", "xor.b32 %r5, %r5, 1;", "st.global.u8 [%rd5], %r5;"),
     ],
@@ -4763,8 +4935,10 @@ def test_ptx_ref_lowers_dense_native_math_tensor_unary_2d_kernels(tmp_path: Path
         (ptx_parallel_dense_sqrt_2d_kernel, "f32", [[4.0, 9.0], [16.0, 25.0]], "sqrt.rn.f32 %f2, %f1;"),
         (ptx_parallel_dense_neg_f32_2d_kernel, "f32", [[1.0, -2.0], [3.5, -4.5]], "neg.f32 %f2, %f1;"),
         (ptx_parallel_dense_neg_i32_2d_kernel, "i32", [[1, -2], [3, -4]], "neg.s32 %r5, %r5;"),
+        (ptx_parallel_dense_neg_f16_2d_kernel, "f16", [[0.5, -1.0], [1.5, -2.0]], "neg.f32 %f2, %f1;"),
         (ptx_parallel_dense_abs_f32_2d_kernel, "f32", [[1.0, -2.0], [3.5, -4.5]], "abs.f32 %f2, %f1;"),
         (ptx_parallel_dense_abs_i32_2d_kernel, "i32", [[1, -2], [3, -4]], "abs.s32 %r5, %r5;"),
+        (ptx_parallel_dense_abs_f16_2d_kernel, "f16", [[0.5, -1.0], [1.5, -2.0]], "abs.f32 %f2, %f1;"),
         (ptx_parallel_dense_bitnot_i32_2d_kernel, "i32", [[1, 2], [3, 4]], "not.b32 %r5, %r5;"),
         (ptx_parallel_dense_bitnot_i1_2d_kernel, "i1", [[True, False], [False, True]], "xor.b32 %r5, %r5, 1;"),
     ],
@@ -4942,6 +5116,29 @@ def test_ptx_ref_lowers_indexed_neg_i32_kernel(tmp_path: Path) -> None:
     assert "st.global.s32 [%rd5], %r5;" in text
 
 
+def test_ptx_ref_lowers_indexed_neg_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_indexed_neg_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_indexed_neg_f16_kernel(" in text
+    assert "mad.lo.u32 %r4, %r2, %r3, %r1;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "neg.f32 %f2, %f1;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f2;" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
+
+
 def test_ptx_ref_lowers_indexed_abs_f32_kernel(tmp_path: Path) -> None:
     src = bb.tensor([float(index) - 64.0 for index in range(128)], dtype="f32")
     dst = bb.zeros((128,), dtype="f32")
@@ -4982,6 +5179,29 @@ def test_ptx_ref_lowers_indexed_abs_i32_kernel(tmp_path: Path) -> None:
     assert "ld.global.s32 %r5, [%rd4];" in text
     assert "abs.s32 %r5, %r5;" in text
     assert "st.global.s32 [%rd5], %r5;" in text
+
+
+def test_ptx_ref_lowers_indexed_abs_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_indexed_abs_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_indexed_abs_f16_kernel(" in text
+    assert "mad.lo.u32 %r4, %r2, %r3, %r1;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "abs.f32 %f2, %f1;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f2;" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
 
 
 def test_ptx_ref_lowers_indexed_bitnot_i32_kernel(tmp_path: Path) -> None:
@@ -5089,6 +5309,29 @@ def test_ptx_ref_lowers_direct_neg_i32_kernel(tmp_path: Path) -> None:
     assert "st.global.s32 [%rd5], %r5;" in text
 
 
+def test_ptx_ref_lowers_direct_neg_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_direct_neg_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_direct_neg_f16_kernel(" in text
+    assert "mov.u32 %r1, %tid.x;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "neg.f32 %f2, %f1;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f2;" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
+
+
 def test_ptx_ref_lowers_direct_abs_f32_kernel(tmp_path: Path) -> None:
     src = bb.tensor([float(index) - 64.0 for index in range(128)], dtype="f32")
     dst = bb.zeros((128,), dtype="f32")
@@ -5108,6 +5351,29 @@ def test_ptx_ref_lowers_direct_abs_f32_kernel(tmp_path: Path) -> None:
     assert "ld.global.f32 %f1, [%rd4];" in text
     assert "abs.f32 %f2, %f1;" in text
     assert "st.global.f32 [%rd5], %f2;" in text
+
+
+def test_ptx_ref_lowers_direct_abs_f16_kernel(tmp_path: Path) -> None:
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_direct_abs_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert ".visible .entry ptx_direct_abs_f16_kernel(" in text
+    assert "mov.u32 %r1, %tid.x;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "cvt.f32.f16 %f1, %rs1;" in text
+    assert "abs.f32 %f2, %f1;" in text
+    assert "cvt.rn.f16.f32 %rs1, %f2;" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
 
 
 def test_ptx_ref_lowers_direct_abs_i32_kernel(tmp_path: Path) -> None:
@@ -6053,9 +6319,11 @@ def test_ptx_ref_lowers_parallel_tensor_factory_bundle_i32_kernel(tmp_path: Path
     ("kernel", "args"),
     [
         (ptx_multiblock_dense_copy_2d_kernel, (bb.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]], dtype="f32"), bb.zeros((4, 3), dtype="f32"))),
+        (ptx_multiblock_dense_copy_2d_kernel, (bb.tensor([[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]], dtype="f16"), bb.zeros((4, 3), dtype="f16"))),
         (ptx_multiblock_dense_copy_i32_2d_kernel, (bb.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], dtype="i32"), bb.zeros((4, 3), dtype="i32"))),
         (ptx_multiblock_dense_copy_2d_kernel, (bb.tensor([[True, False, True], [False, True, False], [True, True, False], [False, False, True]], dtype="i1"), bb.zeros((4, 3), dtype="i1"))),
         (ptx_multiblock_dense_add_2d_kernel, (bb.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]], dtype="f32"), bb.tensor([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0], [70.0, 80.0, 90.0], [100.0, 110.0, 120.0]], dtype="f32"), bb.zeros((4, 3), dtype="f32"))),
+        (ptx_multiblock_dense_add_2d_kernel, (bb.tensor([[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]], dtype="f16"), bb.tensor([[0.25, 0.5, 0.75], [1.0, 1.25, 1.5], [1.75, 2.0, 2.25], [2.5, 2.75, 3.0]], dtype="f16"), bb.zeros((4, 3), dtype="f16"))),
         (ptx_multiblock_dense_add_i32_2d_kernel, (bb.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], dtype="i32"), bb.tensor([[10, 20, 30], [40, 50, 60], [70, 80, 90], [100, 110, 120]], dtype="i32"), bb.zeros((4, 3), dtype="i32"))),
         (ptx_multiblock_dense_bitxor_i32_2d_kernel, (bb.tensor([[7, 11, 13], [17, 19, 23], [29, 31, 37], [41, 43, 47]], dtype="i32"), bb.tensor([[3, 5, 9], [6, 10, 12], [15, 17, 19], [21, 22, 23]], dtype="i32"), bb.zeros((4, 3), dtype="i32"))),
         (ptx_multiblock_broadcast_add_2d_kernel, (bb.tensor([[1.0], [2.0], [3.0], [4.0]], dtype="f32"), bb.tensor([[10.0, 20.0, 30.0]], dtype="f32"), bb.zeros((4, 3), dtype="f32"))),
@@ -6070,6 +6338,36 @@ def test_ptx_ref_lowers_multiblock_parallel_tensor_elementwise_2d_kernels(tmp_pa
     assert "mov.u32 %r2, %ctaid.y;" in text
     assert "mad.lo.u32 %r1, %r2, 2, %r1;" in text
     assert "add.s32 %r2, %r2, 2;" in text
+    if str(args[0].dtype) == "f16" and len(args) == 3:
+        assert "ld.global.u16 %rs1, [%rd5];" in text
+        assert "ld.global.u16 %rs2, [%rd6];" in text
+        assert "cvt.f32.f16 %f1, %rs1;" in text
+        assert "cvt.f32.f16 %f2, %rs2;" in text
+        assert "cvt.rn.f16.f32 %rs1, %f3;" in text
+        assert "st.global.u16 [%rd7], %rs1;" in text
+
+
+def test_ptx_ref_lowers_multiblock_dense_copy_f16_2d_kernel(tmp_path: Path) -> None:
+    src = bb.tensor(
+        [[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]],
+        dtype="f16",
+    )
+    dst = bb.zeros((4, 3), dtype="f16")
+
+    artifact = bb.compile(
+        ptx_multiblock_dense_copy_2d_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_nvidia_target(),
+        backend="ptx_ref",
+    )
+
+    text = artifact.lowered_module.text
+    assert "mov.u32 %r2, %ctaid.x;" in text
+    assert "mov.u32 %r2, %ctaid.y;" in text
+    assert "ld.global.u16 %rs1, [%rd4];" in text
+    assert "st.global.u16 [%rd5], %rs1;" in text
 
 
 @pytest.mark.parametrize(
@@ -6301,8 +6599,10 @@ def test_ptx_ref_lowers_multiblock_parallel_tensor_scalar_select_2d_kernels(
         (ptx_multiblock_dense_round_2d_kernel, "f32", [[-3.75, -2.25, -1.75], [-0.25, 0.25, 1.75], [2.25, 3.75, -1.25], [0.75, -0.75, 1.25]], ("cvt.rni.f32.f32 %f2, %f1;",)),
         (ptx_multiblock_dense_neg_f32_2d_kernel, "f32", [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0], [7.0, -8.0, 9.0], [-10.0, 11.0, -12.0]], ("neg.f32 %f2, %f1;",)),
         (ptx_multiblock_dense_neg_i32_2d_kernel, "i32", [[1, -2, 3], [-4, 5, -6], [7, -8, 9], [-10, 11, -12]], ("neg.s32 %r5, %r5;",)),
+        (ptx_multiblock_dense_neg_f16_2d_kernel, "f16", [[0.5, -1.0, 1.5], [-2.0, 2.5, -3.0], [3.5, -4.0, 4.5], [-5.0, 5.5, -6.0]], ("neg.f32 %f2, %f1;",)),
         (ptx_multiblock_dense_abs_f32_2d_kernel, "f32", [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0], [7.0, -8.0, 9.0], [-10.0, 11.0, -12.0]], ("abs.f32 %f2, %f1;",)),
         (ptx_multiblock_dense_abs_i32_2d_kernel, "i32", [[1, -2, 3], [-4, 5, -6], [7, -8, 9], [-10, 11, -12]], ("abs.s32 %r5, %r5;",)),
+        (ptx_multiblock_dense_abs_f16_2d_kernel, "f16", [[0.5, -1.0, 1.5], [-2.0, 2.5, -3.0], [3.5, -4.0, 4.5], [-5.0, 5.5, -6.0]], ("abs.f32 %f2, %f1;",)),
         (ptx_multiblock_dense_bitnot_i32_2d_kernel, "i32", [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], ("not.b32 %r5, %r5;",)),
         (ptx_multiblock_dense_bitnot_i1_2d_kernel, "i1", [[True, False, True], [False, True, False], [True, True, False], [False, False, True]], ("xor.b32 %r5, %r5, 1;",)),
     ],

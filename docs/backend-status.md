@@ -17,10 +17,10 @@ Current repo state during this documentation pass:
 - branch: `main`
 - worktree: dirty
 - full local suite:
-  - `1292 passed, 196 skipped`
+  - `1336 passed, 196 skipped`
 - focused local PTX/CUDA/target validation:
   - `tests/test_backend_ptx_ref.py tests/test_backend_ptx_exec.py tests/test_cuda_driver_runtime.py tests/test_backend_benchmark_tools.py tests/test_target.py`
-  - result: `885 passed`
+  - result: `929 passed`
 
 ## Backend Test Inventory
 
@@ -33,13 +33,13 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `tests/test_backend_hipkittens_exec.py` | `hipkittens_exec` lowering, auto-selection, AMD execution | `20` |
 | `tests/test_backend_flydsl_ref.py` | `flydsl_ref` lowering | `4` |
 | `tests/test_backend_flydsl_exec.py` | `flydsl_exec` lowering, auto-selection, fake/runtime execution, real-FlyDSL opt-in execution | `125` |
-| `tests/test_backend_ptx_ref.py` | `ptx_ref` PTX lowering, fallback selection, launch-contract validation, and driver-JIT-loadable module text | `417` |
-| `tests/test_backend_ptx_exec.py` | `ptx_exec` lowering, NVIDIA execution, CUDA tensor-handle execution, raw CUDA DLPack execution, stream forwarding, and auto-selection | `426` |
+| `tests/test_backend_ptx_ref.py` | `ptx_ref` PTX lowering, fallback selection, launch-contract validation, and driver-JIT-loadable module text | `438` |
+| `tests/test_backend_ptx_exec.py` | `ptx_exec` lowering, NVIDIA execution, CUDA tensor-handle execution, raw CUDA DLPack execution, stream forwarding, and auto-selection | `446` |
 | `tests/test_backend_waveasm_ref.py` | `gpu_mlir`, `waveasm_ref`, repro bundle tools, backend compare tooling | `16` |
 | `tests/test_backend_waveasm_exec.py` | `waveasm_exec` experimental lowering and fake-toolchain execution | `8` |
 | `tests/test_backend_aster_ref.py` | `aster_ref` lowering and tool discovery | `3` |
 | `tests/test_backend_aster_exec.py` | `aster_exec` lowering, auto-selection, AMD execution, MFMA, float8, broadcast/tail coverage | `144` |
-| `tests/test_backend_benchmark_tools.py` | benchmark sample factories, target parsing, and timing helpers | `33` |
+| `tests/test_backend_benchmark_tools.py` | benchmark sample factories, target parsing, and timing helpers | `36` |
 | `tests/test_cuda_driver_runtime.py` | CUDA driver bootstrap used by the PTX backend | `5` |
 | `tests/test_target.py` | target normalization, including `NvidiaTarget` SM canonicalization | `4` |
 | `tests/test_hip_runtime.py` | HIP runtime bootstrap used by executable backends | `2` |
@@ -52,8 +52,8 @@ This is the checked-in backend-oriented test inventory, not the full project-wid
 | `mlir_text` | text/ref | textual inspection | local | broad traced subset | Baybridge-specific textual IR |
 | `gpu_text` | text/ref | textual GPU-flavored inspection | local | broad traced subset | Useful for debug only |
 | `gpu_mlir` | text/ref | structured MLIR emission | local | broad traced subset | Base for external MLIR backends |
-| `ptx_ref` | ref | Baybridge-owned PTX text lowering | local NVIDIA host | exact rank-1 dense copy for `f32/i32/i1`, compare-to-`i1`, scalar-broadcast compare-to-`i1`, rank-1 `select` from `i1` predicate tensors including scalar-branch forms from scalar kernel params and rank-1 extent-1 tensors, pointwise `f32/i32 add/sub/mul/div/max/min` plus rank-1 `i32 bitand/bitor/bitxor` and rank-1 `i1 and/or/xor`, exact rank-1 unary `neg/abs` for `f32/i32`, exact rank-1 PTX unary `round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf` for `f32`, exact rank-1 integer `bitnot` for `i32/i1`, rank-1 scalar-broadcast including `f32/i32 max/min` and `i32 bitand/bitor/bitxor`, exact 2D unary `f32 abs/neg/round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf`, exact 2D unary `i32 abs/neg/bitnot`, and exact 2D integer/boolean `i1 bitnot`, exact rank-1 `copy_reduce`, exact 2D dense copy bundles for `f32/i32/i1`, exact 2D `copy_reduce` bundles, exact 2D scalar-broadcast bundles from scalar kernel params, exact 2D scalar-broadcast compare-to-`i1` bundles from scalar kernel params, exact 2D extent-1 tensor-source scalar-broadcast bundles, exact 2D extent-1 tensor-source scalar-broadcast compare-to-`i1` bundles, exact 2D dense compare-to-`i1` bundles, exact 2D broadcast compare-to-`i1` bundles, exact 2D dense and broadcast `select` bundles from `i1` predicate tensors, exact 2D scalar-branch `select` bundles from scalar kernel params and rank-1 extent-1 tensors, exact 2D dense tensor-binary bundles including `f32/i32 max/min` and `i1 bitand/bitor/bitxor`, exact 2D broadcast tensor-binary bundles including `f32/i32 max/min` and `i1 bitand/bitor/bitxor`, exact 2D rowwise/columnwise reduction families including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D row+column reduction bundles without the scalar output, exact parallel 2D row-tiled variants of those copy/copy-reduce/select/scalar-select/scalar-broadcast/scalar-broadcast compare-to-`i1`/compare-to-`i1`/tensor-binary/unary families plus the extent-1 tensor-source scalar-broadcast and scalar-broadcast compare-to-`i1` paths, exact multiblock output-tiled 2D rowwise/columnwise reductions, exact multiblock output-tiled 2D row+column reduction bundles without the scalar output, serial scalar reductions including `i32 reduce_or`, exact single-block parallel scalar reductions including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D serial reduction bundles including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D parallel reduction bundles including `i32 reduce_and/reduce_or/reduce_xor`, and exact 2D tensor-factory bundles plus their exact parallel row-tiled variants for `f32`/`i32` on canonical indexed or direct `threadIdx.x` forms, plus exact `f32` `atan2` across the validated rank-1, scalar-broadcast, dense/broadcast 2D, and row-tiled 2D PTX tensor-binary families | Emits PTX text that the CUDA driver JIT can load directly; no toolkit is required in the backend path |
-| `ptx_exec` | exec | Baybridge-owned NVIDIA executable path | local NVIDIA host | same exact PTX subset as `ptx_ref`; works with Baybridge `RuntimeTensor` staging, CUDA `TensorHandle` inputs, raw CUDA DLPack-capable tensor inputs, scalar kernel params, validated `i1` tensor data paths for exact copy, rank-1 and 2D `f32` unary `abs/neg/round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf`, rank-1 and 2D `i32` unary `abs/neg`, rank-1 and 2D integer/boolean `bitnot`, and bitwise tensor-binary/broadcast-binary PTX families, staged boolean `i1` tensor outputs for the exact rank-1, serial 2D, and exact parallel 2D row-tiled compare families including scalar-broadcast compare-to-`i1` from both scalar kernel params and rank-1 extent-1 tensors, and `i1` predicate-tensor inputs for the exact PTX `select` family across rank-1 direct/indexed forms plus serial and exact parallel row-tiled 2D dense, broadcast, and scalar-branch select forms, plus exact `f32` `atan2` across the validated rank-1, scalar-broadcast, dense/broadcast 2D, and row-tiled 2D PTX tensor-binary families | Uses only `libcuda.so.1`; auto-preferred for `NvidiaTarget` when available and the traced kernel matches the exact PTX subset with device-resident sample args; staged tensor sample args now keep reduction-style PTX kernels on `ptx_ref` by default, and all-staged tensor sample args keep every PTX family on `ptx_ref` unless `backend=\"ptx_exec\"` is requested explicitly; once selected, `ptx_exec` warns once per built launcher when tensor args are staged through host memory, reuses per-argument device allocations across repeated staged launches, and still measures best with direct CUDA handles or raw CUDA DLPack inputs rather than staged `RuntimeTensor` values |
+| `ptx_ref` | ref | Baybridge-owned PTX text lowering | local NVIDIA host | exact rank-1 dense copy for `f32/f16/i32/i1`, compare-to-`i1`, scalar-broadcast compare-to-`i1`, rank-1 `select` from `i1` predicate tensors including scalar-branch forms from scalar kernel params and rank-1 extent-1 tensors, pointwise `f32/i32 add/sub/mul/div/max/min`, exact rank-1 `f16 add`, plus rank-1 `i32 bitand/bitor/bitxor` and rank-1 `i1 and/or/xor`, exact rank-1 unary `neg/abs` for `f32/f16/i32`, exact rank-1 PTX unary `round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf` for `f32`, exact rank-1 integer `bitnot` for `i32/i1`, rank-1 scalar-broadcast including `f32/i32 max/min` and `i32 bitand/bitor/bitxor`, exact 2D unary `f32 abs/neg/round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf`, exact 2D unary `f16 abs/neg`, exact 2D unary `i32 abs/neg/bitnot`, and exact 2D integer/boolean `i1 bitnot`, exact rank-1 `copy_reduce`, exact 2D dense copy bundles for `f32/f16/i32/i1`, exact 2D `copy_reduce` bundles, exact 2D scalar-broadcast bundles from scalar kernel params, exact 2D scalar-broadcast compare-to-`i1` bundles from scalar kernel params, exact 2D extent-1 tensor-source scalar-broadcast bundles, exact 2D extent-1 tensor-source scalar-broadcast compare-to-`i1` bundles, exact 2D dense compare-to-`i1` bundles, exact 2D broadcast compare-to-`i1` bundles, exact 2D dense and broadcast `select` bundles from `i1` predicate tensors, exact 2D scalar-branch `select` bundles from scalar kernel params and rank-1 extent-1 tensors, exact 2D dense tensor-binary bundles including exact `f16 add`, `f32/i32 max/min`, and `i1 bitand/bitor/bitxor`, exact 2D broadcast tensor-binary bundles including `f32/i32 max/min` and `i1 bitand/bitor/bitxor`, exact 2D rowwise/columnwise reduction families including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D row+column reduction bundles without the scalar output, exact parallel 2D row-tiled variants of those copy/copy-reduce/select/scalar-select/scalar-broadcast/scalar-broadcast compare-to-`i1`/compare-to-`i1`/tensor-binary/unary families plus the extent-1 tensor-source scalar-broadcast and scalar-broadcast compare-to-`i1` paths, exact multiblock output-tiled 2D rowwise/columnwise reductions, exact multiblock output-tiled 2D row+column reduction bundles without the scalar output, serial scalar reductions including `i32 reduce_or`, exact single-block parallel scalar reductions including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D serial reduction bundles including `i32 reduce_and/reduce_or/reduce_xor`, exact 2D parallel reduction bundles including `i32 reduce_and/reduce_or/reduce_xor`, and exact 2D tensor-factory bundles plus their exact parallel row-tiled variants for `f32`/`i32` on canonical indexed or direct `threadIdx.x` forms, plus exact `f32` `atan2` across the validated rank-1, scalar-broadcast, dense/broadcast 2D, and row-tiled 2D PTX tensor-binary families | Emits PTX text that the CUDA driver JIT can load directly; no toolkit is required in the backend path |
+| `ptx_exec` | exec | Baybridge-owned NVIDIA executable path | local NVIDIA host | same exact PTX subset as `ptx_ref`; works with Baybridge `RuntimeTensor` staging, CUDA `TensorHandle` inputs, raw CUDA DLPack-capable tensor inputs, scalar kernel params, validated `i1` tensor data paths for exact copy, exact rank-1 and 2D dense `f16 add`, rank-1 and 2D `f32` unary `abs/neg/round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf`, rank-1 and 2D `f16` unary `abs/neg`, rank-1 and 2D `i32` unary `abs/neg`, rank-1 and 2D integer/boolean `bitnot`, and bitwise tensor-binary/broadcast-binary PTX families, staged boolean `i1` tensor outputs for the exact rank-1, serial 2D, and exact parallel 2D row-tiled compare families including scalar-broadcast compare-to-`i1` from both scalar kernel params and rank-1 extent-1 tensors, and `i1` predicate-tensor inputs for the exact PTX `select` family across rank-1 direct/indexed forms plus serial and exact parallel row-tiled 2D dense, broadcast, and scalar-branch select forms, plus exact `f32` `atan2` across the validated rank-1, scalar-broadcast, dense/broadcast 2D, and row-tiled 2D PTX tensor-binary families | Uses only `libcuda.so.1`; auto-preferred for `NvidiaTarget` when available and the traced kernel matches the exact PTX subset with device-resident sample args; staged tensor sample args now keep reduction-style PTX kernels on `ptx_ref` by default, and all-staged tensor sample args keep every PTX family on `ptx_ref` unless `backend=\"ptx_exec\"` is requested explicitly; once selected, `ptx_exec` warns once per built launcher when tensor args are staged through host memory, reuses per-argument device allocations across repeated staged launches, and still measures best with direct CUDA handles or raw CUDA DLPack inputs rather than staged `RuntimeTensor` values |
 | `hipcc_exec` | exec | default general AMD executable path | `gfx950`, `gfx942` | broad traced kernel subset including copy, pointwise, broadcast, reductions, shared memory, many tensor helpers | Primary executable backend today |
 | `hipkittens_ref` | ref | reference/source backend for HipKittens families | local, `gfx950`, `gfx942` | GEMM, attention-family, norm-family matching | Not executable |
 | `hipkittens_exec` | exec | narrow AMD-native GEMM backend | `gfx950`, `gfx942` | BF16/F16 GEMM on supported tile families, including validated BF16 transpose families | Opt-in or auto-selected only for matching GEMM kernels; transposed F16 and RMSNorm stay on `hipkittens_ref` on `gfx950` because current upstream HipKittens templates/headers reject those families |
@@ -91,6 +91,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
 - `ptx_ref` and `ptx_exec` are currently validated for:
   - canonical indexed rank-1 dense copy:
     - `f32`
+    - `f16`
     - `i32`
     - `i1`
   - canonical indexed rank-1 compare-to-`i1`:
@@ -119,6 +120,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
     - `i1`: `and`, `or`, `xor`
   - canonical indexed rank-1 unary `neg/abs`:
     - `f32`
+    - `f16`
     - `i32`
   - canonical indexed rank-1 integer `bitnot`:
     - `i32`
@@ -136,6 +138,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
     - `grid.x * block.x >= extent`
   - direct `threadIdx.x` rank-1 dense copy:
     - `f32`
+    - `f16`
     - `i32`
     - `i1`
   - direct `threadIdx.x` rank-1 integer `bitnot`:
@@ -167,6 +170,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
     - `i1`: `and`, `or`, `xor`
   - direct `threadIdx.x` rank-1 unary:
     - `f32`: `abs`, `neg`, `round`, `floor`, `ceil`, `trunc`, `sqrt`, `rsqrt`, `sin`, `cos`, `acos`, `asin`, `atan`, `exp`, `exp2`, `log`, `log2`, `log10`, `erf`
+    - `f16`: `abs`, `neg`
     - `i32`: `abs`, `neg`
   - direct `threadIdx.x` scalar broadcast from:
     - a scalar kernel parameter
@@ -189,7 +193,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
       - serial: `grid=(1,1,1)`, `block=(1,1,1)`
       - direct single-block: `grid=(1,1,1)`, `block=(block.x >= extent,1,1)`
       - indexed multi-block: `grid=(grid.x >= 1,1,1)`, `block=(block.x >= 1,1,1)`, `grid.x * block.x >= extent`
-  - exact 2D `f32/i32/i1` dense copy bundles:
+  - exact 2D `f32/i32/i1/f16` dense copy bundles:
     - `bb.copy(src, dst)`
     - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
   - exact 2D `copy_reduce` bundles:
@@ -275,6 +279,9 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
       - `dst.store(bb.log2(src.load()))`
       - `dst.store(bb.log10(src.load()))`
       - `dst.store(bb.erf(src.load()))`
+    - `f16`:
+      - `dst.store(abs(src.load()))`
+      - `dst.store(-src.load())`
     - `i32`:
       - `dst.store(abs(src.load()))`
       - `dst.store(-src.load())`
@@ -293,7 +300,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
       - parallel: `grid=(1,1,1)`, `block=(power_of_two,1,1)`
     - current parallel lowering maps one thread to one output row or column and loops over the reduced axis inside the thread
   - exact parallel 2D row-tiled variants of the same tensor families above:
-    - dense copy for `f32/i32/i1`
+    - dense copy for `f32/f16/i32/i1`
     - scalar-broadcast from scalar kernel parameters:
       - `f32`: `add/sub/mul/div/max/min/atan2`
       - `i32`: `add/sub/mul/div/max/min`, `bitand`, `bitor`, `bitxor`
@@ -322,6 +329,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
       - `i32`: `cmp_lt/le/gt/ge/eq/ne`
     - dense unary:
       - `f32`: `abs`, `neg`, `round/floor/ceil/trunc`, `sqrt/rsqrt`, `sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf`
+      - `f16`: `abs`, `neg`
       - `i32`: `abs`, `neg`, `bitnot`
       - `i1`: `bitnot`
     - exact current launch contract:
@@ -372,6 +380,7 @@ The PTX path is intentionally separate from the AMD-focused execution matrix abo
   - `f32`
   - `i32`
   - `i1` for exact copy and bitwise tensor families only
+  - `f16` for exact copy and unary `neg/abs` families only
   - `i1` output tensors for the exact compare family
 - runtime paths validated in `ptx_exec`:
   - Baybridge `RuntimeTensor` values through CUDA-driver host staging
@@ -526,12 +535,15 @@ These representative rows exercise the exact multiblock row-tiled PTX launch con
 | Family | Staged cold/warm ms | CUDA handles cold/warm ms | raw DLPack cold/warm ms |
 | --- | ---: | ---: | ---: |
 | Multiblock 2D `f32` dense copy, `64x64` | `272.86 / 1.61` | `0.25 / 0.02` | `0.26 / 0.03` |
+| Multiblock 2D `f16` dense copy, `64x64` | `141.30 / 3.32` | `0.25 / 0.02` | `0.38 / 0.03` |
 | Multiblock 2D `f32` dense add, `64x64` | `134.16 / 2.39` | `0.24 / 0.02` | `0.29 / 0.04` |
+| Multiblock 2D `f16` dense add, `64x64` | `229.60 / 6.64` | `0.77 / 0.05` | `0.80 / 0.08` |
 | Multiblock 2D `f32` dense tensor-source scalar-broadcast add, `64x64` | `132.04 / 1.65` | `0.25 / 0.02` | `0.26 / 0.03` |
 | Multiblock 2D `f32` `copy_reduce` add, `64x64` | `132.42 / 1.60` | `0.26 / 0.02` | `0.29 / 0.03` |
 | Multiblock 2D `f32` tensor-factory bundle, `64x64` | `135.08 / 2.41` | `0.25 / 0.02` | `0.29 / 0.03` |
 | Multiblock 2D `i32` dense tensor-source scalar-branch select, `64x64` | `140.73 / 3.20` | `0.31 / 0.03` | `0.33 / 0.04` |
 | Multiblock 2D `f32` dense abs, `64x64` | `133.10 / 1.59` | `0.26 / 0.02` | `0.27 / 0.03` |
+| Multiblock 2D `f16` dense abs, `64x64` | `147.86 / 4.14` | `0.30 / 0.02` | `0.33 / 0.03` |
 | Multiblock 2D `f32` dense round, `64x64` | `129.84 / 1.59` | `0.26 / 0.02` | `0.27 / 0.03` |
 | Multiblock 2D `f32` dense ceil, `64x64` | `127.82 / 1.62` | `0.24 / 0.02` | `0.26 / 0.03` |
 | Multiblock 2D `i32` dense abs, `64x64` | `132.95 / 2.16` | `0.24 / 0.02` | `0.26 / 0.03` |
@@ -560,7 +572,9 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Family | Backend | Cold ms | Warm median ms | Notes |
 | --- | --- | ---: | ---: | --- |
 | Indexed `f32` copy, `65536` elements | `ptx_exec` | `241.82` | `25.17` | Canonical indexed PTX copy path through driver JIT |
+| Indexed `f16` copy, `65536` elements | `ptx_exec` | `289.16` | `63.63` | Canonical indexed PTX copy path through driver JIT using exact `f16` storage loads and stores |
 | Indexed `f32` add, `65536` elements | `ptx_exec` | `219.18` | `37.18` | Canonical indexed PTX pointwise add path through driver JIT |
+| Indexed `f16` add, `65536` elements | `ptx_exec` | `439.23` | `110.32` | Canonical indexed PTX pointwise add path through driver JIT using exact `f16 -> f32 -> f16` conversion |
 | Indexed `i32` copy, `65536` elements | `ptx_exec` | `259.77` | `32.39` | Canonical indexed PTX copy path through driver JIT |
 | Indexed `i32` add, `65536` elements | `ptx_exec` | `167.98` | `48.84` | Canonical indexed PTX pointwise add path through driver JIT |
 | Indexed `i32` bitand, `65536` elements | `ptx_exec` | `388.51` | `49.31` | Canonical indexed PTX pointwise bitwise-and path through driver JIT |
@@ -568,6 +582,7 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` bitxor, `65536` elements | `ptx_exec` | `277.59` | `49.48` | Canonical indexed PTX pointwise bitwise-xor path through driver JIT |
 | Indexed `i32` bitnot, `65536` elements | `ptx_exec` | `271.39` | `34.86` | Canonical indexed PTX unary bitwise-not path through driver JIT |
 | Indexed `f32` abs, `65536` elements | `ptx_exec` | `261.63` | `24.81` | Canonical indexed PTX unary absolute-value path through driver JIT |
+| Indexed `f16` abs, `65536` elements | `ptx_exec` | `184.05` | `54.21` | Canonical indexed PTX unary absolute-value path through driver JIT using exact `f16 -> f32 -> f16` conversion |
 | Indexed `f32` round, `65536` elements | `ptx_exec` | `253.14` | `25.30` | Canonical indexed PTX unary round-to-nearest path through driver JIT; lowered via native PTX `cvt.rni.f32.f32` |
 | Indexed `f32` floor, `65536` elements | `ptx_exec` | `253.74` | `25.04` | Canonical indexed PTX unary floor path through driver JIT; lowered via native PTX `cvt.rmi.f32.f32` |
 | Indexed `i32` abs, `65536` elements | `ptx_exec` | `159.97` | `34.50` | Canonical indexed PTX unary absolute-value path through driver JIT |
@@ -598,7 +613,9 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` copy-reduce xor, `65536` elements | `ptx_exec` | `384.77` | `32.32` | Exact indexed PTX rank-1 `copy_reduce` xor path through driver JIT |
 | Indexed `i32` copy-reduce or, `65536` elements | `ptx_exec` | `176.31` | `33.22` | Same indexed PTX rank-1 `copy_reduce` family, validated on the `or` reduction path |
 | 2D `f32` dense copy, `64x64` | `ptx_exec` | `285.70` | `1.88` | Exact serial PTX 2D dense copy path through driver JIT |
+| 2D `f16` dense copy, `64x64` | `ptx_exec` | `138.47` | `3.40` | Exact serial PTX 2D dense copy path through driver JIT using exact `f16` storage loads and stores |
 | Parallel 2D `f32` dense copy, `64x64` | `ptx_exec` | `226.88` | `1.71` | Exact single-block PTX 2D dense copy path with one thread per output column |
+| Parallel 2D `f16` dense copy, `64x64` | `ptx_exec` | `136.52` | `3.30` | Exact single-block PTX 2D dense copy path with one thread per output column using exact `f16` storage loads and stores |
 | 2D `i32` dense copy, `64x64` | `ptx_exec` | `286.23` | `2.35` | Exact serial PTX 2D dense copy path through driver JIT |
 | Parallel 2D `i32` dense copy, `64x64` | `ptx_exec` | `242.78` | `2.21` | Exact single-block PTX 2D dense copy path with one thread per output column |
 | 2D `f32` dense scalar-broadcast add, `64x64` | `ptx_exec` | `289.29` | `1.88` | Exact serial PTX 2D scalar-parameter broadcast path through driver JIT |
@@ -655,7 +672,9 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Parallel 2D `i32` row reduction min, `64x64 -> (64,)` | `ptx_exec` | `133.51` | `1.07` | Exact single-block PTX 2D rowwise reduction-min path with one thread per output row |
 | Parallel 2D `i32` row reduction and, `64x64 -> (64,)` | `ptx_exec` | `223.42` | `1.08` | Exact single-block PTX 2D rowwise reduction-and path with one thread per output row |
 | 2D `f32` dense add, `64x64` | `ptx_exec` | `243.80` | `2.64` | Exact serial PTX 2D dense tensor-binary path through driver JIT |
+| 2D `f16` dense add, `64x64` | `ptx_exec` | `251.80` | `6.60` | Exact serial PTX 2D dense tensor-binary path through driver JIT using exact `f16 -> f32 -> f16` conversion |
 | Parallel 2D `f32` dense add, `64x64` | `ptx_exec` | `130.06` | `2.59` | Exact single-block PTX 2D dense tensor-binary path with one thread per output column |
+| Parallel 2D `f16` dense add, `64x64` | `ptx_exec` | `212.38` | `5.31` | Exact single-block PTX 2D dense tensor-binary path with one thread per output column using exact `f16 -> f32 -> f16` conversion |
 | 2D `i32` dense add, `64x64` | `ptx_exec` | `244.26` | `3.37` | Exact serial PTX 2D dense tensor-binary path through driver JIT |
 | Parallel 2D `i32` dense add, `64x64` | `ptx_exec` | `99.98` | `3.23` | Exact single-block PTX 2D dense tensor-binary path with one thread per output column |
 | 2D `f32` broadcast add, `64x64` | `ptx_exec` | `152.06` | `1.04` | Exact serial PTX 2D broadcast tensor-binary path through driver JIT |
@@ -663,9 +682,11 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | 2D `i32` broadcast add, `64x64` | `ptx_exec` | `229.76` | `1.29` | Exact serial PTX 2D broadcast tensor-binary path through driver JIT |
 | Parallel 2D `i32` broadcast add, `64x64` | `ptx_exec` | `138.91` | `1.19` | Exact single-block PTX 2D broadcast tensor-binary path with one thread per output column |
 | 2D `f32` dense abs, `64x64` | `ptx_exec` | `136.79` | `1.74` | Exact serial PTX 2D unary absolute-value path through driver JIT |
+| 2D `f16` dense abs, `64x64` | `ptx_exec` | `145.34` | `3.61` | Exact serial PTX 2D unary absolute-value path through driver JIT using exact `f16 -> f32 -> f16` conversion |
 | 2D `f32` dense round, `64x64` | `ptx_exec` | `136.68` | `1.77` | Exact serial PTX 2D unary round-to-nearest path through driver JIT; lowered via native PTX `cvt.rni.f32.f32` |
 | 2D `f32` dense trunc, `64x64` | `ptx_exec` | `137.89` | `1.78` | Exact serial PTX 2D unary truncation path through driver JIT; lowered via native PTX `cvt.rzi.f32.f32` |
 | Parallel 2D `f32` dense abs, `64x64` | `ptx_exec` | `133.10` | `1.63` | Exact single-block PTX 2D unary absolute-value path with one thread per output column |
+| Parallel 2D `f16` dense abs, `64x64` | `ptx_exec` | `149.28` | `4.07` | Exact single-block PTX 2D unary absolute-value path with one thread per output column using exact `f16 -> f32 -> f16` conversion |
 | Parallel 2D `f32` dense round, `64x64` | `ptx_exec` | `131.20` | `1.59` | Exact single-block PTX 2D unary round-to-nearest path with one thread per output column; lowered via native PTX `cvt.rni.f32.f32` |
 | Parallel 2D `f32` dense floor, `64x64` | `ptx_exec` | `129.86` | `1.62` | Exact single-block PTX 2D unary floor path with one thread per output column; lowered via native PTX `cvt.rmi.f32.f32` |
 | 2D `f32` dense sqrt, `64x64` | `ptx_exec` | `145.57` | `1.95` | Exact serial PTX 2D unary sqrt path through driver JIT |
@@ -706,7 +727,9 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | 2D `i32` tensor-factory bundle, `64x64` | `ptx_exec` | `411.07` | `5.07` | Exact PTX tensor-factory bundle through driver JIT |
 | Parallel 2D `i32` tensor-factory bundle, `64x64` | `ptx_exec` | `138.85` | `3.10` | Exact single-block PTX tensor-factory bundle with one thread per output column |
 | Indexed `f32` copy, `65536` elements, CUDA handles | `ptx_exec` | `0.34` | `0.02` | Same canonical PTX copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f16` copy, `65536` elements, CUDA handles | `ptx_exec` | `0.39` | `0.02` | Same canonical PTX copy kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16` storage semantics |
 | Indexed `f32` add, `65536` elements, CUDA handles | `ptx_exec` | `0.30` | `0.02` | Same canonical PTX add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f16` add, `65536` elements, CUDA handles | `ptx_exec` | `0.95` | `0.05` | Same canonical PTX add kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Indexed `i32` copy, `65536` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same canonical PTX copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Indexed `i32` add, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX add kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Indexed `i32` bitand, `65536` elements, CUDA handles | `ptx_exec` | `0.41` | `0.03` | Same canonical PTX bitwise-and kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
@@ -714,6 +737,7 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` bitxor, `65536` elements, CUDA handles | `ptx_exec` | `0.26` | `0.02` | Same canonical PTX bitwise-xor kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Indexed `i32` bitnot, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX unary bitwise-not kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Indexed `f32` abs, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Indexed `f16` abs, `65536` elements, CUDA handles | `ptx_exec` | `0.34` | `0.02` | Same canonical PTX unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Indexed `f32` round, `65536` elements, CUDA handles | `ptx_exec` | `0.25` | `0.02` | Same canonical PTX unary round-to-nearest kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rni.f32.f32` |
 | Indexed `f32` floor, `65536` elements, CUDA handles | `ptx_exec` | `0.29` | `0.02` | Same canonical PTX unary floor kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rmi.f32.f32` |
 | Indexed `i32` abs, `65536` elements, CUDA handles | `ptx_exec` | `0.29` | `0.02` | Same canonical PTX unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
@@ -744,7 +768,9 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` copy-reduce xor, `65536` elements, CUDA handles | `ptx_exec` | `0.33` | `0.02` | Same indexed PTX rank-1 `copy_reduce` xor kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
 | Indexed `i32` copy-reduce or, `65536` elements, CUDA handles | `ptx_exec` | `0.26` | `0.02` | Same indexed PTX rank-1 `copy_reduce` or kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
 | 2D `f32` dense copy, `64x64`, CUDA handles | `ptx_exec` | `14.77` | `0.15` | Same exact PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `f16` dense copy, `64x64`, CUDA handles | `ptx_exec` | `0.41` | `0.11` | Same exact PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16` storage semantics |
 | Parallel 2D `f32` dense copy, `64x64`, CUDA handles | `ptx_exec` | `0.24` | `0.03` | Same exact single-block PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
+| Parallel 2D `f16` dense copy, `64x64`, CUDA handles | `ptx_exec` | `0.26` | `0.03` | Same exact single-block PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16` storage semantics |
 | 2D `i32` dense copy, `64x64`, CUDA handles | `ptx_exec` | `14.99` | `0.14` | Same exact PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Parallel 2D `i32` dense copy, `64x64`, CUDA handles | `ptx_exec` | `0.25` | `0.03` | Same exact single-block PTX 2D dense copy kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
 | 2D `f32` dense scalar-broadcast add, `64x64`, CUDA handles | `ptx_exec` | `15.89` | `0.16` | Same exact PTX 2D scalar-parameter broadcast kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
@@ -846,10 +872,14 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | 2D `f32` dense select, `64x64`, raw DLPack | `ptx_exec` | `0.58` | `0.28` | Same exact PTX 2D dense tensor-select kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | 2D `i32` broadcast select, `64x64`, raw DLPack | `ptx_exec` | `0.47` | `0.18` | Same exact PTX 2D broadcast tensor-select kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | Parallel 2D `f32` dense scalar-branch select, `64x64`, raw DLPack | `ptx_exec` | `0.33` | `0.05` | Same exact single-block PTX 2D scalar-branch select kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| 2D `f16` dense copy, `64x64`, raw DLPack | `ptx_exec` | `0.40` | `0.12` | Same exact PTX 2D dense copy kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16` storage semantics |
 | 2D `f32` dense abs, `64x64`, raw DLPack | `ptx_exec` | `0.41` | `0.15` | Same exact PTX 2D unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| 2D `f16` dense abs, `64x64`, raw DLPack | `ptx_exec` | `0.50` | `0.17` | Same exact PTX 2D unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | 2D `f32` dense round, `64x64`, raw DLPack | `ptx_exec` | `0.42` | `0.17` | Same exact PTX 2D unary round-to-nearest kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rni.f32.f32` |
 | 2D `f32` dense trunc, `64x64`, raw DLPack | `ptx_exec` | `0.42` | `0.17` | Same exact PTX 2D unary truncation kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rzi.f32.f32` |
+| Parallel 2D `f16` dense copy, `64x64`, raw DLPack | `ptx_exec` | `0.27` | `0.03` | Same exact single-block PTX 2D dense copy kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16` storage semantics |
 | Parallel 2D `f32` dense abs, `64x64`, raw DLPack | `ptx_exec` | `0.26` | `0.03` | Same exact single-block PTX 2D unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| Parallel 2D `f16` dense abs, `64x64`, raw DLPack | `ptx_exec` | `0.34` | `0.04` | Same exact single-block PTX 2D unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Parallel 2D `f32` dense round, `64x64`, raw DLPack | `ptx_exec` | `0.28` | `0.03` | Same exact single-block PTX 2D unary round-to-nearest kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rni.f32.f32` |
 | Parallel 2D `f32` dense floor, `64x64`, raw DLPack | `ptx_exec` | `0.28` | `0.03` | Same exact single-block PTX 2D unary floor kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rmi.f32.f32` |
 | 2D `f32` dense cos, `64x64`, raw DLPack | `ptx_exec` | `0.47` | `0.19` | Same exact PTX 2D unary cosine kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; accuracy is approximate |
@@ -872,7 +902,10 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` bitor, `65536` elements, raw DLPack | `ptx_exec` | `0.32` | `0.03` | Same canonical PTX bitwise-or kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | Indexed `i32` bitxor, `65536` elements, raw DLPack | `ptx_exec` | `0.32` | `0.03` | Same canonical PTX bitwise-xor kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | Indexed `i32` bitnot, `65536` elements, raw DLPack | `ptx_exec` | `0.27` | `0.02` | Same canonical PTX unary bitwise-not kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| Indexed `f16` copy, `65536` elements, raw DLPack | `ptx_exec` | `0.42` | `0.02` | Same canonical PTX copy kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16` storage semantics |
+| Indexed `f16` add, `65536` elements, raw DLPack | `ptx_exec` | `1.23` | `0.11` | Same canonical PTX add kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Indexed `f32` abs, `65536` elements, raw DLPack | `ptx_exec` | `0.27` | `0.03` | Same canonical PTX unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| Indexed `f16` abs, `65536` elements, raw DLPack | `ptx_exec` | `0.29` | `0.02` | Same canonical PTX unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Indexed `f32` round, `65536` elements, raw DLPack | `ptx_exec` | `0.27` | `0.02` | Same canonical PTX unary round-to-nearest kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rni.f32.f32` |
 | Indexed `f32` floor, `65536` elements, raw DLPack | `ptx_exec` | `0.26` | `0.02` | Same canonical PTX unary floor kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rmi.f32.f32` |
 | Indexed `i32` abs, `65536` elements, raw DLPack | `ptx_exec` | `0.27` | `0.02` | Same canonical PTX unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
@@ -896,8 +929,12 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Indexed `i32` copy-reduce xor, `65536` elements, raw DLPack | `ptx_exec` | `0.34` | `0.03` | Same indexed PTX rank-1 `copy_reduce` xor kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | 2D `f32` copy-reduce add, `64x64`, raw DLPack | `ptx_exec` | `22.47` | `0.16` | Same exact PTX 2D `copy_reduce` add kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
 | Parallel 2D `f32` copy-reduce add, `64x64`, raw DLPack | `ptx_exec` | `21.91` | `0.03` | Same exact single-block PTX 2D `copy_reduce` add kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| 2D `f16` dense add, `64x64`, raw DLPack | `ptx_exec` | `0.93` | `0.21` | Same exact PTX 2D dense tensor-binary kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
+| Parallel 2D `f16` dense add, `64x64`, raw DLPack | `ptx_exec` | `0.96` | `0.11` | Same exact single-block PTX 2D dense tensor-binary kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | 2D `f32` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.38` | `0.15` | Same exact PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `f16` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.91` | `0.26` | Same exact PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Parallel 2D `f32` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.26` | `0.03` | Same exact single-block PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
+| Parallel 2D `f16` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.74` | `0.06` | Same exact single-block PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | 2D `i32` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.39` | `0.16` | Same exact PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Parallel 2D `i32` dense add, `64x64`, CUDA handles | `ptx_exec` | `0.28` | `0.03` | Same exact single-block PTX 2D dense tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
 | 2D `f32` broadcast add, `64x64`, CUDA handles | `ptx_exec` | `0.31` | `0.10` | Same exact PTX 2D broadcast tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
@@ -905,9 +942,11 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | 2D `i32` broadcast add, `64x64`, CUDA handles | `ptx_exec` | `0.31` | `0.10` | Same exact PTX 2D broadcast tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
 | Parallel 2D `i32` broadcast add, `64x64`, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same exact single-block PTX 2D broadcast tensor-binary kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
 | 2D `f32` dense abs, `64x64`, CUDA handles | `ptx_exec` | `0.38` | `0.15` | Same exact PTX 2D unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| 2D `f16` dense abs, `64x64`, CUDA handles | `ptx_exec` | `0.45` | `0.15` | Same exact PTX 2D unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | 2D `f32` dense round, `64x64`, CUDA handles | `ptx_exec` | `0.39` | `0.17` | Same exact PTX 2D unary round-to-nearest kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rni.f32.f32` |
 | 2D `f32` dense trunc, `64x64`, CUDA handles | `ptx_exec` | `0.40` | `0.16` | Same exact PTX 2D unary truncation kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rzi.f32.f32` |
 | Parallel 2D `f32` dense abs, `64x64`, CUDA handles | `ptx_exec` | `0.24` | `0.03` | Same exact single-block PTX 2D unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path |
+| Parallel 2D `f16` dense abs, `64x64`, CUDA handles | `ptx_exec` | `0.29` | `0.03` | Same exact single-block PTX 2D unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Parallel 2D `f32` dense round, `64x64`, CUDA handles | `ptx_exec` | `0.25` | `0.03` | Same exact single-block PTX 2D unary round-to-nearest kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path; lowered via native PTX `cvt.rni.f32.f32` |
 | Parallel 2D `f32` dense floor, `64x64`, CUDA handles | `ptx_exec` | `0.25` | `0.03` | Same exact single-block PTX 2D unary floor kernel, but executed with direct CUDA `TensorHandle` inputs to isolate the device path; lowered via native PTX `cvt.rmi.f32.f32` |
 | 2D `f32` dense sqrt, `64x64`, CUDA handles | `ptx_exec` | `0.42` | `0.23` | Same exact PTX 2D unary sqrt kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
@@ -964,17 +1003,23 @@ These representative rows exercise the exact multiblock PTX row/column reduction
 | Direct `f32` log10, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary log10 kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via `lg2.approx.f32` times `log10(2)`, so accuracy is approximate |
 | Direct `f32` erf, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary erf kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via an explicit polynomial-plus-`ex2.approx.f32` approximation, so accuracy is approximate |
 | Direct `f32` abs, `128` elements | `ptx_exec` | `128.42` | `0.09` | Direct `threadIdx.x` PTX unary absolute-value path |
+| Direct `f16` add, `128` elements | `ptx_exec` | `216.21` | `0.54` | Direct `threadIdx.x` PTX pointwise add path using exact `f16 -> f32 -> f16` conversion |
 | Direct `f32` round, `128` elements | `ptx_exec` | `122.85` | `0.09` | Direct `threadIdx.x` PTX unary round-to-nearest path; lowered via native PTX `cvt.rni.f32.f32` |
 | Direct `f32` ceil, `128` elements | `ptx_exec` | `124.65` | `0.09` | Direct `threadIdx.x` PTX unary ceil path; lowered via native PTX `cvt.rpi.f32.f32` |
 | Direct `f32` abs, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary absolute-value kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Direct `f16` add, `128` elements, CUDA handles | `ptx_exec` | `0.73` | `0.05` | Same direct PTX add kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Direct `f32` round, `128` elements, CUDA handles | `ptx_exec` | `0.24` | `0.02` | Same direct PTX unary round-to-nearest kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rni.f32.f32` |
 | Direct `f32` ceil, `128` elements, CUDA handles | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary ceil kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging; lowered via native PTX `cvt.rpi.f32.f32` |
 | Direct `f32` abs, `128` elements, raw DLPack | `ptx_exec` | `0.25` | `0.03` | Same direct PTX unary absolute-value kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| Direct `f16` add, `128` elements, raw DLPack | `ptx_exec` | `0.87` | `0.09` | Same direct PTX add kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Direct `f32` round, `128` elements, raw DLPack | `ptx_exec` | `0.25` | `0.02` | Same direct PTX unary round-to-nearest kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rni.f32.f32` |
 | Direct `f32` ceil, `128` elements, raw DLPack | `ptx_exec` | `0.24` | `0.02` | Same direct PTX unary ceil kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via native PTX `cvt.rpi.f32.f32` |
 | Direct `f32` neg, `128` elements | `ptx_exec` | `126.33` | `0.09` | Direct `threadIdx.x` PTX unary negation path |
+| Direct `f16` neg, `128` elements | `ptx_exec` | `132.14` | `0.15` | Direct `threadIdx.x` PTX unary negation path using exact `f16 -> f32 -> f16` conversion |
 | Direct `f32` neg, `128` elements, CUDA handles | `ptx_exec` | `0.24` | `0.02` | Same direct PTX unary negation kernel, but executed with direct CUDA `TensorHandle` inputs to avoid host staging |
+| Direct `f16` neg, `128` elements, CUDA handles | `ptx_exec` | `0.26` | `0.02` | Same direct PTX unary negation kernel, but executed with direct CUDA `TensorHandle` inputs while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Direct `f32` neg, `128` elements, raw DLPack | `ptx_exec` | `0.26` | `0.02` | Same direct PTX unary negation kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles |
+| Direct `f16` neg, `128` elements, raw DLPack | `ptx_exec` | `0.31` | `0.02` | Same direct PTX unary negation kernel, but executed through stream-aware raw CUDA DLPack normalization while preserving exact `f16 -> f32 -> f16` conversion semantics |
 | Direct `f32` exp2, `128` elements, raw DLPack | `ptx_exec` | `0.30` | `0.03` | Same direct PTX unary exp2 kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; accuracy is approximate |
 | Direct `f32` asin, `128` elements, raw DLPack | `ptx_exec` | `0.23` | `0.02` | Same direct PTX unary asin kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via `sqrt(max(0, 1 - x*x))` plus the explicit PTX `atan2` core, so accuracy is approximate |
 | Direct `f32` acos, `128` elements, raw DLPack | `ptx_exec` | `12.23` | `0.06` | Same direct PTX unary acos kernel, but executed through stream-aware raw CUDA DLPack normalization instead of explicit tensor handles; lowered via `sqrt(max(0, 1 - x*x))` plus the explicit PTX `atan2` core with the square-root term as `y`, so accuracy is approximate |

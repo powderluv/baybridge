@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 
 import baybridge as bb
+from baybridge.hip_runtime import pack_tensor_value
 from baybridge.nvgpu import cpasync, tcgen05
 
 try:
@@ -91,6 +92,11 @@ def dense_add_2d_f32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def dense_add_2d_f16_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    dst.store(lhs.load() + rhs.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def dense_max_2d_f32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
     dst.store(bb.maximum(lhs.load(), rhs.load()))
 
@@ -107,6 +113,11 @@ def dense_bitand_2d_i32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def dense_copy_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    bb.copy(src, dst)
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def dense_copy_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     bb.copy(src, dst)
 
 
@@ -186,6 +197,11 @@ def dense_abs_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def dense_abs_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def dense_abs_2d_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
@@ -251,12 +267,22 @@ def parallel_dense_add_2d_f32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Ten
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def parallel_dense_add_2d_f16_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    dst.store(lhs.load() + rhs.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
 def parallel_dense_add_2d_i32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
     dst.store(lhs.load() + rhs.load())
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
 def parallel_dense_copy_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    bb.copy(src, dst)
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def parallel_dense_copy_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     bb.copy(src, dst)
 
 
@@ -327,6 +353,11 @@ def parallel_dense_acos_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
 def parallel_dense_abs_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def parallel_dense_abs_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -411,6 +442,16 @@ def parallel_tensor_factory_2d_i32_kernel(dst_zero: bb.Tensor, dst_one: bb.Tenso
     )
 )
 def multiblock_dense_copy_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    bb.copy(src, dst)
+
+
+@bb.kernel(
+    launch=bb.LaunchConfig(
+        grid=(PTX_ROW_TILE_GRID_X, PTX_ROW_TILE_GRID_Y, 1),
+        block=(PTX_ROW_TILE_BLOCK, 1, 1),
+    )
+)
+def multiblock_dense_copy_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     bb.copy(src, dst)
 
 
@@ -520,6 +561,16 @@ def multiblock_dense_add_2d_f32_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.T
         block=(PTX_ROW_TILE_BLOCK, 1, 1),
     )
 )
+def multiblock_dense_add_2d_f16_kernel(lhs: bb.Tensor, rhs: bb.Tensor, dst: bb.Tensor):
+    dst.store(lhs.load() + rhs.load())
+
+
+@bb.kernel(
+    launch=bb.LaunchConfig(
+        grid=(PTX_ROW_TILE_GRID_X, PTX_ROW_TILE_GRID_Y, 1),
+        block=(PTX_ROW_TILE_BLOCK, 1, 1),
+    )
+)
 def multiblock_dense_tensor_scalar_min_2d_i32_kernel(src: bb.Tensor, alpha: bb.Tensor, dst: bb.Tensor):
     dst.store(bb.minimum(src.load(), alpha[0]))
 
@@ -561,6 +612,16 @@ def multiblock_dense_bitnot_2d_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
     )
 )
 def multiblock_dense_abs_2d_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(
+    launch=bb.LaunchConfig(
+        grid=(PTX_ROW_TILE_GRID_X, PTX_ROW_TILE_GRID_Y, 1),
+        block=(PTX_ROW_TILE_BLOCK, 1, 1),
+    )
+)
+def multiblock_dense_abs_2d_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -618,8 +679,26 @@ def indexed_copy_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst[idx] = src[idx]
 
 
+@bb.kernel(launch=bb.LaunchConfig(grid=(PTX_GRID, 1, 1), block=(PTX_BLOCK, 1, 1)))
+def indexed_copy_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = src[idx]
+
+
 @bb.kernel(launch=bb.LaunchConfig(grid=(FLYDSL_GRID, 1, 1), block=(FLYDSL_BLOCK, 1, 1)))
 def indexed_add_f32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = src[idx] + other[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(PTX_GRID, 1, 1), block=(PTX_BLOCK, 1, 1)))
+def indexed_add_f16_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
     bdim, _, _ = bb.arch.block_dim()
@@ -880,6 +959,15 @@ def indexed_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(PTX_GRID, 1, 1), block=(PTX_BLOCK, 1, 1)))
+def indexed_abs_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = abs(src[idx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(PTX_GRID, 1, 1), block=(PTX_BLOCK, 1, 1)))
 def indexed_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
@@ -913,6 +1001,12 @@ def indexed_min_i32_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
     bdim, _, _ = bb.arch.block_dim()
     idx = bidx * bdim + tidx
     dst[idx] = bb.minimum(src[idx], other[idx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def direct_add_f16_kernel(src: bb.Tensor, other: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = src[tidx] + other[tidx]
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
@@ -983,6 +1077,12 @@ def direct_neg_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
 def direct_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = -src[tidx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def direct_neg_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     dst[tidx] = -src[tidx]
 
@@ -1687,6 +1787,21 @@ def _make_f32_vector_args(n: int, *, backend_name: str):
     )
 
 
+def _make_f16_vector_args(n: int, *, backend_name: str):
+    src_values = [0.5 * float(index) for index in range(n)]
+    other_values = [0.25 * float(index + 1) for index in range(n)]
+    src = _maybe_torch_tensor(src_values, shape=(n,), dtype="f16", backend_name=backend_name)
+    other = _maybe_torch_tensor(other_values, shape=(n,), dtype="f16", backend_name=backend_name)
+    dst = _maybe_torch_tensor([0.0 for _ in range(n)], shape=(n,), dtype="f16", backend_name=backend_name)
+    if src is not None and other is not None and dst is not None:
+        return src, other, dst
+    return (
+        bb.tensor(src_values, dtype="f16"),
+        bb.tensor(other_values, dtype="f16"),
+        bb.zeros((n,), dtype="f16"),
+    )
+
+
 def _maybe_cuda_handle_vector(
     values: list[float] | list[int],
     *,
@@ -1704,15 +1819,18 @@ def _maybe_cuda_handle_vector(
         return None
     ctype = {
         "f32": ctypes.c_float,
+        "f16": ctypes.c_uint16,
         "i1": ctypes.c_bool,
         "i32": ctypes.c_int32,
     }[dtype]
     wrapper_dtype = {
         "f32": "torch.float32",
+        "f16": "torch.float16",
         "i1": "torch.bool",
         "i32": "torch.int32",
     }[dtype]
-    host = (ctype * len(values))(*values)
+    host_values = [pack_tensor_value(value, dtype) for value in values] if dtype == "f16" else values
+    host = (ctype * len(host_values))(*host_values)
     byte_size = ctypes.sizeof(host)
     ptr = driver.mem_alloc(byte_size)
     driver.memcpy_htod(ptr, ctypes.cast(host, ctypes.c_void_p), byte_size)
@@ -1741,15 +1859,18 @@ def _maybe_cuda_dlpack_vector(
         return None
     ctype = {
         "f32": ctypes.c_float,
+        "f16": ctypes.c_uint16,
         "i1": ctypes.c_bool,
         "i32": ctypes.c_int32,
     }[dtype]
     wrapper_dtype = {
         "f32": "torch.float32",
+        "f16": "torch.float16",
         "i1": "torch.bool",
         "i32": "torch.int32",
     }[dtype]
-    host = (ctype * len(values))(*values)
+    host_values = [pack_tensor_value(value, dtype) for value in values] if dtype == "f16" else values
+    host = (ctype * len(host_values))(*host_values)
     byte_size = ctypes.sizeof(host)
     ptr = driver.mem_alloc(byte_size)
     driver.memcpy_htod(ptr, ctypes.cast(host, ctypes.c_void_p), byte_size)
@@ -1832,6 +1953,56 @@ def indexed_copy_i32_cuda_handle_args(*, backend_name=None, **_kwargs):
     }
 
 
+def indexed_copy_f16_args(*, backend_name=None, **_kwargs):
+    del backend_name
+    src_values = _vector_f32(POINTWISE_N, scale=0.5, offset=1.0)
+    return {
+        "args": (
+            bb.tensor(src_values, dtype="f16"),
+            bb.zeros((POINTWISE_N,), dtype="f16"),
+        ),
+        "result_indices": (),
+    }
+
+
+def indexed_copy_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    src_values = _vector_f32(POINTWISE_N, scale=0.5, offset=1.0)
+    compile_args = (
+        bb.tensor(src_values, dtype="f16"),
+        bb.zeros((POINTWISE_N,), dtype="f16"),
+    )
+    if backend_name != "ptx_exec":
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    src = _maybe_cuda_handle_vector(src_values, dtype="f16")
+    dst = _maybe_cuda_handle_vector([0.0 for _ in range(POINTWISE_N)], dtype="f16")
+    if src is None or dst is None:
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    return {
+        "compile_args": compile_args,
+        "run_args": (src, dst),
+        "result_indices": (),
+    }
+
+
+def indexed_copy_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    src_values = _vector_f32(POINTWISE_N, scale=0.5, offset=1.0)
+    compile_args = (
+        bb.tensor(src_values, dtype="f16"),
+        bb.zeros((POINTWISE_N,), dtype="f16"),
+    )
+    if backend_name != "ptx_exec":
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    src = _maybe_cuda_dlpack_vector(src_values, dtype="f16")
+    dst = _maybe_cuda_dlpack_vector([0.0 for _ in range(POINTWISE_N)], dtype="f16")
+    if src is None or dst is None:
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    return {
+        "compile_args": compile_args,
+        "run_args": (src, dst),
+        "result_indices": (),
+    }
+
+
 def dense_add_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}
@@ -1856,6 +2027,11 @@ def _tensor_copy_2d_payload(
         zero_fill = 0
         scale = 3
         offset = 7
+    elif dtype == "f16":
+        matrix_factory = _matrix_f32
+        zero_fill = 0.0
+        scale = 0.5
+        offset = 1.0
     else:
         raise ValueError(f"unsupported tensor-copy 2D dtype: {dtype}")
     src_values = matrix_factory(rows, cols, scale=scale, offset=offset)
@@ -1906,6 +2082,22 @@ def dense_copy_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_copy_2d_payload(dtype="f32", backend_name=backend_name, use_cuda_handle=True)
 
 
+def dense_copy_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f32", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def dense_copy_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name)
+
+
+def dense_copy_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def dense_copy_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
+
+
 def dense_copy_2d_i32_args(*, backend_name=None, **_kwargs):
     return _tensor_copy_2d_payload(dtype="i32", backend_name=backend_name)
 
@@ -1920,6 +2112,22 @@ def parallel_dense_copy_2d_f32_args(*, backend_name=None, **_kwargs):
 
 def parallel_dense_copy_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_copy_2d_payload(dtype="f32", backend_name=backend_name, use_cuda_handle=True)
+
+
+def parallel_dense_copy_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f32", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def parallel_dense_copy_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name)
+
+
+def parallel_dense_copy_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def parallel_dense_copy_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def parallel_dense_copy_2d_i32_args(*, backend_name=None, **_kwargs):
@@ -1940,6 +2148,18 @@ def multiblock_dense_copy_2d_f32_cuda_handle_args(*, backend_name=None, **_kwarg
 
 def multiblock_dense_copy_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _tensor_copy_2d_payload(dtype="f32", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def multiblock_dense_copy_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name)
+
+
+def multiblock_dense_copy_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def multiblock_dense_copy_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_copy_2d_payload(dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def _tensor_binary_2d_payload(
@@ -1964,6 +2184,15 @@ def _tensor_binary_2d_payload(
         lhs_offset = 1.0
         rhs_scale = 0.25
         rhs_offset = 2.0
+    elif dtype == "f16":
+        if op != "add":
+            raise ValueError(f"unsupported tensor-binary 2D op for f16: {op}")
+        matrix_factory = _matrix_f32
+        zero_fill = 0.0
+        lhs_scale = 0.5
+        lhs_offset = 0.5
+        rhs_scale = 0.25
+        rhs_offset = 0.25
     elif dtype == "i32":
         if op not in {"add", "min", "bitand", "bitor"}:
             raise ValueError(f"unsupported tensor-binary 2D op for i32: {op}")
@@ -2049,6 +2278,18 @@ def dense_add_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_binary_2d_payload(mode="dense", dtype="f32", backend_name=backend_name, use_cuda_handle=True)
 
 
+def dense_add_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name)
+
+
+def dense_add_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def dense_add_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
+
+
 def dense_max_2d_f32_args(*, backend_name=None, **_kwargs):
     return _tensor_binary_2d_payload(mode="dense", dtype="f32", op="max", backend_name=backend_name)
 
@@ -2087,6 +2328,18 @@ def parallel_dense_add_2d_f32_args(*, backend_name=None, **_kwargs):
 
 def parallel_dense_add_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_binary_2d_payload(mode="dense", dtype="f32", backend_name=backend_name, use_cuda_handle=True)
+
+
+def parallel_dense_add_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name)
+
+
+def parallel_dense_add_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def parallel_dense_add_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def parallel_dense_add_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
@@ -2181,6 +2434,18 @@ def multiblock_dense_add_2d_f32_args(*, backend_name=None, **_kwargs):
 
 def multiblock_dense_add_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_binary_2d_payload(mode="dense", dtype="f32", backend_name=backend_name, use_cuda_handle=True)
+
+
+def multiblock_dense_add_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name)
+
+
+def multiblock_dense_add_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def multiblock_dense_add_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_binary_2d_payload(mode="dense", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def multiblock_dense_add_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
@@ -2345,6 +2610,11 @@ def _tensor_unary_2d_payload(
         else:
             src_values = _matrix_f32(rows, cols, scale=1.0, offset=4.0)
         zero_fill = 0.0
+    elif dtype == "f16":
+        if op != "abs":
+            raise ValueError(f"unsupported tensor-unary 2D op for f16: {op}")
+        src_values = _matrix_f32(rows, cols, scale=0.5, offset=-16.0)
+        zero_fill = 0.0
     elif dtype == "i32":
         if op not in {"abs", "bitnot"}:
             raise ValueError(f"unsupported tensor-unary 2D op for i32: {op}")
@@ -2499,6 +2769,18 @@ def dense_abs_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _tensor_unary_2d_payload(dtype="f32", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
 
 
+def dense_abs_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name)
+
+
+def dense_abs_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_handle=True)
+
+
+def dense_abs_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
+
+
 def dense_sqrt_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
     return _tensor_unary_2d_payload(dtype="f32", op="sqrt", backend_name=backend_name, use_cuda_handle=True)
 
@@ -2645,6 +2927,18 @@ def parallel_dense_abs_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
 
 def parallel_dense_abs_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _tensor_unary_2d_payload(dtype="f32", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def parallel_dense_abs_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name)
+
+
+def parallel_dense_abs_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_handle=True)
+
+
+def parallel_dense_abs_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def parallel_dense_sqrt_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs):
@@ -2797,6 +3091,18 @@ def multiblock_dense_abs_2d_f32_cuda_handle_args(*, backend_name=None, **_kwargs
 
 def multiblock_dense_abs_2d_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _tensor_unary_2d_payload(dtype="f32", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def multiblock_dense_abs_2d_f16_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name)
+
+
+def multiblock_dense_abs_2d_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_handle=True)
+
+
+def multiblock_dense_abs_2d_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _tensor_unary_2d_payload(dtype="f16", op="abs", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def multiblock_dense_abs_2d_i32_args(*, backend_name=None, **_kwargs):
@@ -3930,6 +4236,49 @@ def indexed_select_tensor_scalar_i32_cuda_dlpack_args(*, backend_name=None, **_k
     )
 
 
+def _add_1d_payload(
+    *,
+    mode: str,
+    dtype: str,
+    backend_name=None,
+    use_cuda_handle: bool = False,
+    use_cuda_dlpack: bool = False,
+):
+    if use_cuda_handle and use_cuda_dlpack:
+        raise ValueError("add 1D payload cannot request both cuda_handle and cuda_dlpack")
+    if mode == "indexed":
+        n = POINTWISE_N
+    elif mode == "direct":
+        n = 128
+    else:
+        raise ValueError(f"unsupported add 1D mode: {mode}")
+    if dtype != "f16":
+        raise ValueError(f"unsupported add 1D dtype: {dtype}")
+    src_values = [0.5 * float(index) for index in range(n)]
+    other_values = [0.25 * float(index + 1) for index in range(n)]
+    zero_values = [0.0 for _ in range(n)]
+    compile_args = (
+        bb.tensor(src_values, dtype="f16"),
+        bb.tensor(other_values, dtype="f16"),
+        bb.zeros((n,), dtype="f16"),
+    )
+    if not use_cuda_handle and not use_cuda_dlpack:
+        return {"args": compile_args, "result_indices": ()}
+    if backend_name != "ptx_exec":
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    vector_factory = _maybe_cuda_handle_vector if use_cuda_handle else _maybe_cuda_dlpack_vector
+    src = vector_factory(src_values, dtype="f16")
+    other = vector_factory(other_values, dtype="f16")
+    dst = vector_factory(zero_values, dtype="f16")
+    if src is None or other is None or dst is None:
+        return {"compile_args": compile_args, "run_args": compile_args, "result_indices": ()}
+    return {
+        "compile_args": compile_args,
+        "run_args": (src, other, dst),
+        "result_indices": (),
+    }
+
+
 def _neg_1d_payload(
     *,
     mode: str,
@@ -3948,6 +4297,9 @@ def _neg_1d_payload(
         raise ValueError(f"unsupported neg 1D mode: {mode}")
     if dtype == "f32":
         src_values = [float(index) - 64.0 for index in range(n)]
+        zero_values = [0.0 for _ in range(n)]
+    elif dtype == "f16":
+        src_values = [0.5 * float(index - 64) for index in range(n)]
         zero_values = [0.0 for _ in range(n)]
     elif dtype == "i32":
         src_values = [index - 64 for index in range(n)]
@@ -3992,6 +4344,9 @@ def _abs_1d_payload(
         raise ValueError(f"unsupported abs 1D mode: {mode}")
     if dtype == "f32":
         src_values = [float(index) - 64.0 for index in range(n)]
+        zero_values = [0.0 for _ in range(n)]
+    elif dtype == "f16":
+        src_values = [0.5 * float(index - 64) for index in range(n)]
         zero_values = [0.0 for _ in range(n)]
     elif dtype == "i32":
         src_values = [index - 64 for index in range(n)]
@@ -4276,6 +4631,18 @@ def indexed_abs_f32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _abs_1d_payload(mode="indexed", dtype="f32", backend_name=backend_name, use_cuda_dlpack=True)
 
 
+def indexed_abs_f16_args(*, backend_name=None, **_kwargs):
+    return _abs_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name)
+
+
+def indexed_abs_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _abs_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def indexed_abs_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _abs_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
+
+
 def indexed_abs_i32_args(*, backend_name=None, **_kwargs):
     return _abs_1d_payload(mode="indexed", dtype="i32", backend_name=backend_name)
 
@@ -4310,6 +4677,18 @@ def indexed_min_i32_cuda_handle_args(*, backend_name=None, **_kwargs):
 
 def indexed_min_i32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _extrema_1d_payload(mode="indexed", dtype="i32", op="min", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def direct_add_f16_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="direct", dtype="f16", backend_name=backend_name)
+
+
+def direct_add_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="direct", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def direct_add_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="direct", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def direct_abs_f32_args(*, backend_name=None, **_kwargs):
@@ -4478,6 +4857,18 @@ def direct_neg_i32_cuda_handle_args(*, backend_name=None, **_kwargs):
 
 def direct_neg_i32_cuda_dlpack_args(*, backend_name=None, **_kwargs):
     return _neg_1d_payload(mode="direct", dtype="i32", backend_name=backend_name, use_cuda_dlpack=True)
+
+
+def direct_neg_f16_args(*, backend_name=None, **_kwargs):
+    return _neg_1d_payload(mode="direct", dtype="f16", backend_name=backend_name)
+
+
+def direct_neg_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _neg_1d_payload(mode="direct", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def direct_neg_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _neg_1d_payload(mode="direct", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def indexed_sqrt_f32_args(*, backend_name=None, **_kwargs):
@@ -6655,6 +7046,18 @@ def aster_broadcast_add_i32_args(*, backend_name=None, **_kwargs):
 def indexed_add_f32_args(*, backend_name=None, **_kwargs):
     src, other, dst = _make_f32_vector_args(POINTWISE_N, backend_name=backend_name or "")
     return {"args": (src, other, dst), "result_indices": ()}
+
+
+def indexed_add_f16_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name)
+
+
+def indexed_add_f16_cuda_handle_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name, use_cuda_handle=True)
+
+
+def indexed_add_f16_cuda_dlpack_args(*, backend_name=None, **_kwargs):
+    return _add_1d_payload(mode="indexed", dtype="f16", backend_name=backend_name, use_cuda_dlpack=True)
 
 
 def indexed_sub_f32_args(*, backend_name=None, **_kwargs):

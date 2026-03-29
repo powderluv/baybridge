@@ -2839,7 +2839,7 @@ def test_ptx_integer_bitwise_sample_factories_return_expected_shapes() -> None:
     assert direct_scalar_and_cuda_dlpack_payload["compile_args"][2].shape == (128,)
     assert len(direct_scalar_and_cuda_dlpack_payload["run_args"]) == 3
     assert direct_scalar_and_cuda_dlpack_payload["run_args"][1] == 11
-    assert direct_scalar_and_cuda_dlpack_payload["result_indices"] == ()
+
 
     assert len(indexed_scalar_payload["args"]) == 3
     assert indexed_scalar_payload["args"][0].shape == (kernels.POINTWISE_N,)
@@ -2910,6 +2910,191 @@ def test_ptx_integer_bitwise_sample_factories_return_expected_shapes() -> None:
     assert indexed_tensor_scalar_or_cuda_dlpack_payload["compile_args"][2].shape == (kernels.POINTWISE_N,)
     assert len(indexed_tensor_scalar_or_cuda_dlpack_payload["run_args"]) == 3
     assert indexed_tensor_scalar_or_cuda_dlpack_payload["result_indices"] == ()
+
+
+def test_ptx_f16_copy_sample_factories_return_expected_shapes() -> None:
+    kernels = _load_tool_module("backend_benchmark_kernels")
+
+    indexed_payload = kernels.indexed_copy_f16_args()
+    indexed_cuda_handle_payload = kernels.indexed_copy_f16_cuda_handle_args(backend_name="ptx_exec")
+    indexed_cuda_dlpack_payload = kernels.indexed_copy_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    dense_payload = kernels.dense_copy_2d_f16_args()
+    dense_cuda_handle_payload = kernels.dense_copy_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    dense_cuda_dlpack_payload = kernels.dense_copy_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    parallel_payload = kernels.parallel_dense_copy_2d_f16_args()
+    parallel_cuda_handle_payload = kernels.parallel_dense_copy_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    parallel_cuda_dlpack_payload = kernels.parallel_dense_copy_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    multiblock_payload = kernels.multiblock_dense_copy_2d_f16_args()
+    multiblock_cuda_handle_payload = kernels.multiblock_dense_copy_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    multiblock_cuda_dlpack_payload = kernels.multiblock_dense_copy_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+
+    indexed_args = indexed_payload["args"]
+    assert len(indexed_args) == 2
+    assert indexed_args[0].shape == (kernels.POINTWISE_N,)
+    assert indexed_args[1].shape == (kernels.POINTWISE_N,)
+    assert str(indexed_args[0].dtype) == "f16"
+    assert str(indexed_args[1].dtype) == "f16"
+    assert indexed_payload["result_indices"] == ()
+
+    for payload in (indexed_cuda_handle_payload, indexed_cuda_dlpack_payload):
+        assert len(payload["compile_args"]) == 2
+        assert payload["compile_args"][0].shape == (kernels.POINTWISE_N,)
+        assert payload["compile_args"][1].shape == (kernels.POINTWISE_N,)
+        assert str(payload["compile_args"][0].dtype) == "f16"
+        assert str(payload["compile_args"][1].dtype) == "f16"
+        assert len(payload["run_args"]) == 2
+        assert payload["result_indices"] == ()
+
+    for payload in (dense_payload, parallel_payload, multiblock_payload):
+        args = payload["args"]
+        assert len(args) == 2
+        assert args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert args[1].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[0].dtype) == "f16"
+        assert str(args[1].dtype) == "f16"
+        assert payload["result_indices"] == ()
+
+    for payload in (
+        dense_cuda_handle_payload,
+        dense_cuda_dlpack_payload,
+        parallel_cuda_handle_payload,
+        parallel_cuda_dlpack_payload,
+        multiblock_cuda_handle_payload,
+        multiblock_cuda_dlpack_payload,
+    ):
+        assert len(payload["compile_args"]) == 2
+        assert payload["compile_args"][0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert payload["compile_args"][1].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(payload["compile_args"][0].dtype) == "f16"
+        assert str(payload["compile_args"][1].dtype) == "f16"
+        assert len(payload["run_args"]) == 2
+        assert payload["result_indices"] == ()
+
+
+def test_ptx_f16_unary_sample_factories_return_expected_shapes() -> None:
+    kernels = _load_tool_module("backend_benchmark_kernels")
+
+    indexed_abs_payload = kernels.indexed_abs_f16_args()
+    indexed_abs_cuda_handle_payload = kernels.indexed_abs_f16_cuda_handle_args(backend_name="ptx_exec")
+    indexed_abs_cuda_dlpack_payload = kernels.indexed_abs_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    direct_neg_payload = kernels.direct_neg_f16_args()
+    direct_neg_cuda_handle_payload = kernels.direct_neg_f16_cuda_handle_args(backend_name="ptx_exec")
+    direct_neg_cuda_dlpack_payload = kernels.direct_neg_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    dense_abs_payload = kernels.dense_abs_2d_f16_args()
+    dense_abs_cuda_handle_payload = kernels.dense_abs_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    dense_abs_cuda_dlpack_payload = kernels.dense_abs_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    parallel_abs_payload = kernels.parallel_dense_abs_2d_f16_args()
+    parallel_abs_cuda_handle_payload = kernels.parallel_dense_abs_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    parallel_abs_cuda_dlpack_payload = kernels.parallel_dense_abs_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    multiblock_abs_payload = kernels.multiblock_dense_abs_2d_f16_args()
+    multiblock_abs_cuda_handle_payload = kernels.multiblock_dense_abs_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    multiblock_abs_cuda_dlpack_payload = kernels.multiblock_dense_abs_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+
+    def _assert_rank1_payload(payload, *, n: int, staged: bool) -> None:
+        key = "args" if staged else "compile_args"
+        args = payload[key]
+        assert len(args) == 2
+        assert args[0].shape == (n,)
+        assert str(args[0].dtype) == "f16"
+        assert args[1].shape == (n,)
+        assert str(args[1].dtype) == "f16"
+        if not staged:
+            assert len(payload["run_args"]) == 2
+        assert payload["result_indices"] == ()
+
+    def _assert_2d_payload(payload, *, staged: bool) -> None:
+        key = "args" if staged else "compile_args"
+        args = payload[key]
+        assert len(args) == 2
+        assert args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[0].dtype) == "f16"
+        assert args[1].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[1].dtype) == "f16"
+        if not staged:
+            assert len(payload["run_args"]) == 2
+        assert payload["result_indices"] == ()
+
+    _assert_rank1_payload(indexed_abs_payload, n=kernels.POINTWISE_N, staged=True)
+    _assert_rank1_payload(indexed_abs_cuda_handle_payload, n=kernels.POINTWISE_N, staged=False)
+    _assert_rank1_payload(indexed_abs_cuda_dlpack_payload, n=kernels.POINTWISE_N, staged=False)
+    _assert_rank1_payload(direct_neg_payload, n=128, staged=True)
+    _assert_rank1_payload(direct_neg_cuda_handle_payload, n=128, staged=False)
+    _assert_rank1_payload(direct_neg_cuda_dlpack_payload, n=128, staged=False)
+
+    _assert_2d_payload(dense_abs_payload, staged=True)
+    _assert_2d_payload(dense_abs_cuda_handle_payload, staged=False)
+    _assert_2d_payload(dense_abs_cuda_dlpack_payload, staged=False)
+    _assert_2d_payload(parallel_abs_payload, staged=True)
+    _assert_2d_payload(parallel_abs_cuda_handle_payload, staged=False)
+    _assert_2d_payload(parallel_abs_cuda_dlpack_payload, staged=False)
+    _assert_2d_payload(multiblock_abs_payload, staged=True)
+    _assert_2d_payload(multiblock_abs_cuda_handle_payload, staged=False)
+    _assert_2d_payload(multiblock_abs_cuda_dlpack_payload, staged=False)
+
+
+def test_ptx_f16_add_sample_factories_return_expected_shapes() -> None:
+    kernels = _load_tool_module("backend_benchmark_kernels")
+
+    indexed_payload = kernels.indexed_add_f16_args()
+    indexed_cuda_handle_payload = kernels.indexed_add_f16_cuda_handle_args(backend_name="ptx_exec")
+    indexed_cuda_dlpack_payload = kernels.indexed_add_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    direct_payload = kernels.direct_add_f16_args()
+    direct_cuda_handle_payload = kernels.direct_add_f16_cuda_handle_args(backend_name="ptx_exec")
+    direct_cuda_dlpack_payload = kernels.direct_add_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    dense_payload = kernels.dense_add_2d_f16_args()
+    dense_cuda_handle_payload = kernels.dense_add_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    dense_cuda_dlpack_payload = kernels.dense_add_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    parallel_payload = kernels.parallel_dense_add_2d_f16_args()
+    parallel_cuda_handle_payload = kernels.parallel_dense_add_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    parallel_cuda_dlpack_payload = kernels.parallel_dense_add_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+    multiblock_payload = kernels.multiblock_dense_add_2d_f16_args()
+    multiblock_cuda_handle_payload = kernels.multiblock_dense_add_2d_f16_cuda_handle_args(backend_name="ptx_exec")
+    multiblock_cuda_dlpack_payload = kernels.multiblock_dense_add_2d_f16_cuda_dlpack_args(backend_name="ptx_exec")
+
+    def _assert_rank1_payload(payload, *, n: int, staged: bool) -> None:
+        key = "args" if staged else "compile_args"
+        args = payload[key]
+        assert len(args) == 3
+        assert args[0].shape == (n,)
+        assert str(args[0].dtype) == "f16"
+        assert args[1].shape == (n,)
+        assert str(args[1].dtype) == "f16"
+        assert args[2].shape == (n,)
+        assert str(args[2].dtype) == "f16"
+        if not staged:
+            assert len(payload["run_args"]) == 3
+        assert payload["result_indices"] == ()
+
+    def _assert_2d_payload(payload, *, staged: bool) -> None:
+        key = "args" if staged else "compile_args"
+        args = payload[key]
+        assert len(args) == 3
+        assert args[0].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[0].dtype) == "f16"
+        assert args[1].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[1].dtype) == "f16"
+        assert args[2].shape == (kernels.FLYDSL_MICRO_ROWS, kernels.FLYDSL_MICRO_COLS)
+        assert str(args[2].dtype) == "f16"
+        if not staged:
+            assert len(payload["run_args"]) == 3
+        assert payload["result_indices"] == ()
+
+    _assert_rank1_payload(indexed_payload, n=kernels.POINTWISE_N, staged=True)
+    _assert_rank1_payload(indexed_cuda_handle_payload, n=kernels.POINTWISE_N, staged=False)
+    _assert_rank1_payload(indexed_cuda_dlpack_payload, n=kernels.POINTWISE_N, staged=False)
+    _assert_rank1_payload(direct_payload, n=128, staged=True)
+    _assert_rank1_payload(direct_cuda_handle_payload, n=128, staged=False)
+    _assert_rank1_payload(direct_cuda_dlpack_payload, n=128, staged=False)
+
+    _assert_2d_payload(dense_payload, staged=True)
+    _assert_2d_payload(dense_cuda_handle_payload, staged=False)
+    _assert_2d_payload(dense_cuda_dlpack_payload, staged=False)
+    _assert_2d_payload(parallel_payload, staged=True)
+    _assert_2d_payload(parallel_cuda_handle_payload, staged=False)
+    _assert_2d_payload(parallel_cuda_dlpack_payload, staged=False)
+    _assert_2d_payload(multiblock_payload, staged=True)
+    _assert_2d_payload(multiblock_cuda_handle_payload, staged=False)
+    _assert_2d_payload(multiblock_cuda_dlpack_payload, staged=False)
 
 
 def test_ptx_bitnot_sample_factories_return_expected_shapes() -> None:

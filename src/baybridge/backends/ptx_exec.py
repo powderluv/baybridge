@@ -22,6 +22,7 @@ _DLPACK_DEVICE_TYPE_CUDA = 2
 def _tensor_ctype(dtype: str):
     table = {
         "f32": ctypes.c_float,
+        "f16": ctypes.c_uint16,
         "i1": ctypes.c_bool,
         "i32": ctypes.c_int32,
     }

@@ -212,14 +212,17 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
   - current validated subset:
     - canonical indexed rank-1 dense copy:
       - `f32`
+      - `f16`
       - `i32`
       - `i1`
     - canonical indexed rank-1 dense pointwise:
       - `f32`: `add/sub/mul/div/max/min/atan2`
+      - `f16`: `add`
       - `i32`: `add/sub/mul/div/max/min`, `bitand`, `bitor`, `bitxor`
       - `i1`: `and/or/xor`
     - canonical indexed rank-1 unary `neg/abs`:
       - `f32`
+      - `f16`
       - `i32`
     - canonical indexed rank-1 integer `bitnot`:
       - `i32`
@@ -257,14 +260,17 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
       - `grid.x * block.x >= extent`
     - direct `threadIdx.x` rank-1 dense copy:
       - `f32`
+      - `f16`
       - `i32`
       - `i1`
     - direct `threadIdx.x` rank-1 dense pointwise:
       - `f32`: `add/sub/mul/div/max/min/atan2`
+      - `f16`: `add`
       - `i32`: `add/sub/mul/div/max/min`, `bitand`, `bitor`, `bitxor`
       - `i1`: `and/or/xor`
     - direct `threadIdx.x` rank-1 unary `neg/abs`:
       - `f32`
+      - `f16`
       - `i32`
     - direct `threadIdx.x` rank-1 integer `bitnot`:
       - `i32`
@@ -313,7 +319,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
         - serial: `grid=(1,1,1)`, `block=(1,1,1)`
         - direct single-block: `grid=(1,1,1)`, `block=(block.x >= extent,1,1)`
         - indexed multi-block: `grid=(grid.x >= 1,1,1)`, `block=(block.x >= 1,1,1)`, `grid.x * block.x >= extent`
-    - exact 2D `f32/i32/i1` dense copy bundles:
+    - exact 2D `f32/i32/i1/f16` dense copy bundles:
       - `bb.copy(src, dst)`
       - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
     - exact 2D `copy_reduce` bundles:
@@ -352,10 +358,11 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
       - exact current launch contracts:
         - serial: `grid=(1,1,1)`, `block=(1,1,1)`
         - parallel: `grid=(1,1,1)`, `block=(power_of_two,1,1)`, `block.x >= cols`
-    - exact 2D `f32/i32` dense tensor-binary bundles:
+    - exact 2D `f32/f16/i32` dense tensor-binary bundles:
       - `dst.store(lhs.load() <op> rhs.load())`
       - supported ops:
         - `f32`: `add`, `sub`, `mul`, `div`, `max`, `min`
+        - `f16`: `add`
         - `i32`: `add`, `sub`, `mul`, `div`, `max`, `min`, `bitand`, `bitor`, `bitxor`
         - `i1`: `bitand`, `bitor`, `bitxor`
       - exact current launch contract: `grid=(1,1,1)`, `block=(1,1,1)`
@@ -416,6 +423,9 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
         - `dst.store(-src.load())`
         - `dst.store(bb.sqrt(src.load()))`
         - `dst.store(bb.rsqrt(src.load()))`
+      - `f16`:
+        - `dst.store(abs(src.load()))`
+        - `dst.store(-src.load())`
       - `i32`:
         - `dst.store(abs(src.load()))`
         - `dst.store(-src.load())`
@@ -434,7 +444,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
         - parallel: `grid=(1,1,1)`, `block=(power_of_two,1,1)`
       - current parallel lowering maps one thread to one output row or column and loops over the reduced axis inside the thread
     - exact parallel 2D row-tiled variants of the same tensor families above:
-      - dense copy for `f32/i32/i1`
+      - dense copy for `f32/f16/i32/i1`
       - scalar-broadcast from scalar kernel parameters:
         - `f32`: `add/sub/mul/div/max/min/atan2`
         - `i32`: `add/sub/mul/div/max/min`, `bitand`, `bitor`, `bitxor`
@@ -472,6 +482,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
         - validated on `i32`
       - dense unary:
         - `f32`: `abs`, `neg`, `round`, `floor`, `ceil`, `trunc`, `sqrt/rsqrt`, `sin`, `cos`, `acos`, `asin`, `atan`, `exp`, `exp2`, `log`, `log2`, `log10`, `erf`
+        - `f16`: `abs`, `neg`
         - `i32`: `abs`, `neg`, `bitnot`
         - `i1`: `bitnot`
       - exact current launch contract:
@@ -522,6 +533,7 @@ For a current backend inventory, validation matrix, and benchmark notes, see [do
     - `f32`
     - `i32`
     - `i1` for exact copy and bitwise tensor families only
+    - `f16` for exact copy and unary `neg/abs` families only
 - `backend="ptx_exec"`
   - launches the same exact PTX subset through `libcuda.so.1`
   - no `nvcc`, `nvrtc`, or `ptxas` is required in the backend path

@@ -314,6 +314,7 @@ class _TensorFactoryBundle2DMatch:
 class PtxBridge:
     _SUPPORTED_DTYPES = {"f32": 4, "i32": 4}
     _SUPPORTED_ELEMENTWISE_DTYPES = {"f32": 4, "i32": 4, "i1": 1}
+    _SUPPORTED_STORAGE_DTYPES = {"f32": 4, "i32": 4, "i1": 1, "f16": 2}
     _SUPPORTED_BINARY_OPS = {"add", "sub", "mul", "div", "max", "min", "bitand", "bitor", "bitxor"}
     _SUPPORTED_UNARY_OPS = {
         "neg",
@@ -496,10 +497,10 @@ class PtxBridge:
             if match is not None:
                 return match
         raise CompilationError(
-            "ptx_ref currently supports only exact rank-1 dense copy, pointwise f32/i32 add/sub/mul/div/max/min plus "
-            "rank-1 i32 bitand/bitor/bitxor and rank-1 i1 copy/bitand/bitor/bitxor, exact rank-1 f32/i32 neg/abs kernels, exact rank-1 i32/i1 bitnot kernels, exact rank-1 f32/i32 compare-to-i1 kernels, exact rank-1 f32/i32/i1 select kernels from i1 predicate tensors including exact scalar-branch forms, exact rank-1 scalar-broadcast compare-to-i1 kernels, exact f32 round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf unary kernels, exact rank-1 scalar-broadcast kernels "
-            "including rank-1 i32 bitand/bitor/bitxor, "
-            "exact rank-1 scalar reductions to dst[0], exact rank-1 and 2D copy_reduce families, exact 2D f32/i32/i1 copy, compare-to-i1, select, scalar-select, scalar-broadcast, scalar-broadcast compare-to-i1, tensor-binary, and broadcast-binary families where i1 is limited to copy and bitand/bitor/bitxor tensor binaries, exact 2D f32/i32 max/min tensor-binary and scalar-broadcast families, exact 2D f32 round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf unary families, exact 2D rowwise/columnwise reduction families, the exact 2D f32/i32 row+column reduction bundle families, the exact 2D f32/i32 reduction bundle families, "
+            "ptx_ref currently supports only exact rank-1 dense copy including f16, pointwise f32/i32 add/sub/mul/div/max/min plus "
+            "rank-1 i32 bitand/bitor/bitxor and rank-1 i1 copy/bitand/bitor/bitxor, exact rank-1 f32/i32/f16 neg/abs kernels, exact rank-1 i32/i1 bitnot kernels, exact rank-1 f32/i32 compare-to-i1 kernels, exact rank-1 f32/i32/i1 select kernels from i1 predicate tensors including exact scalar-branch forms, exact rank-1 scalar-broadcast compare-to-i1 kernels, exact f32 round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf unary kernels, exact rank-1 scalar-broadcast kernels "
+            "including rank-1 i32 bitand/bitor/bitxor, and exact rank-1 f16 add, "
+            "exact rank-1 scalar reductions to dst[0], exact rank-1 and 2D copy_reduce families, exact 2D f32/i32/i1/f16 copy, compare-to-i1, select, scalar-select, scalar-broadcast, scalar-broadcast compare-to-i1, tensor-binary, and broadcast-binary families where i1 is limited to copy and bitand/bitor/bitxor tensor binaries, exact 2D f16 dense add tensor-binary families, exact 2D f32/i32 max/min tensor-binary and scalar-broadcast families, exact 2D f32 round/floor/ceil/trunc/sqrt/rsqrt/sin/cos/acos/asin/atan/exp/exp2/log/log2/log10/erf unary families, exact 2D f16 neg/abs unary families, exact 2D rowwise/columnwise reduction families, the exact 2D f32/i32 row+column reduction bundle families, the exact 2D f32/i32 reduction bundle families, "
             "their exact parallel 2D row-tiled variants, and the exact 2D f32/i32 tensor-factory bundle family, including its exact parallel row-tiled form; 2D scalar-broadcast accepts either scalar kernel params or rank-1 extent-1 tensors"
         )
 
@@ -513,7 +514,7 @@ class PtxBridge:
             return None
         if src_spec.dtype != dst_spec.dtype or src_spec.shape != dst_spec.shape:
             return None
-        if not self._supports_elementwise_dtype(src_spec.dtype):
+        if not self._supports_copy_dtype(src_spec.dtype):
             return None
         if not self._has_rank1_indexed_launch(ir, src_spec.shape[0]):
             return None
@@ -547,8 +548,6 @@ class PtxBridge:
         dst_spec = self._require_rank1_tensor(dst_arg.spec)
         if lhs_spec is None or rhs_spec is None or dst_spec is None:
             return None
-        if not self._supports_elementwise_dtype(lhs_spec.dtype):
-            return None
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
             return None
         if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
@@ -568,7 +567,7 @@ class PtxBridge:
             return None
         if lhs_load.attrs.get("rank") != 1 or rhs_load.attrs.get("rank") != 1:
             return None
-        if not self._supports_binary(lhs_spec.dtype, binary_op.op):
+        if not self._supports_dense_binary_family(lhs_spec.dtype, binary_op.op):
             return None
         if binary_op.inputs != (lhs_load.outputs[0], rhs_load.outputs[0]):
             return None
@@ -704,7 +703,7 @@ class PtxBridge:
             return None
         if src_spec.dtype != dst_spec.dtype or src_spec.shape != dst_spec.shape:
             return None
-        if not self._supports_elementwise_dtype(src_spec.dtype):
+        if not self._supports_copy_dtype(src_spec.dtype):
             return None
         if not self._has_rank1_direct_launch(ir, src_spec.shape[0]):
             return None
@@ -738,8 +737,6 @@ class PtxBridge:
         dst_spec = self._require_rank1_tensor(dst_arg.spec)
         if lhs_spec is None or rhs_spec is None or dst_spec is None:
             return None
-        if not self._supports_elementwise_dtype(lhs_spec.dtype):
-            return None
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
             return None
         if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
@@ -759,7 +756,7 @@ class PtxBridge:
             return None
         if lhs_load.attrs.get("rank") != 1 or rhs_load.attrs.get("rank") != 1:
             return None
-        if not self._supports_binary(lhs_spec.dtype, binary_op.op):
+        if not self._supports_dense_binary_family(lhs_spec.dtype, binary_op.op):
             return None
         if binary_op.inputs != (lhs_load.outputs[0], rhs_load.outputs[0]):
             return None
@@ -1895,8 +1892,6 @@ class PtxBridge:
         dst_spec = self._require_rank2_tensor(dst_arg.spec)
         if lhs_spec is None or rhs_spec is None or dst_spec is None:
             return None
-        if not self._supports_elementwise_dtype(lhs_spec.dtype):
-            return None
         if lhs_spec.dtype != rhs_spec.dtype or lhs_spec.dtype != dst_spec.dtype:
             return None
         if lhs_spec.shape != rhs_spec.shape or lhs_spec.shape != dst_spec.shape:
@@ -1923,6 +1918,8 @@ class PtxBridge:
             "tensor_bitxor",
             "math_atan2",
         }:
+            return None
+        if not self._supports_dense_binary_family(lhs_spec.dtype, tensor_op.op.removeprefix("tensor_")):
             return None
         if tuple(tensor_op.inputs) != (ops[0].outputs[0], ops[2].outputs[0]):
             return None
@@ -2003,7 +2000,7 @@ class PtxBridge:
         dst_spec = self._require_rank2_tensor(dst_arg.spec)
         if src_spec is None or dst_spec is None:
             return None
-        if not self._supports_elementwise_dtype(src_spec.dtype):
+        if not self._supports_copy_dtype(src_spec.dtype):
             return None
         if src_spec.dtype != dst_spec.dtype or src_spec.shape != dst_spec.shape:
             return None
@@ -4133,6 +4130,12 @@ class PtxBridge:
             else:
                 instr = self._binary_instr(match.dtype, match.op)
                 op_lines = [f"    {instr} %f3, %f1, %f2;"]
+        elif match.dtype == "f16":
+            reg_decl = "\n".join(self._binary_f16_reg_decls(match.op))
+            load_lhs = "    ld.global.u16 %rs1, [%rd5];\n    cvt.f32.f16 %f1, %rs1;"
+            load_rhs = "    ld.global.u16 %rs2, [%rd6];\n    cvt.f32.f16 %f2, %rs2;"
+            store_dst = "    cvt.rn.f16.f32 %rs1, %f3;\n    st.global.u16 [%rd7], %rs1;"
+            op_lines = ["    add.rn.f32 %f3, %f1, %f2;"]
         elif match.dtype == "i32":
             reg_decl = ""
             load_lhs = "    ld.global.s32 %r11, [%rd5];"
@@ -4236,6 +4239,10 @@ class PtxBridge:
             reg_decl = "    .reg .f32 %f<2>;"
             load_src = "    ld.global.f32 %f1, [%rd4];"
             store_dst = "    st.global.f32 [%rd5], %f1;"
+        elif match.dtype == "f16":
+            reg_decl = "    .reg .b16 %rs<2>;"
+            load_src = "    ld.global.u16 %rs1, [%rd4];"
+            store_dst = "    st.global.u16 [%rd5], %rs1;"
         elif match.dtype == "i32":
             reg_decl = ""
             load_src = "    ld.global.s32 %r7, [%rd4];"
@@ -4345,7 +4352,7 @@ class PtxBridge:
             if element_size != 1
             else "    cvt.u64.u32 %rd3, %r8;"
         )
-        reg_decl = self._unary_f32_reg_decl(match.op) if match.dtype == "f32" else ""
+        reg_decl_lines = self._unary_value_reg_decls(match.dtype, match.op)
         body = [
             f".visible .entry {ir.name}(",
             f"    .param .u64 {match.src_name}_param,",
@@ -4355,7 +4362,7 @@ class PtxBridge:
             "    .reg .pred %p<4>;" if match.op in {"math_acos", "math_asin"} else "    .reg .pred %p<3>;",
             "    .reg .b32 %r<9>;",
             "    .reg .b64 %rd<6>;",
-            reg_decl,
+            *reg_decl_lines,
             f"    ld.param.u64 %rd1, [{match.src_name}_param];",
             f"    ld.param.u64 %rd2, [{match.dst_name}_param];",
             "    mov.u32 %r1, %tid.x;",
@@ -4378,7 +4385,6 @@ class PtxBridge:
             "    ret;",
             "}",
         ]
-        body = [line for line in body if line]
         return ptx + "\n".join(body) + "\n"
 
     def _render_parallel_tensor_scalar_broadcast_2d(
@@ -4516,6 +4522,12 @@ class PtxBridge:
             else:
                 instr = self._binary_instr(match.dtype, match.op)
                 op_lines = [f"    {instr} %f3, %f1, %f2;"]
+        elif match.dtype == "f16":
+            reg_decl = "\n".join(self._binary_f16_reg_decls(match.op))
+            load_lhs = "    ld.global.u16 %rs1, [%rd5];\n    cvt.f32.f16 %f1, %rs1;"
+            load_rhs = "    ld.global.u16 %rs2, [%rd6];\n    cvt.f32.f16 %f2, %rs2;"
+            store_dst = "    cvt.rn.f16.f32 %rs1, %f3;\n    st.global.u16 [%rd7], %rs1;"
+            op_lines = ["    add.rn.f32 %f3, %f1, %f2;"]
         elif match.dtype == "i32":
             reg_decl = ""
             load_lhs = "    ld.global.s32 %r11, [%rd5];"
@@ -4619,6 +4631,10 @@ class PtxBridge:
             reg_decl = "    .reg .f32 %f<2>;"
             load_src = "    ld.global.f32 %f1, [%rd4];"
             store_dst = "    st.global.f32 [%rd5], %f1;"
+        elif match.dtype == "f16":
+            reg_decl = "    .reg .b16 %rs<2>;"
+            load_src = "    ld.global.u16 %rs1, [%rd4];"
+            store_dst = "    st.global.u16 [%rd5], %rs1;"
         elif match.dtype == "i32":
             reg_decl = ""
             load_src = "    ld.global.s32 %r7, [%rd4];"
@@ -4728,7 +4744,7 @@ class PtxBridge:
             if element_size != 1
             else "    cvt.u64.u32 %rd3, %r8;"
         )
-        reg_decl = self._unary_f32_reg_decl(match.op) if match.dtype == "f32" else ""
+        reg_decl_lines = self._unary_value_reg_decls(match.dtype, match.op)
         body = [
             f".visible .entry {ir.name}(",
             f"    .param .u64 {match.src_name}_param,",
@@ -4738,7 +4754,7 @@ class PtxBridge:
             "    .reg .pred %p<4>;" if match.op in {"math_acos", "math_asin"} else "    .reg .pred %p<3>;",
             "    .reg .b32 %r<9>;",
             "    .reg .b64 %rd<6>;",
-            reg_decl,
+            *reg_decl_lines,
             f"    ld.param.u64 %rd1, [{match.src_name}_param];",
             f"    ld.param.u64 %rd2, [{match.dst_name}_param];",
             "    mov.u32 %r1, 0;",
@@ -4763,7 +4779,6 @@ class PtxBridge:
             "    ret;",
             "}",
         ]
-        body = [line for line in body if line]
         return ptx + "\n".join(body) + "\n"
 
     def _render_tensor_scalar_broadcast_2d(
@@ -5714,6 +5729,8 @@ class PtxBridge:
         ]
         if dtype == "f32":
             lines.append("    .reg .f32 %f<2>;")
+        elif dtype == "f16":
+            lines.append("    .reg .b16 %rs<2>;")
         return lines
 
     def _binary_declarations(self, dtype: str, *, mode: str, op: str) -> list[str]:
@@ -5724,6 +5741,8 @@ class PtxBridge:
         ]
         if dtype == "f32":
             lines.append(self._binary_f32_reg_decl(op))
+        elif dtype == "f16":
+            lines.extend(self._binary_f16_reg_decls(op))
         return lines
 
     def _compare_declarations(self, dtype: str) -> list[str]:
@@ -5764,8 +5783,7 @@ class PtxBridge:
             "    .reg .b32 %r<6>;",
             "    .reg .b64 %rd<6>;",
         ]
-        if dtype == "f32":
-            lines.append(self._unary_f32_reg_decl(op))
+        lines.extend(self._unary_value_reg_decls(dtype, op))
         return lines
 
     def _reduce_declarations(self, dtype: str) -> list[str]:
@@ -6231,6 +6249,11 @@ class PtxBridge:
                 f"    ld.global.f32 %f1, [{lhs_ptr}];",
                 f"    st.global.f32 [{dst_ptr}], %f1;",
             ]
+        if dtype == "f16":
+            return [
+                f"    ld.global.u16 %rs1, [{lhs_ptr}];",
+                f"    st.global.u16 [{dst_ptr}], %rs1;",
+            ]
         if dtype == "i32":
             return [
                 f"    ld.global.s32 %r5, [{lhs_ptr}];",
@@ -6287,6 +6310,18 @@ class PtxBridge:
                 f"    ld.global.f32 %f2, [{rhs_ptr}];",
                 f"    {instr} %f3, %f1, %f2;",
                 f"    st.global.f32 [{dst_ptr}], %f3;",
+            ]
+        if dtype == "f16":
+            if op != "add":
+                raise CompilationError(f"unsupported PTX dtype '{dtype}'")
+            return [
+                f"    ld.global.u16 %rs1, [{lhs_ptr}];",
+                f"    ld.global.u16 %rs2, [{rhs_ptr}];",
+                "    cvt.f32.f16 %f1, %rs1;",
+                "    cvt.f32.f16 %f2, %rs2;",
+                "    add.rn.f32 %f3, %f1, %f2;",
+                "    cvt.rn.f16.f32 %rs1, %f3;",
+                f"    st.global.u16 [{dst_ptr}], %rs1;",
             ]
         if dtype == "i32":
             instr = self._binary_instr(dtype, op)
@@ -6513,6 +6548,15 @@ class PtxBridge:
                 f"    mov.f32 %f1, {self._float_immediate(0.3010299956639812)};",
                 "    mul.rn.f32 %f2, %f2, %f1;",
                 f"    st.global.f32 [{dst_ptr}], %f2;",
+            ]
+        if op in {"neg", "abs"} and dtype == "f16":
+            instr = "neg.f32" if op == "neg" else "abs.f32"
+            return [
+                f"    ld.global.u16 %rs1, [{src_ptr}];",
+                "    cvt.f32.f16 %f1, %rs1;",
+                f"    {instr} %f2, %f1;",
+                "    cvt.rn.f16.f32 %rs1, %f2;",
+                f"    st.global.u16 [{dst_ptr}], %rs1;",
             ]
         if op in {"math_round", "math_floor", "math_ceil", "math_trunc", "math_sqrt", "math_rsqrt", "math_sin", "math_cos", "math_exp2", "math_log2"}:
             instr = {
@@ -6784,15 +6828,18 @@ class PtxBridge:
     def _supports_elementwise_dtype(self, dtype: str) -> bool:
         return dtype in self._SUPPORTED_ELEMENTWISE_DTYPES
 
+    def _supports_copy_dtype(self, dtype: str) -> bool:
+        return dtype in self._SUPPORTED_STORAGE_DTYPES
+
     def _element_size(self, dtype: str) -> int:
         try:
-            return self._SUPPORTED_ELEMENTWISE_DTYPES[dtype]
+            return self._SUPPORTED_STORAGE_DTYPES[dtype]
         except KeyError as exc:
             raise CompilationError(f"unsupported PTX elementwise dtype '{dtype}'") from exc
 
     def _supports_rank1_unary(self, dtype: str, op: str) -> bool:
         if op in {"neg", "abs"}:
-            return dtype in {"f32", "i32"}
+            return dtype in {"f32", "i32", "f16"}
         if op in {"math_round", "math_floor", "math_ceil", "math_trunc", "math_sqrt", "math_rsqrt", "math_sin", "math_cos", "math_acos", "math_asin", "math_atan", "math_exp", "math_exp2", "math_log", "math_log2", "math_log10", "math_erf"}:
             return dtype == "f32"
         if op == "bitnot":
@@ -6822,11 +6869,34 @@ class PtxBridge:
     def _unary_pred_decl(self, op: str) -> str:
         return "    .reg .pred %p<4>;" if op in {"math_acos", "math_asin"} else "    .reg .pred %p<2>;"
 
+    def _unary_value_reg_decls(self, dtype: str, op: str) -> list[str]:
+        if dtype == "f32":
+            return [self._unary_f32_reg_decl(op)]
+        if dtype == "f16" and op in {"neg", "abs"}:
+            return [
+                "    .reg .f32 %f<3>;",
+                "    .reg .b16 %rs<2>;",
+            ]
+        return []
+
     def _binary_pred_decl(self, op: str) -> str:
         return "    .reg .pred %p<4>;" if op == "math_atan2" else "    .reg .pred %p<2>;"
 
     def _binary_f32_reg_decl(self, op: str) -> str:
         return "    .reg .f32 %f<13>;" if op == "math_atan2" else "    .reg .f32 %f<4>;"
+
+    def _binary_f16_reg_decls(self, op: str) -> list[str]:
+        if op != "add":
+            raise CompilationError(f"unsupported PTX f16 binary op '{op}'")
+        return [
+            "    .reg .f32 %f<4>;",
+            "    .reg .b16 %rs<3>;",
+        ]
+
+    def _supports_dense_binary_family(self, dtype: str, op: str) -> bool:
+        if dtype == "f16":
+            return op == "add"
+        return self._supports_binary(dtype, op)
 
     def _supports_binary(self, dtype: str, op: str) -> bool:
         if dtype == "f32" and op == "math_atan2":

@@ -734,7 +734,17 @@ def ptx_exec_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def ptx_exec_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
 def ptx_exec_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(1, 1, 1)))
+def ptx_exec_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1076,7 +1086,17 @@ def ptx_exec_parallel_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def ptx_exec_parallel_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
 def ptx_exec_parallel_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(64, 1, 1)))
+def ptx_exec_parallel_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1421,7 +1441,17 @@ def ptx_exec_multiblock_dense_neg_i32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
+def ptx_exec_multiblock_dense_neg_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(-src.load())
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
 def ptx_exec_multiblock_dense_abs_f32_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
+    dst.store(abs(src.load()))
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 2, 1), block=(2, 1, 1)))
+def ptx_exec_multiblock_dense_abs_f16_2d_kernel(src: bb.Tensor, dst: bb.Tensor):
     dst.store(abs(src.load()))
 
 
@@ -1704,6 +1734,15 @@ def ptx_exec_indexed_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
+def ptx_exec_indexed_neg_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = -src[idx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
 def ptx_exec_indexed_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
@@ -1714,6 +1753,15 @@ def ptx_exec_indexed_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
 def ptx_exec_indexed_abs_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    bidx, _, _ = bb.arch.block_idx()
+    bdim, _, _ = bb.arch.block_dim()
+    idx = bidx * bdim + tidx
+    dst[idx] = abs(src[idx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(2, 1, 1), block=(64, 1, 1)))
+def ptx_exec_indexed_abs_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     bidx, _, _ = bb.arch.block_idx()
     bdim, _, _ = bb.arch.block_dim()
@@ -1854,7 +1902,19 @@ def ptx_exec_direct_neg_i32_kernel(src: bb.Tensor, dst: bb.Tensor):
 
 
 @bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def ptx_exec_direct_neg_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = -src[tidx]
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
 def ptx_exec_direct_abs_f32_kernel(src: bb.Tensor, dst: bb.Tensor):
+    tidx, _, _ = bb.arch.thread_idx()
+    dst[tidx] = abs(src[tidx])
+
+
+@bb.kernel(launch=bb.LaunchConfig(grid=(1, 1, 1), block=(128, 1, 1)))
+def ptx_exec_direct_abs_f16_kernel(src: bb.Tensor, dst: bb.Tensor):
     tidx, _, _ = bb.arch.thread_idx()
     dst[tidx] = abs(src[tidx])
 
@@ -2579,6 +2639,24 @@ def test_ptx_exec_runs_indexed_copy_i1_if_cuda_available(tmp_path: Path) -> None
     assert dst.tolist() == src.tolist()
 
 
+def test_ptx_exec_runs_indexed_copy_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([float(index) * 0.5 for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_copy_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
 def test_ptx_exec_runs_indexed_add_if_cuda_available(tmp_path: Path) -> None:
     _skip_if_cuda_driver_unavailable()
 
@@ -2597,6 +2675,26 @@ def test_ptx_exec_runs_indexed_add_if_cuda_available(tmp_path: Path) -> None:
 
     artifact(a, b, c)
     assert c.tolist() == [lhs + rhs for lhs, rhs in zip(a.tolist(), b.tolist())]
+
+
+def test_ptx_exec_runs_indexed_add_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    a = bb.tensor([0.5 * float(index) for index in range(128)], dtype="f16")
+    b = bb.tensor([0.25 * float(index + 1) for index in range(128)], dtype="f16")
+    c = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_add_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == pytest.approx([lhs + rhs for lhs, rhs in zip(a.tolist(), b.tolist())], rel=1e-6, abs=1e-6)
 
 
 def test_ptx_exec_runs_indexed_bitand_i32_if_cuda_available(tmp_path: Path) -> None:
@@ -3083,6 +3181,24 @@ def test_ptx_exec_runs_direct_copy_i1_if_cuda_available(tmp_path: Path) -> None:
     assert dst.tolist() == src.tolist()
 
 
+def test_ptx_exec_runs_direct_copy_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([float(index) * 0.5 for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_direct_copy_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == src.tolist()
+
+
 def test_ptx_exec_runs_direct_add_if_cuda_available(tmp_path: Path) -> None:
     _skip_if_cuda_driver_unavailable()
 
@@ -3101,6 +3217,26 @@ def test_ptx_exec_runs_direct_add_if_cuda_available(tmp_path: Path) -> None:
 
     artifact(a, b, c)
     assert c.tolist() == [lhs + rhs for lhs, rhs in zip(a.tolist(), b.tolist())]
+
+
+def test_ptx_exec_runs_direct_add_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    a = bb.tensor([0.5 * float(index) for index in range(128)], dtype="f16")
+    b = bb.tensor([0.25 * float(index + 1) for index in range(128)], dtype="f16")
+    c = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_direct_add_kernel,
+        a,
+        b,
+        c,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(a, b, c)
+    assert c.tolist() == pytest.approx([lhs + rhs for lhs, rhs in zip(a.tolist(), b.tolist())], rel=1e-6, abs=1e-6)
 
 
 def test_ptx_exec_runs_direct_bitor_i32_if_cuda_available(tmp_path: Path) -> None:
@@ -3857,6 +3993,7 @@ def test_ptx_exec_runs_indexed_tensor_scalar_broadcast_if_cuda_available(tmp_pat
     ("kernel", "dtype", "src_values"),
     [
         (ptx_exec_dense_copy_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]]),
+        (ptx_exec_dense_copy_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]]),
         (ptx_exec_dense_copy_i32_2d_kernel, "i32", [[1, 2], [3, 4]]),
         (ptx_exec_dense_copy_2d_kernel, "i1", [[True, False], [False, True]]),
     ],
@@ -3869,11 +4006,7 @@ def test_ptx_exec_runs_dense_tensor_copy_2d_if_cuda_available(tmp_path: Path, ke
     artifact = bb.compile(kernel, src, dst, cache_dir=tmp_path, target=_target(), backend="ptx_exec")
 
     artifact(src, dst)
-    if dtype == "f32":
-        for actual_row, expected_row in zip(dst.tolist(), src_values):
-            assert actual_row == pytest.approx(expected_row, rel=1e-6, abs=1e-6)
-    else:
-        assert dst.tolist() == src_values
+    _assert_nested_tensor_values(dst.tolist(), src.tolist())
 
 
 def test_ptx_exec_runs_dense_copy_reduce_add_2d_if_cuda_available(tmp_path: Path) -> None:
@@ -3936,6 +4069,7 @@ def test_ptx_exec_runs_dense_copy_reduce_or_i32_2d_if_cuda_available(tmp_path: P
     ("kernel", "dtype", "src_values"),
     [
         (ptx_exec_parallel_dense_copy_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]]),
+        (ptx_exec_parallel_dense_copy_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]]),
         (ptx_exec_parallel_dense_copy_i32_2d_kernel, "i32", [[1, 2], [3, 4]]),
         (ptx_exec_parallel_dense_copy_2d_kernel, "i1", [[True, False], [False, True]]),
     ],
@@ -3948,11 +4082,7 @@ def test_ptx_exec_runs_parallel_dense_tensor_copy_2d_if_cuda_available(tmp_path:
     artifact = bb.compile(kernel, src, dst, cache_dir=tmp_path, target=_target(), backend="ptx_exec")
 
     artifact(src, dst)
-    if dtype == "f32":
-        for actual_row, expected_row in zip(dst.tolist(), src_values):
-            assert actual_row == pytest.approx(expected_row, rel=1e-6, abs=1e-6)
-    else:
-        assert dst.tolist() == src_values
+    _assert_nested_tensor_values(dst.tolist(), src.tolist())
 
 
 def test_ptx_exec_runs_parallel_dense_copy_reduce_add_2d_if_cuda_available(tmp_path: Path) -> None:
@@ -4163,6 +4293,7 @@ def test_ptx_exec_runs_parallel_dense_tensor_extent1_scalar_broadcast_2d_if_cuda
     ("kernel", "dtype", "lhs_values", "rhs_values", "expected"),
     [
         (ptx_exec_dense_add_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], [[11.0, 22.0], [33.0, 44.0]]),
+        (ptx_exec_dense_add_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], [[0.25, 0.5], [0.75, 1.0]], [[0.75, 1.5], [2.25, 3.0]]),
         (ptx_exec_dense_sub_2d_kernel, "f32", [[10.0, 20.0], [30.0, 40.0]], [[1.0, 2.0], [3.0, 4.0]], [[9.0, 18.0], [27.0, 36.0]]),
         (ptx_exec_dense_mul_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], [[10.0, 40.0], [90.0, 160.0]]),
         (ptx_exec_dense_div_2d_kernel, "f32", [[8.0, 12.0], [18.0, 28.0]], [[2.0, 3.0], [6.0, 7.0]], [[4.0, 4.0], [3.0, 4.0]]),
@@ -4185,7 +4316,7 @@ def test_ptx_exec_runs_dense_tensor_binary_2d_if_cuda_available(tmp_path: Path, 
     artifact = bb.compile(kernel, lhs, rhs, dst, cache_dir=tmp_path, target=_target(), backend="ptx_exec")
 
     artifact(lhs, rhs, dst)
-    if dtype == "f32":
+    if dtype in {"f32", "f16"}:
         for actual_row, expected_row in zip(dst.tolist(), expected):
             assert actual_row == pytest.approx(expected_row, rel=1e-6, abs=1e-6)
     else:
@@ -4320,6 +4451,7 @@ def test_ptx_exec_runs_dense_tensor_scalar_select_2d_if_cuda_available(tmp_path:
     ("kernel", "dtype", "lhs_values", "rhs_values", "expected"),
     [
         (ptx_exec_parallel_dense_add_2d_kernel, "f32", [[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]], [[11.0, 22.0], [33.0, 44.0]]),
+        (ptx_exec_parallel_dense_add_2d_kernel, "f16", [[0.5, 1.0], [1.5, 2.0]], [[0.25, 0.5], [0.75, 1.0]], [[0.75, 1.5], [2.25, 3.0]]),
         (ptx_exec_parallel_dense_add_i32_2d_kernel, "i32", [[1, 2], [3, 4]], [[10, 20], [30, 40]], [[11, 22], [33, 44]]),
         (ptx_exec_parallel_dense_bitand_i32_2d_kernel, "i32", [[7, 11], [13, 17]], [[3, 5], [7, 9]], [[3, 1], [5, 1]]),
         (ptx_exec_parallel_dense_bitor_i32_2d_kernel, "i32", [[7, 11], [13, 17]], [[3, 5], [7, 9]], [[7, 15], [15, 25]]),
@@ -4336,7 +4468,7 @@ def test_ptx_exec_runs_parallel_dense_tensor_binary_2d_if_cuda_available(tmp_pat
     artifact = bb.compile(kernel, lhs, rhs, dst, cache_dir=tmp_path, target=_target(), backend="ptx_exec")
 
     artifact(lhs, rhs, dst)
-    if dtype == "f32":
+    if dtype in {"f32", "f16"}:
         for actual_row, expected_row in zip(dst.tolist(), expected):
             assert actual_row == pytest.approx(expected_row, rel=1e-6, abs=1e-6)
     else:
@@ -4617,8 +4749,10 @@ def test_ptx_exec_runs_parallel_broadcast_tensor_binary_2d_if_cuda_available(tmp
         (ptx_exec_dense_rsqrt_2d_kernel, [[0.5, 1.0 / 3.0], [0.25, 0.2]]),
         (ptx_exec_dense_neg_f32_2d_kernel, [[-1.0, 2.0], [-3.5, 4.5]]),
         (ptx_exec_dense_neg_i32_2d_kernel, [[-1, 2], [-3, 4]]),
+        (ptx_exec_dense_neg_f16_2d_kernel, [[-0.5, 1.0], [-1.5, 2.0]]),
         (ptx_exec_dense_abs_f32_2d_kernel, [[1.0, 2.0], [3.5, 4.5]]),
         (ptx_exec_dense_abs_i32_2d_kernel, [[1, 2], [3, 4]]),
+        (ptx_exec_dense_abs_f16_2d_kernel, [[0.5, 1.0], [1.5, 2.0]]),
         (ptx_exec_dense_bitnot_i32_2d_kernel, [[~1, ~2], [~3, ~4]]),
         (ptx_exec_dense_bitnot_i1_2d_kernel, [[False, True], [True, False]]),
     ],
@@ -4632,6 +4766,12 @@ def test_ptx_exec_runs_dense_tensor_unary_2d_if_cuda_available(tmp_path: Path, k
     elif kernel is ptx_exec_dense_abs_i32_2d_kernel:
         src = bb.tensor([[1, -2], [3, -4]], dtype="i32")
         dst = bb.zeros((2, 2), dtype="i32")
+    elif kernel is ptx_exec_dense_neg_f16_2d_kernel:
+        src = bb.tensor([[0.5, -1.0], [1.5, -2.0]], dtype="f16")
+        dst = bb.zeros((2, 2), dtype="f16")
+    elif kernel is ptx_exec_dense_abs_f16_2d_kernel:
+        src = bb.tensor([[0.5, -1.0], [1.5, -2.0]], dtype="f16")
+        dst = bb.zeros((2, 2), dtype="f16")
     elif kernel is ptx_exec_dense_bitnot_i32_2d_kernel:
         src = bb.tensor([[1, 2], [3, 4]], dtype="i32")
         dst = bb.zeros((2, 2), dtype="i32")
@@ -4696,8 +4836,10 @@ def test_ptx_exec_runs_dense_native_math_tensor_unary_2d_if_cuda_available(tmp_p
         (ptx_exec_parallel_dense_sqrt_2d_kernel, [[4.0, 9.0], [16.0, 25.0]], "f32", [[2.0, 3.0], [4.0, 5.0]]),
         (ptx_exec_parallel_dense_neg_f32_2d_kernel, [[1.0, -2.0], [3.5, -4.5]], "f32", [[-1.0, 2.0], [-3.5, 4.5]]),
         (ptx_exec_parallel_dense_neg_i32_2d_kernel, [[1, -2], [3, -4]], "i32", [[-1, 2], [-3, 4]]),
+        (ptx_exec_parallel_dense_neg_f16_2d_kernel, [[0.5, -1.0], [1.5, -2.0]], "f16", [[-0.5, 1.0], [-1.5, 2.0]]),
         (ptx_exec_parallel_dense_abs_f32_2d_kernel, [[1.0, -2.0], [3.5, -4.5]], "f32", [[1.0, 2.0], [3.5, 4.5]]),
         (ptx_exec_parallel_dense_abs_i32_2d_kernel, [[1, -2], [3, -4]], "i32", [[1, 2], [3, 4]]),
+        (ptx_exec_parallel_dense_abs_f16_2d_kernel, [[0.5, -1.0], [1.5, -2.0]], "f16", [[0.5, 1.0], [1.5, 2.0]]),
         (ptx_exec_parallel_dense_bitnot_i32_2d_kernel, [[1, 2], [3, 4]], "i32", [[~1, ~2], [~3, ~4]]),
         (ptx_exec_parallel_dense_bitnot_i1_2d_kernel, [[True, False], [False, True]], "i1", [[False, True], [True, False]]),
     ],
@@ -4875,6 +5017,24 @@ def test_ptx_exec_runs_indexed_neg_i32_if_cuda_available(tmp_path: Path) -> None
     assert dst.tolist() == [-value for value in src.tolist()]
 
 
+def test_ptx_exec_runs_indexed_neg_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_indexed_neg_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == pytest.approx([-value for value in src.tolist()], rel=1e-6, abs=1e-6)
+
+
 def test_ptx_exec_runs_indexed_abs_f32_if_cuda_available(tmp_path: Path) -> None:
     _skip_if_cuda_driver_unavailable()
 
@@ -4909,6 +5069,24 @@ def test_ptx_exec_runs_indexed_abs_i32_if_cuda_available(tmp_path: Path) -> None
 
     artifact(src, dst)
     assert dst.tolist() == [abs(value) for value in src.tolist()]
+
+
+def test_ptx_exec_runs_indexed_abs_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_indexed_abs_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == pytest.approx([abs(value) for value in src.tolist()], rel=1e-6, abs=1e-6)
 
 
 def test_ptx_exec_runs_indexed_bitnot_i32_if_cuda_available(tmp_path: Path) -> None:
@@ -5040,6 +5218,24 @@ def test_ptx_exec_runs_direct_neg_i32_if_cuda_available(tmp_path: Path) -> None:
     assert dst.tolist() == [-value for value in src.tolist()]
 
 
+def test_ptx_exec_runs_direct_neg_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_direct_neg_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == pytest.approx([-value for value in src.tolist()], rel=1e-6, abs=1e-6)
+
+
 def test_ptx_exec_runs_direct_abs_f32_if_cuda_available(tmp_path: Path) -> None:
     _skip_if_cuda_driver_unavailable()
 
@@ -5074,6 +5270,24 @@ def test_ptx_exec_runs_direct_abs_i32_if_cuda_available(tmp_path: Path) -> None:
 
     artifact(src, dst)
     assert dst.tolist() == [abs(value) for value in src.tolist()]
+
+
+def test_ptx_exec_runs_direct_abs_f16_if_cuda_available(tmp_path: Path) -> None:
+    _skip_if_cuda_driver_unavailable()
+
+    src = bb.tensor([0.5 * float(index - 64) for index in range(128)], dtype="f16")
+    dst = bb.zeros((128,), dtype="f16")
+    artifact = bb.compile(
+        ptx_exec_direct_abs_f16_kernel,
+        src,
+        dst,
+        cache_dir=tmp_path,
+        target=_target(),
+        backend="ptx_exec",
+    )
+
+    artifact(src, dst)
+    assert dst.tolist() == pytest.approx([abs(value) for value in src.tolist()], rel=1e-6, abs=1e-6)
 
 
 def test_ptx_exec_runs_direct_bitnot_i32_if_cuda_available(tmp_path: Path) -> None:
@@ -5791,6 +6005,11 @@ def test_ptx_exec_runs_parallel_tensor_factory_bundle_i32_if_cuda_available(tmp_
             [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]],
         ),
         (
+            ptx_exec_multiblock_dense_copy_2d_kernel,
+            (bb.tensor([[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]], dtype="f16"), bb.zeros((4, 3), dtype="f16")),
+            [[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]],
+        ),
+        (
             ptx_exec_multiblock_dense_copy_i32_2d_kernel,
             (bb.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], dtype="i32"), bb.zeros((4, 3), dtype="i32")),
             [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
@@ -5811,6 +6030,15 @@ def test_ptx_exec_runs_parallel_tensor_factory_bundle_i32_if_cuda_available(tmp_
                 bb.zeros((4, 3), dtype="f32"),
             ),
             [[11.0, 22.0, 33.0], [44.0, 55.0, 66.0], [77.0, 88.0, 99.0], [110.0, 121.0, 132.0]],
+        ),
+        (
+            ptx_exec_multiblock_dense_add_2d_kernel,
+            (
+                bb.tensor([[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]], dtype="f16"),
+                bb.tensor([[0.25, 0.5, 0.75], [1.0, 1.25, 1.5], [1.75, 2.0, 2.25], [2.5, 2.75, 3.0]], dtype="f16"),
+                bb.zeros((4, 3), dtype="f16"),
+            ),
+            [[0.75, 1.5, 2.25], [3.0, 3.75, 4.5], [5.25, 6.0, 6.75], [7.5, 8.25, 9.0]],
         ),
         (
             ptx_exec_multiblock_dense_add_i32_2d_kernel,
@@ -5977,8 +6205,10 @@ def test_ptx_exec_runs_multiblock_parallel_tensor_scalar_compare_2d_if_cuda_avai
         (ptx_exec_multiblock_dense_erf_2d_kernel, [[-1.5, -0.75, 0.0], [0.75, 1.0, 1.25], [-1.25, -0.5, 0.5], [1.5, 0.25, -0.25]], "f32", [[math.erf(-1.5), math.erf(-0.75), math.erf(0.0)], [math.erf(0.75), math.erf(1.0), math.erf(1.25)], [math.erf(-1.25), math.erf(-0.5), math.erf(0.5)], [math.erf(1.5), math.erf(0.25), math.erf(-0.25)]]),
         (ptx_exec_multiblock_dense_neg_f32_2d_kernel, [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0], [7.0, -8.0, 9.0], [-10.0, 11.0, -12.0]], "f32", [[-1.0, 2.0, -3.0], [4.0, -5.0, 6.0], [-7.0, 8.0, -9.0], [10.0, -11.0, 12.0]]),
         (ptx_exec_multiblock_dense_neg_i32_2d_kernel, [[1, -2, 3], [-4, 5, -6], [7, -8, 9], [-10, 11, -12]], "i32", [[-1, 2, -3], [4, -5, 6], [-7, 8, -9], [10, -11, 12]]),
+        (ptx_exec_multiblock_dense_neg_f16_2d_kernel, [[0.5, -1.0, 1.5], [-2.0, 2.5, -3.0], [3.5, -4.0, 4.5], [-5.0, 5.5, -6.0]], "f16", [[-0.5, 1.0, -1.5], [2.0, -2.5, 3.0], [-3.5, 4.0, -4.5], [5.0, -5.5, 6.0]]),
         (ptx_exec_multiblock_dense_abs_f32_2d_kernel, [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0], [7.0, -8.0, 9.0], [-10.0, 11.0, -12.0]], "f32", [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]),
         (ptx_exec_multiblock_dense_abs_i32_2d_kernel, [[1, -2, 3], [-4, 5, -6], [7, -8, 9], [-10, 11, -12]], "i32", [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]),
+        (ptx_exec_multiblock_dense_abs_f16_2d_kernel, [[0.5, -1.0, 1.5], [-2.0, 2.5, -3.0], [3.5, -4.0, 4.5], [-5.0, 5.5, -6.0]], "f16", [[0.5, 1.0, 1.5], [2.0, 2.5, 3.0], [3.5, 4.0, 4.5], [5.0, 5.5, 6.0]]),
         (ptx_exec_multiblock_dense_bitnot_i32_2d_kernel, [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], "i32", [[~1, ~2, ~3], [~4, ~5, ~6], [~7, ~8, ~9], [~10, ~11, ~12]]),
         (ptx_exec_multiblock_dense_bitnot_i1_2d_kernel, [[True, False, True], [False, True, False], [True, True, False], [False, False, True]], "i1", [[False, True, False], [True, False, True], [False, False, True], [True, True, False]]),
     ],
